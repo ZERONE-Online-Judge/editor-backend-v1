@@ -1,11 +1,12 @@
 """Password operations always use the central ZOJ credential store."""
 
 from fastapi import APIRouter, Depends, Request, Response
-from pydantic import EmailStr, Field
+from pydantic import EmailStr, Field, field_validator
 from sqlalchemy.orm import Session
 from .db import session_dependency
 from .schema import Strict
 from . import shared_auth
+from .password_policy import validate_password
 
 router = APIRouter(prefix="/api/auth/password", tags=["shared passwords"])
 
@@ -21,7 +22,12 @@ class Login(Email):
 
 class Confirm(Strict):
     code: str = Field(pattern=r"^[0-9]{6}$")
-    new_password: str = Field(min_length=15, max_length=128)
+    new_password: str = Field(min_length=8, max_length=128)
+
+    @field_validator('new_password')
+    @classmethod
+    def password_policy(cls, value):
+        return validate_password(value)
 
 
 class Reset(Confirm):

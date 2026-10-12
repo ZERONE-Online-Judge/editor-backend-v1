@@ -14,6 +14,22 @@ from app.db import SessionLocal, User, LoginSession, LoginCode
 KEY = "shared-auth-key-for-tests-at-least-32-characters"
 
 
+@pytest.mark.parametrize('value', ['abcde1!', 'abcdef12', 'abcdefg!', '1234567!', '한글abcd1!', 'abcd 12!', 'abcd１２!', 'abcd12！'])
+def test_new_password_constraints_reject_before_forwarding(client, central, value):
+    for route in ['/api/auth/password/confirm', '/api/auth/password/reset/confirm']:
+        response = client.post(route, json={'code': '123456', 'new_password': value, **({'email': 'author@example.com'} if '/reset/' in route else {})})
+        assert response.status_code == 422
+        assert value not in response.text
+    assert not central['calls']
+
+
+def test_eight_character_password_is_forwarded_without_changing_case(client, central):
+    client.cookies.set('zoj_sso', 'central-refresh-token')
+    result = client.post('/api/auth/password/confirm', json={'code': '123456', 'new_password': 'Abcdef1!'})
+    assert result.status_code == 200
+    assert json.loads(central['calls'][-1].content)['new_password'] == 'Abcdef1!'
+
+
 @pytest.fixture
 def central(monkeypatch):
     settings = get_settings()
