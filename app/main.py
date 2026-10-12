@@ -2,7 +2,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
-from . import auth, collaboration, jobs, problems, packages
+from . import auth, collaboration, jobs, problems, packages, folders
 from .config import get_settings
 from .db import Base, engine
 
@@ -47,6 +47,7 @@ def health():
 
 
 app.include_router(auth.router)
+app.include_router(folders.router)
 app.include_router(problems.router)
 app.include_router(collaboration.router)
 app.include_router(jobs.router)

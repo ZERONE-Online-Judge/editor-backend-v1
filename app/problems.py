@@ -7,7 +7,8 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from .auth import current_user, user_json
-from .db import Access, Blob, Issue, Job, Problem, Revision, User, WorkingCopy, now, session_dependency
+from .db import Access, Blob, Issue, Job, Placement, Problem, Revision, User, WorkingCopy, now, session_dependency
+from .folders import owned_folder, place
 from .domain import authorize, cautions, document_hash, fail, references, three_way_merge, validate_document, workspace
 from .schema import Document, Strict, empty_document
 from .storage import put_blob, read_blob
@@ -19,6 +20,7 @@ def problem_json(db, problem, user):
     access = db.get(Access, (problem.id, user.id))
     working = db.get(WorkingCopy, (problem.id, user.id))
     owner = db.get(User, problem.owner_id)
+    placement = db.get(Placement, (user.id, problem.id))
     doc = working.document if working and access.role in {"WRITE", "OWNER"} else problem.document
     return {"id": problem.id, "slug": problem.slug, "name": doc["info"]["name"], "owner": owner.handle,
             "owner_name": owner.display_name, "role": access.role, "reviewer": access.reviewer,
@@ -26,7 +28,8 @@ def problem_json(db, problem, user):
             "working_revision": working.base_revision if working else problem.revision,
             "modified": bool(working and document_hash(working.document) != document_hash(working.base_document)),
             "tags": doc["info"]["tags"], "note": problem.note, "deleted": problem.deleted,
-            "created_at": problem.created_at, "updated_at": problem.updated_at}
+            "created_at": problem.created_at, "updated_at": problem.updated_at,
+            "folder_id": placement.folder_id if placement else None}
 
 
 @router.get("")
@@ -41,16 +44,19 @@ def list_problems(deleted: bool = False, q: str = "", user: User = Depends(curre
 class CreateProblem(Strict):
     name: str = Field(min_length=1, max_length=200)
     slug: str = Field(pattern=r"^[a-z][a-z0-9-]{1,63}$")
+    folder_id: str | None = Field(default=None, min_length=32, max_length=32)
 
 
 @router.post("", status_code=201)
 def create_problem(values: CreateProblem, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
+    owned_folder(db, user, values.folder_id)
     if db.scalar(select(Problem).where(Problem.owner_id == user.id, Problem.slug == values.slug)):
         fail("slug_taken", "같은 이름의 문제가 이미 있습니다.", 409)
     problem = Problem(owner_id=user.id, slug=values.slug, document=empty_document(values.name))
     db.add(problem)
     db.flush()
     db.add(Access(problem_id=problem.id, user_id=user.id, role="OWNER"))
+    place(db, user, problem.id, values.folder_id)
     db.add(Revision(problem_id=problem.id, number=0, author_id=user.id, message="문제 생성", document=copy.deepcopy(problem.document)))
     db.commit()
     return problem_json(db, problem, user)

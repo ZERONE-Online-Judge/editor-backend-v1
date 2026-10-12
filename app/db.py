@@ -74,6 +74,24 @@ class Access(Base):
     translator: Mapped[bool] = mapped_column(default=False)
 
 
+class Folder(Base):
+    __tablename__ = "folders"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=uid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    parent_id: Mapped[str | None] = mapped_column(ForeignKey("folders.id", ondelete="SET NULL"), nullable=True)
+    parent_key: Mapped[str] = mapped_column(String(32), default="")
+    name: Mapped[str] = mapped_column(String(80))
+    name_key: Mapped[str] = mapped_column(String(240))
+    __table_args__ = (UniqueConstraint("user_id", "parent_key", "name_key"),)
+
+
+class Placement(Base):
+    __tablename__ = "problem_placements"
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    problem_id: Mapped[str] = mapped_column(ForeignKey("problems.id", ondelete="CASCADE"), primary_key=True)
+    folder_id: Mapped[str | None] = mapped_column(ForeignKey("folders.id", ondelete="SET NULL"), nullable=True, index=True)
+
+
 class WorkingCopy(Base):
     __tablename__ = "working_copies"
     problem_id: Mapped[str] = mapped_column(ForeignKey("problems.id", ondelete="CASCADE"), primary_key=True)

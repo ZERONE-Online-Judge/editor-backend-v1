@@ -19,6 +19,7 @@ from .domain import authorize, fail, references, validate_document
 from .schema import Document, Strict, empty_document, safe_name
 from .storage import put_blob, read_blob
 from .sandbox import VENDOR
+from .folders import owned_folder, place
 
 router = APIRouter(prefix="/api", tags=["packages"])
 SOURCE_TYPES = {"cpp17": "cpp.g++17", "cpp20": "cpp.g++20", "c17": "c.gcc", "python3": "python.3", "java17": "java.17", "text": "text"}
@@ -320,7 +321,8 @@ class ImportInfo(Strict):
 
 
 @router.post("/imports", status_code=201)
-async def import_package(request: Request, name: str, slug: str, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
+async def import_package(request: Request, name: str, slug: str, folder_id: str | None = None, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
+    owned_folder(db, user, folder_id)
     values = ImportInfo(name=name, slug=slug)
     content = bytearray()
     async for chunk in request.stream():
@@ -352,6 +354,7 @@ async def import_package(request: Request, name: str, slug: str, user: User = De
             doc = polygon_document(archive, db, problem.id, values.name)
         problem.document = validate_document(db, problem.id, doc)
         db.add(Access(problem_id=problem.id, user_id=user.id, role="OWNER"))
+        place(db, user, problem.id, folder_id)
         db.add(Revision(problem_id=problem.id, number=0, author_id=user.id, message="문제 패키지 가져오기", document=copy.deepcopy(doc)))
         db.commit()
     except (ValueError, KeyError, TypeError, AttributeError, ET.ParseError, zipfile.BadZipFile) as error:
