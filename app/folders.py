@@ -1,7 +1,7 @@
 """Personal organization, independent of shared problem permissions/revisions."""
 from fastapi import APIRouter, Depends
 from pydantic import Field, field_validator
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from .auth import current_user
@@ -30,7 +30,12 @@ def place(db, user, problem_id, folder_id):
 
 
 def lock_user(db, user):
-    db.scalar(select(User).where(User.id == user.id).with_for_update())
+    if db.get_bind().dialect.name == "sqlite":
+        # SQLite has no SELECT FOR UPDATE; acquire its write lock before reading
+        # the tree so concurrent inverse moves cannot each validate stale paths.
+        db.execute(update(User).where(User.id == user.id).values(display_name=User.display_name))
+    else:
+        db.scalar(select(User).where(User.id == user.id).with_for_update())
 
 
 def folder_json(row):

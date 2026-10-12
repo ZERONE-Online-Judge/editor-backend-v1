@@ -38,7 +38,7 @@ def test_cycles_duplicate_names_creation_and_delete_collision(owner, problem):
     assert response.status_code==201 and response.json()['folder_id']==b
     assert owner.delete('/api/folders/'+root).status_code==200
     assert owner.delete('/api/folders/'+a).status_code==200
-    assert owner.get('/api/problems').json()[0]['folder_id']==b
+    assert owner.get('/api/problems/'+response.json()['id']).json()['problem']['folder_id']==b
 
 def test_depth_validation_includes_moved_subtree(owner):
     parent=None
@@ -46,3 +46,14 @@ def test_depth_validation_includes_moved_subtree(owner):
     assert owner.post('/api/folders',json={'name':'too-deep','parent_id':parent}).status_code==400
     outer=create(owner,'outer');create(owner,'inner',outer)
     assert owner.put('/api/folders/'+outer,json={'name':'outer','parent_id':parent}).status_code==400
+
+
+def test_concurrent_inverse_moves_cannot_create_cycle(owner):
+    from concurrent.futures import ThreadPoolExecutor
+    a=create(owner,'A');b=create(owner,'B')
+    def move(ids):
+        source,target,name=ids
+        return owner.put('/api/folders/'+source,json={'name':name,'parent_id':target}).status_code
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        statuses=list(workers.map(move,[(a,b,'A'),(b,a,'B')]))
+    assert sorted(statuses)==[200,400]
