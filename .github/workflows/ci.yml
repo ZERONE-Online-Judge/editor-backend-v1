@@ -1,0 +1,23 @@
+name: Editor Backend CI
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: pip install -r requirements.txt
+      - run: python -m compileall -q app runner
+      - run: pytest -q
+      - name: Validate schema migration
+        run: |
+          EDITOR_DATABASE_URL=sqlite:////tmp/editor-migration.db alembic upgrade head
+          EDITOR_DATABASE_URL=sqlite:////tmp/editor-migration.db alembic check
+      - name: Build isolated execution images
+        run: |
+          docker build -t zoj-editor-runtime:v1 runner
+          docker build -t zoj-editor-renderer:v1 -f runner/Renderer.Dockerfile runner
+      - name: Execute real sandbox tests
+        run: RUN_SANDBOX_TESTS=1 pytest -q -m sandbox
