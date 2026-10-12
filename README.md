@@ -81,6 +81,7 @@ SMTP 발송은 개발 테스트에서 외부로 전송하지 않습니다. 운�
 - `feature/verification-runtime`: 격리 실행·생성·검증·채점·스트레스
 - `feature/problem-packages`: 문제 ZIP·가져오기·한글 지문 렌더링
 - `feature/service-deployment`: 별도 서버 배포·CI·문서
+- `fix/runtime-accounting`: 감독 프로세스와 프로그램의 CPU·메모리 분리
 
 모든 커밋은 `AGENTS.md`의 타입·제목·본문 규칙을 따릅니다.
 

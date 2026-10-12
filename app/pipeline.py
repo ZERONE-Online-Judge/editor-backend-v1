@@ -24,7 +24,7 @@ class Pipeline:
         self.counter = 0
         self.last_publish = 0
         inspected = subprocess.run(["docker", "image", "inspect", self.sandbox.settings.runner_image, "--format", "{{.Id}}"], capture_output=True, text=True, timeout=10)
-        self.result["runtime"] = {"image": self.sandbox.settings.runner_image, "image_id": inspected.stdout.strip(), "cpu_measurement": "process-and-descendants"}
+        self.result["runtime"] = {"image": self.sandbox.settings.runner_image, "image_id": inspected.stdout.strip(), "cpu_measurement": "native-command-and-descendants"}
 
     def event(self, label, **extra):
         self.result["events"].append({"label": label, **extra})
@@ -118,6 +118,8 @@ class Pipeline:
         status = result["status"]
         if status != "ok":
             verdict = {"time-limit": "TLE", "memory-limit": "MLE", "output-limit": "OLE", "wall-limit": "IDLENESS_LIMIT" if info["interactive"] else "JUDGE_ERROR"}.get(status, "JUDGE_ERROR")
+        elif info["interactive"] and result.get("stopped_by_interactor"):
+            verdict = {1: "WA", 2: "PE"}.get(result.get("interactor_exit_code"), "JUDGE_ERROR")
         elif result["exit_code"] != 0:
             verdict = "RE"
         elif info["interactive"]:

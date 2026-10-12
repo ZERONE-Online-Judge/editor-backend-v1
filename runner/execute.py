@@ -3,9 +3,7 @@ import base64
 import json
 import shutil
 import stat
-import math
 import os
-import resource
 import signal
 import subprocess
 import sys
@@ -37,18 +35,8 @@ if not config.get("interactive"):
     os.chown(run_dir, 1000, 1000)
 
 
-def limits(uid, memory_mb, cpu_ms, output_bytes, cwd):
-    def apply():
-        os.setsid()
-        os.setgroups([])
-        os.setgid(uid)
-        os.setuid(uid)
-        os.chdir(cwd)
-        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-        resource.setrlimit(resource.RLIMIT_FSIZE, (output_bytes, output_bytes))
-        resource.setrlimit(resource.RLIMIT_NOFILE, (128, 128))
-        resource.setrlimit(resource.RLIMIT_CPU, (max(1, math.ceil(cpu_ms / 1000)), max(2, math.ceil(cpu_ms / 1000) + 1)))
-    return apply
+def command(uid, cpu_ms, output_bytes, evidence, args):
+    return ["/opt/editor/launch", str(uid), str(cpu_ms), str(output_bytes), str(evidence), "--", *args]
 
 
 def process_usage(pid):
@@ -80,9 +68,10 @@ def stop(proc):
         pass
 
 
-def supervise(proc, cpu_ms, memory_mb, wall_seconds, other=None):
+def supervise(proc, cpu_ms, memory_mb, wall_seconds, evidence, other=None):
     begin = time.monotonic()
     verdict = "ok"
+    stopped_by_interactor = False
     peak_rss = 0
     measured_cpu = 0
     status = None
@@ -106,20 +95,26 @@ def supervise(proc, cpu_ms, memory_mb, wall_seconds, other=None):
             _, status, usage = os.wait4(proc.pid, 0)
             break
         if other is not None and other.poll() is not None and other.returncode != 0:
+            stopped_by_interactor = True
             stop(proc)
             _, status, usage = os.wait4(proc.pid, 0)
             break
         time.sleep(0.01)
     proc.returncode = os.waitstatus_to_exitcode(status)
-    measured_cpu = max(measured_cpu, (usage.ru_utime + usage.ru_stime) * 1000)
-    peak_rss = max(peak_rss, usage.ru_maxrss)
+    if evidence.exists() and evidence.stat().st_size:
+        recorded = json.loads(evidence.read_text())
+        measured_cpu = max(measured_cpu, recorded["cpu_ms"])
+        peak_rss = max(peak_rss, recorded["memory_kb"])
+        proc.returncode = recorded["exit_code"]
+    elif verdict == "ok" and not stopped_by_interactor:
+        raise RuntimeError("Native resource evidence was not produced")
     if verdict == "ok" and (measured_cpu > cpu_ms or proc.returncode == -signal.SIGXCPU):
         verdict = "time-limit"
     if verdict == "ok" and peak_rss > memory_mb * 1024:
         verdict = "memory-limit"
     if verdict == "ok" and proc.returncode == -signal.SIGXFSZ:
         verdict = "output-limit"
-    return {"status": verdict, "exit_code": proc.returncode, "cpu_ms": round(measured_cpu, 2), "wall_ms": round((time.monotonic() - begin) * 1000, 2), "memory_kb": int(peak_rss)}
+    return {"status": verdict, "exit_code": proc.returncode, "cpu_ms": round(measured_cpu, 2), "wall_ms": round((time.monotonic() - begin) * 1000, 2), "memory_kb": int(peak_rss), "stopped_by_interactor": stopped_by_interactor}
 
 
 memory_mb = config.get("memory_mb", 256)
@@ -139,19 +134,20 @@ if config.get("interactive"):
     candidate_log = (root / ".stderr").open("wb")
     read_a, write_a = os.pipe()
     read_b, write_b = os.pipe()
-    actor = subprocess.Popen(config["interactor_command"], stdin=read_a, stdout=write_b, stderr=interactor_log,
-        cwd=interactor_dir, env=env, preexec_fn=limits(1001, 512, max(10000, cpu_ms * 5), output_bytes, interactor_dir))
-    proc = subprocess.Popen(config["command"], stdin=read_b, stdout=write_a, stderr=candidate_log,
-        cwd=solution_dir, env=env, preexec_fn=limits(1000, memory_mb, cpu_ms, output_bytes, solution_dir))
+    actor_evidence, evidence = root / ".actor-metrics", root / ".solution-metrics"
+    actor = subprocess.Popen(command(1001, max(10000, cpu_ms * 5), output_bytes, actor_evidence, config["interactor_command"]), stdin=read_a, stdout=write_b, stderr=interactor_log,
+        cwd=interactor_dir, env=env, start_new_session=True)
+    proc = subprocess.Popen(command(1000, cpu_ms, output_bytes, evidence, config["command"]), stdin=read_b, stdout=write_a, stderr=candidate_log,
+        cwd=solution_dir, env=env, start_new_session=True)
     for fd in [read_a, write_a, read_b, write_b]:
         os.close(fd)
-    result = supervise(proc, cpu_ms, memory_mb, wall_seconds, actor)
+    result = supervise(proc, cpu_ms, memory_mb, wall_seconds, evidence, actor)
     try:
         actor.wait(timeout=2)
     except subprocess.TimeoutExpired:
         stop(actor)
         actor.wait()
-    result["interactor_exit_code"] = actor.returncode
+    result["interactor_exit_code"] = json.loads(actor_evidence.read_text())["exit_code"] if actor_evidence.exists() and actor_evidence.stat().st_size else actor.returncode
     transcript = interactor_dir / "transcript"
     if transcript.exists() and transcript.is_file() and not transcript.is_symlink():
         (root / ".output").write_bytes(transcript.read_bytes()[:output_bytes])
@@ -160,9 +156,10 @@ else:
     input_path = root / ".input"
     output_path, error_path = root / ".output", root / ".stderr"
     with input_path.open("rb") as input_stream, output_path.open("wb") as output_stream, error_path.open("wb") as error_stream:
-        proc = subprocess.Popen(config["command"], stdin=input_stream, stdout=output_stream, stderr=error_stream,
-            env=env, cwd=run_dir, preexec_fn=limits(1000, memory_mb, cpu_ms, output_bytes, run_dir))
-        result = supervise(proc, cpu_ms, memory_mb, wall_seconds)
+        evidence = root / ".solution-metrics"
+        proc = subprocess.Popen(command(1000, cpu_ms, output_bytes, evidence, config["command"]), stdin=input_stream, stdout=output_stream, stderr=error_stream,
+            env=env, cwd=run_dir, start_new_session=True)
+        result = supervise(proc, cpu_ms, memory_mb, wall_seconds, evidence)
 if not config.get("interactive") and config.get("output_file", "stdout") != "stdout":
     named = run_dir / config["output_file"]
     if named.is_file() and not named.is_symlink():

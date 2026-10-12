@@ -93,3 +93,14 @@ def test_interactive_private_input_and_duplex_output(problem):
         result=sandbox.interactive(a,b,b'21\n',cpu_ms=1000,memory_mb=128)
         assert result['status']=='ok' and result['exit_code']==0 and result['interactor_exit_code']==0,result
     finally:sandbox.close()
+
+
+def test_short_cpp_does_not_inherit_python_launcher_memory(problem):
+    sandbox=Sandbox()
+    try:
+        program=sandbox.compile(source(problem,'tiny.cpp','#include <cstdio>\nint main(){puts("42");}','cpp17'),[])
+        result=sandbox.run(program,memory_mb=4)
+        assert result['status']=='ok',result
+        assert result['output']==b'42\n'
+        assert 0 < result['memory_kb'] < 4096,result
+    finally:sandbox.close()
