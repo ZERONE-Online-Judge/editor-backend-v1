@@ -15,6 +15,7 @@ router = APIRouter(prefix="/api/problems", tags=["execution"])
 
 
 class JobOptions(Strict):
+    execution_backend: Literal["editor", "zoj"] | None = None
     testset: str = "tests"
     solutions: list[str] = Field(default_factory=list, max_length=200)
     test_indices: list[int] = Field(default_factory=list, max_length=1000)
@@ -70,6 +71,13 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
     for name in [*options["solutions"], options["reference"], options["candidate"]]:
         if name and name not in doc["solutions"]:
             fail("invalid_solution", "풀이 파일을 찾을 수 없습니다.")
+    options["execution_backend"] = options["execution_backend"] or get_settings().judge_backend
+    if values.kind not in {"verify", "package"} or (values.kind == "package" and not options["verify"]):
+        options["execution_backend"] = "editor"
+    if options["execution_backend"] == "zoj":
+        from .judge_bridge import compatible, capabilities
+        compatible(doc, options, values.kind)
+        options["judge_revision"] = capabilities(user)["runtime_revision"]
     hash_value = document_hash(doc)
     if values.reuse:
         cached = db.scalars(select(Job).where(Job.problem_id == problem_id, Job.document_hash == hash_value, Job.kind == values.kind, Job.status.in_(["queued", "running", "completed"])).order_by(Job.created_at.desc())).all()

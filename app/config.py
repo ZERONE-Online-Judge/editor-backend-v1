@@ -2,6 +2,7 @@ from pathlib import Path
 from functools import lru_cache
 from pydantic import SecretStr, field_validator, model_validator
 from urllib.parse import urlsplit
+from typing import Literal
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -25,6 +26,8 @@ class Settings(BaseSettings):
     worker_concurrency: int = 2
     job_timeout_seconds: int = 1800
     runtime_revision: str = "editor-runtime-0.1.2"
+    judge_backend: Literal["editor", "zoj"] = "editor"
+    judge_concurrency: int = 3
     max_project_bytes: int = 8 * 1024 * 1024 * 1024
     max_uncompressed_archive_bytes: int = 16 * 1024 * 1024 * 1024
     max_upload_bytes: int = 16 * 1024 * 1024
@@ -55,6 +58,10 @@ class Settings(BaseSettings):
             raise ValueError("EDITOR_MAIL_MODE must be console, smtp or zoj")
         if self.auth_mode not in {"local","zoj"}:
             raise ValueError("EDITOR_AUTH_MODE must be local or zoj")
+        if not 1 <= self.judge_concurrency <= 6:
+            raise ValueError("EDITOR_JUDGE_CONCURRENCY must be 1 to 6")
+        if self.judge_backend == "zoj" and not self.zoj_api_url:
+            raise ValueError("ZOJ judging requires EDITOR_ZOJ_API_URL")
         if self.auth_mode == "zoj":
             target = urlsplit(self.auth_api_url)
             if target.scheme not in {"http","https"} or not target.hostname or target.username or target.password or target.query or target.fragment or target.path.rstrip('/') != '/api':

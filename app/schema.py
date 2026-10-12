@@ -68,7 +68,7 @@ class Statement(Strict):
 class SourceFile(Strict):
     name: str
     kind: Literal["source", "resource", "aux", "statement"] = "source"
-    language: Literal["cpp17", "cpp20", "c17", "python3", "java17", "text"] = "cpp17"
+    language: Literal["cpp17", "cpp20", "c17", "c99", "python3", "java17", "java8", "text"] = "cpp17"
     compile_with_solution: bool = False
     entry_class: str = Field(default="", pattern=r"^(?:[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)?$")
     sha256: str = Field(pattern=r"^[a-f0-9]{64}$")

@@ -4,6 +4,7 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from . import auth, collaboration, jobs, problems, packages, folders, zoj, library
 from .config import get_settings
+from . import judge_bridge
 from .db import Base, engine
 
 
@@ -57,3 +58,4 @@ app.include_router(jobs.router)
 app.include_router(packages.router)
 app.include_router(zoj.router)
 app.include_router(library.router)
+app.include_router(judge_bridge.router)

@@ -112,7 +112,10 @@ class Sandbox:
                 parts = Path(relative).parts
                 if not parts or Path(relative).is_absolute() or any(part in {"..", "."} for part in parts):
                     raise SandboxError("Invalid artifact path")
-                for part in parts:
+                for index, part in enumerate(parts):
+                    java_class = compile_language in {"java17", "java8"} and index == len(parts) - 1 and part.endswith('.class')
+                    if java_class and all(c.isalnum() or c in '_$.' for c in part):
+                        continue  # javac creates valid nested-class names with $.
                     safe_name(part)
                 target = target_root / relative
                 target.parent.mkdir(parents=True, exist_ok=True)
@@ -126,7 +129,7 @@ class Sandbox:
             subprocess.run(["docker", "rm", "-fv", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
 
     def compile(self, source, resources, is_solution=False):
-        cache_key = (source["name"], source["sha256"], is_solution)
+        cache_key = (source["name"], source["sha256"], source["language"], is_solution)
         if cache_key in self.programs:
             return self.programs[cache_key]
         folder = self.new_folder()
@@ -136,13 +139,13 @@ class Sandbox:
         for resource in resources:
             if (resource["kind"] in {"resource", "aux"} or (is_solution and resource.get("compile_with_solution"))) and resource["name"] != name:
                 (folder / safe_name(resource["name"])).write_bytes(read_blob(resource["sha256"]))
-        if language in {"cpp17", "cpp20", "c17"}:
-            std = {"cpp17": "c++17", "cpp20": "c++20", "c17": "c17"}[language]
-            compiler = "gcc" if language == "c17" else "g++"
-            units = [r["name"] for r in resources if is_solution and r.get("compile_with_solution") and r["name"] != name and r["language"] in ({"c17"} if language == "c17" else {"cpp17", "cpp20"})]
+        if language in {"cpp17", "cpp20", "c17", "c99"}:
+            std = {"cpp17": "c++17", "cpp20": "c++20", "c17": "c17", "c99": "c99"}[language]
+            compiler = "gcc" if language in {"c17", "c99"} else "g++"
+            units = [r["name"] for r in resources if is_solution and r.get("compile_with_solution") and r["name"] != name and r["language"] in ({"c17", "c99"} if language in {"c17", "c99"} else {"cpp17", "cpp20"})]
             argv = [compiler, f"-std={std}", "-O2", "-pipe", name, *units, "-o", "program"]
             cmd = ["./program"]
-        elif language == "java17":
+        elif language in {"java17", "java8"}:
             text = (folder / name).read_text()
             match = re.search(r"public\s+class\s+([A-Za-z_][A-Za-z0-9_]*)", text)
             classname = match.group(1) if match else Path(name).stem
@@ -151,8 +154,8 @@ class Sandbox:
             actual_name = classname + ".java"
             if actual_name != name:
                 (folder / actual_name).write_bytes(read_blob(source["sha256"]))
-            units = [r["name"] for r in resources if is_solution and r.get("compile_with_solution") and r["language"] == "java17" and r["name"] != actual_name]
-            argv = ["javac", "-J-XX:ActiveProcessorCount=1", "-d", ".", actual_name, *units]
+            units = [r["name"] for r in resources if is_solution and r.get("compile_with_solution") and r["language"] in {"java17", "java8"} and r["name"] != actual_name]
+            argv = ["javac", "-J-XX:ActiveProcessorCount=1", "--release", "8" if language == "java8" else "17", "-d", ".", actual_name, *units]
             package = re.search(r"^\s*package\s+([A-Za-z_][A-Za-z0-9_.]*)\s*;", text, re.M)
             entry = source.get("entry_class") or (package.group(1) + "." if package else "") + classname
             cmd = ["java", "-XX:ActiveProcessorCount=1", "-XX:+UseSerialGC", "-Xss1m", entry]
@@ -193,7 +196,7 @@ class Sandbox:
         if input_file != "stdin":
             (folder / safe_name(input_file)).write_bytes(stdin)
         command = list(program.command)
-        if program.language == "java17":
+        if program.language in {"java17", "java8"}:
             command.insert(-1, f"-Xmx{max(4, memory_mb - 64)}m")
         result = self.execute(folder, [*command, *args], stdin, cpu_ms, memory_mb, output_bytes, output_file=output_file)
         return result
@@ -208,7 +211,7 @@ class Sandbox:
         (interactor_dir / "input").write_bytes(stdin)
         (interactor_dir / "answer").write_bytes(answer)
         command = list(program.command)
-        if program.language == "java17":
+        if program.language in {"java17", "java8"}:
             command.insert(-1, f"-Xmx{max(4, memory_mb - 64)}m")
         result = self.execute(folder, command, cpu_ms=cpu_ms, memory_mb=memory_mb,
             interactive={"interactive": True, "interactor_command": [*actor.command, "input", "transcript", "answer"]})

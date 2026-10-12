@@ -122,3 +122,30 @@ def test_runtime_image_stays_pinned_after_tag_changes(problem):
     finally:
         sandbox.close()
         subprocess.run(['docker','image','rm',label],check=True,capture_output=True)
+
+
+def test_zoj_preparation_supports_python313_c99_and_java8(problem):
+    sandbox = Sandbox()
+    try:
+        for name, language, code in [
+            ('modern.py', 'python3', 'type Number = int\nprint(42)\n'),
+            ('sum.c', 'c99', '#include <stdio.h>\nint main(void){puts("42");}\n'),
+            ('Main.java', 'java8', 'public class Main{public static void main(String[] args){System.out.println(42);}}'),
+        ]:
+            program = sandbox.compile(source(problem, name, code, language), [])
+            result = sandbox.run(program, memory_mb=256)
+            assert result['status'] == 'ok' and result['output'] == b'42\n', result
+    finally:
+        sandbox.close()
+
+
+def test_java_compiler_cache_does_not_change_language_standard(problem):
+    from app.sandbox import SandboxError
+    sandbox = Sandbox()
+    code = 'public class Main{record Value(int n){} public static void main(String[] a){System.out.println(new Value(42).n());}}'
+    try:
+        sandbox.compile(source(problem, 'Main.java', code, 'java17'), [])
+        with pytest.raises(SandboxError, match='컴파일 실패'):
+            sandbox.compile(source(problem, 'Main.java', code, 'java8'), [])
+    finally:
+        sandbox.close()

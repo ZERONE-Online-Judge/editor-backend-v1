@@ -22,7 +22,7 @@ from .sandbox import VENDOR
 from .folders import owned_folder, place
 
 router = APIRouter(prefix="/api", tags=["packages"])
-SOURCE_TYPES = {"cpp17": "cpp.g++17", "cpp20": "cpp.g++20", "c17": "c.gcc", "python3": "python.3", "java17": "java.17", "text": "text"}
+SOURCE_TYPES = {"cpp17": "cpp.g++17", "cpp20": "cpp.g++20", "c17": "c.gcc", "c99": "c.gcc", "python3": "python.3", "java17": "java.17", "java8": "java.8", "text": "text"}
 TAG_NAMES = {"MA": "main", "OK": "accepted", "WA": "wrong-answer", "TL": "time-limit-exceeded", "ML": "memory-limit-exceeded", "PE": "presentation-error", "RE": "runtime-error", "RJ": "rejected", "TO": "time-limit-exceeded-or-accepted", "TM": "time-limit-exceeded-or-memory-limit-exceeded", "NR": "do-not-run"}
 
 
@@ -186,6 +186,8 @@ def checked_archive(content):
 
 
 def guess_language(name, source_type=""):
+    if source_type == "java.8":
+        return "java8"
     if "java" in source_type or name.endswith(".java"):
         return "java17"
     if "python" in source_type or name.endswith(".py"):

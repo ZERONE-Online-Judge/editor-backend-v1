@@ -27,7 +27,7 @@ def check_compatibility(doc, options):
     if doc["extra_validators"] or any(f.get("compile_with_solution") for f in doc["files"].values()):
         issues.append("추가 validator와 풀이 결합 파일은 ZOJ 채점에서 동일하게 실행되지 않습니다.")
     checker = doc["files"].get(doc["checker"])
-    if checker and checker["language"] not in {"cpp17", "c17", "python3"}:
+    if checker and checker["language"] not in {"cpp17", "c17", "c99", "python3"}:
         issues.append("ZOJ checker는 C++17·C·Python 소스만 지원합니다. 해당 언어로 검증하세요.")
     if options["statement_language"] not in doc["statements"]:
         issues.append("내보낼 지문 언어를 선택하세요.")

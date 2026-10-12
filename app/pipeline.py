@@ -4,6 +4,7 @@ import shlex
 import math
 import re
 import time
+import threading
 from pathlib import Path
 from .db import SessionLocal
 from .domain import parse_script
@@ -22,17 +23,23 @@ class Pipeline:
         self.programs = {}
         self.counter = 0
         self.last_publish = 0
-        self.result["runtime"] = {"image": self.sandbox.settings.runner_image, "image_id": self.sandbox.resolve_image(self.sandbox.settings.runner_image), "cpu_measurement": "native-command-and-descendants"}
+        self.result_lock = threading.RLock()
+        runtime = {"backend": "editor", "image": self.sandbox.settings.runner_image, "image_id": self.sandbox.resolve_image(self.sandbox.settings.runner_image), "cpu_measurement": "native-command-and-descendants"}
+        self.remote_judging = job.options.get("execution_backend") == "zoj" and job.kind in {"verify", "package"}
+        self.result["runtime"] = {"backend": "zoj", "runtime_revision": job.options.get("judge_revision")} if self.remote_judging else runtime
+        if self.remote_judging:
+            self.result["preparation_runtime"] = runtime
 
 
     def event(self, label, **extra):
-        self.result["events"].append({"label": label, **extra})
-        self.result["summary"] = label
-        self.result["events_total"] = self.result.get("events_total", 0) + 1
-        self.result["events"] = self.result["events"][-2000:]
-        if time.monotonic() - self.last_publish >= 1:
-            self.publish(copy.deepcopy(self.result))
-            self.last_publish = time.monotonic()
+        with self.result_lock:
+            self.result["events"].append({"label": label, **extra})
+            self.result["summary"] = label
+            self.result["events_total"] = self.result.get("events_total", 0) + 1
+            self.result["events"] = self.result["events"][-2000:]
+            if time.monotonic() - self.last_publish >= 1:
+                self.publish(copy.deepcopy(self.result))
+                self.last_publish = time.monotonic()
 
     def blob(self, content):
         with SessionLocal() as db:
@@ -106,14 +113,20 @@ class Pipeline:
             verdict = "AC" if raw >= maximum - 1e-8 else "PARTIAL" if raw > 0 else "WA"
         return verdict, result
 
-    def run_solution(self, name, input_bytes, answer=b""):
+    def run_solution(self, name, input_bytes, answer=b"", preparation=False):
         info = self.doc["info"]
         program = self.program(name, True)
+        cpu_ms, memory_mb = info["time_limit_ms"], info["memory_limit_mb"]
+        if preparation and self.remote_judging:
+            # This only creates reference answers on Editor hardware. The
+            # requested problem limits are enforced later by the ZOJ agent.
+            cpu_ms = min(60000, max(10000, cpu_ms * 10 + 3000))
+            memory_mb = max(1024, memory_mb * 2 + 256)
         if info["interactive"]:
             actor = self.program(self.doc["interactor"])
-            result = self.sandbox.interactive(program, actor, input_bytes, answer, cpu_ms=info["time_limit_ms"], memory_mb=info["memory_limit_mb"])
+            result = self.sandbox.interactive(program, actor, input_bytes, answer, cpu_ms=cpu_ms, memory_mb=memory_mb)
         else:
-            result = self.sandbox.run(program, input_bytes, cpu_ms=info["time_limit_ms"], memory_mb=info["memory_limit_mb"], input_file=info["input_file"], output_file=info["output_file"])
+            result = self.sandbox.run(program, input_bytes, cpu_ms=cpu_ms, memory_mb=memory_mb, input_file=info["input_file"], output_file=info["output_file"])
         status = result["status"]
         if status != "ok":
             verdict = {"time-limit": "TLE", "memory-limit": "MLE", "output-limit": "OLE", "wall-limit": "IDLENESS_LIMIT" if info["interactive"] else "JUDGE_ERROR"}.get(status, "JUDGE_ERROR")
@@ -157,7 +170,7 @@ class Pipeline:
                 valid, validator = self.validator(input_bytes, set_name, test["group"])
                 if not valid:
                     raise SandboxError(f"{set_name} #{index}: 입력 조건 위반\n{validator['stderr']}")
-                verdict, result = self.run_solution(main, input_bytes, read_blob(test["answer_sha"]) if self.doc["info"]["interactive"] and test["answer_sha"] else b"")
+                verdict, result = self.run_solution(main, input_bytes, read_blob(test["answer_sha"]) if self.doc["info"]["interactive"] and test["answer_sha"] else b"", preparation=True)
                 if verdict != "AC":
                     raise SandboxError(f"Main 풀이가 {set_name} #{index}에서 {verdict}입니다.\n{result['stderr']}")
                 answer = result["output"]
@@ -189,6 +202,10 @@ class Pipeline:
 
     def verify(self):
         self.prepare()
+        if self.remote_judging:
+            from .judge_bridge import verify
+            verify(self)
+            return
         selected = list(self.doc["solutions"]) if self.job.kind == "package" else self.job.options["solutions"] or list(self.doc["solutions"])
         for name in selected:
             source = self.doc["solutions"][name]

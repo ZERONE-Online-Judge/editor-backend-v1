@@ -179,7 +179,7 @@ result["output_base64"] = encoded(root / ".output", output_bytes)
 artifacts = {}
 if config.get("compile_language") and result["status"] == "ok" and result["exit_code"] == 0:
     language = config["compile_language"]
-    selected = [run_dir / "program"] if language in {"cpp17", "cpp20", "c17"} else list(run_dir.rglob("*.class")) if language == "java17" else []
+    selected = [run_dir / "program"] if language in {"cpp17", "cpp20", "c17", "c99"} else list(run_dir.rglob("*.class")) if language in {"java17", "java8"} else []
     total = 0
     for file in selected:
         if file.is_symlink() or not file.is_file():

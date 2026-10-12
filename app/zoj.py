@@ -33,13 +33,13 @@ def signed_headers(method, path, email, body_sha):
         "X-Editor-Content-Sha256": body_sha, "X-Editor-Signature": signature, "Content-Type": "application/zip"}
 
 
-def remote(method, path, user, package=None, sha=None):
+def remote(method, path, user, package=None, sha=None, *, timeout=120):
     settings = get_settings()
     headers = signed_headers(method, path, user.email, sha or hashlib.sha256(b"").hexdigest())
     target = settings.zoj_api_url.rstrip("/") + path.removeprefix("/api")
     context = ssl.create_default_context(cafile=str(settings.zoj_ca_file)) if settings.zoj_ca_file else True
     try:
-        with httpx.Client(timeout=httpx.Timeout(120, connect=5), verify=context, follow_redirects=False, trust_env=False) as client:
+        with httpx.Client(timeout=httpx.Timeout(timeout, connect=5), verify=context, follow_redirects=False, trust_env=False) as client:
             if package:
                 with package.open("rb") as body:
                     response = client.request(method, target, headers=headers, content=body)
