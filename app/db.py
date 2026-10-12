@@ -178,6 +178,12 @@ class Publication(Base):
     created_at: Mapped[int] = mapped_column(default=now)
 
 
+class LibraryNonce(Base):
+    __tablename__ = "zoj_library_nonces"
+    nonce: Mapped[str] = mapped_column(String(32), primary_key=True)
+    expires_at: Mapped[int] = mapped_column(index=True)
+
+
 settings = get_settings()
 settings.data_dir.mkdir(parents=True, exist_ok=True)
 engine = create_engine(settings.database_url, connect_args={"check_same_thread": False, "timeout": 15} if settings.database_url.startswith("sqlite") else {}, pool_pre_ping=True)

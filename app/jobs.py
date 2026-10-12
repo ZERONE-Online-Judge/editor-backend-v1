@@ -45,12 +45,16 @@ def job_json(job, include_result=True):
 
 @router.post("/{problem_id}/jobs", status_code=202)
 def create_job(problem_id: str, values: JobRequest, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
+    return _create_job(problem_id, values, user, db)
+
+
+def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *, from_committed_revision: bool = False):
     problem, _ = authorize(db, problem_id, user, write=values.kind != "render")
     wc = workspace(db, problem, user)
     if wc.version != values.version:
         fail("workspace_changed", "최신 작업 사본을 저장한 뒤 실행하세요.", 409)
     doc = copy.deepcopy(problem.document if values.kind == "package" else wc.document)
-    if values.kind == "package" and wc.document != problem.document:
+    if values.kind == "package" and wc.document != problem.document and not from_committed_revision:
         fail("commit_required", "패키지를 만들기 전에 변경사항을 커밋하세요.", 409)
     options = values.options.model_dump()
     if values.kind == "package" and options["export_format"] == "zoj":
