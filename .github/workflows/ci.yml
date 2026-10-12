@@ -19,6 +19,15 @@ jobs:
         run: |
           EDITOR_DATABASE_URL=sqlite:////tmp/editor-migration.db alembic upgrade head
           EDITOR_DATABASE_URL=sqlite:////tmp/editor-migration.db alembic check
+      - name: Verify application image from a private checkout
+        run: |
+          chmod -R go-rwx app vendor migrations requirements.txt alembic.ini
+          docker build -t zoj-editor-api:ci .
+          docker run --rm --network none -e EDITOR_AUTH_MODE=local \
+            -e EDITOR_DATA_DIR=/tmp/editor-data \
+            -e EDITOR_DATABASE_URL=sqlite:////tmp/editor-data/editor.db \
+            --entrypoint python zoj-editor-api:ci -c \
+            'import os; from app.main import app; from alembic.config import Config; assert os.getuid() == 1000; assert app.title == "ZOJ Editor API"; assert Config("alembic.ini").get_main_option("script_location") == "migrations"'
       - name: Build isolated execution images
         run: |
           docker build -t zoj-editor-runtime:v1 runner
