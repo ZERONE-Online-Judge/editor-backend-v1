@@ -12,8 +12,8 @@ x-environment: &environment
   EDITOR_MAIL_FROM: ${EDITOR_MAIL_FROM:-ZOJ Editor <noreply@editor.zoj.kr>}
   EDITOR_DATA_DIR: /data
   EDITOR_WORK_DIR: /tmp/editor-work
-  EDITOR_RUNNER_IMAGE: zoj-editor-runtime:v1
-  EDITOR_RENDER_IMAGE: zoj-editor-renderer:v1
+  EDITOR_RUNNER_IMAGE: ${EDITOR_RUNNER_IMAGE:-zoj-editor-runtime:v1}
+  EDITOR_RENDER_IMAGE: ${EDITOR_RENDER_IMAGE:-zoj-editor-renderer:v1}
   EDITOR_RUNTIME_REVISION: ${EDITOR_RUNTIME_REVISION:-editor-runtime-0.1.2}
   EDITOR_WORKER_CONCURRENCY: ${EDITOR_WORKER_CONCURRENCY:-2}
 services:
@@ -32,7 +32,7 @@ services:
       timeout: 3s
       retries: 20
   api:
-    image: zoj-editor-api:v1
+    image: ${EDITOR_API_IMAGE:-zoj-editor-api:v1}
     build: ..
     restart: unless-stopped
     environment:
@@ -53,7 +53,7 @@ services:
       timeout: 5s
       retries: 5
   worker:
-    image: zoj-editor-api:v1
+    image: ${EDITOR_API_IMAGE:-zoj-editor-api:v1}
     restart: unless-stopped
     command: [python, -m, app.worker]
     environment: *environment
@@ -66,7 +66,7 @@ services:
       db:
         condition: service_healthy
   frontend:
-    image: zoj-editor-frontend:v1
+    image: ${EDITOR_FRONTEND_IMAGE:-zoj-editor-frontend:v1}
     build: ../../editor_frontend_v1
     restart: unless-stopped
     environment:
@@ -78,12 +78,12 @@ services:
       api:
         condition: service_healthy
   runtime:
-    image: zoj-editor-runtime:v1
+    image: ${EDITOR_RUNNER_IMAGE:-zoj-editor-runtime:v1}
     build:
       context: ../runner
     profiles: [images]
   renderer:
-    image: zoj-editor-renderer:v1
+    image: ${EDITOR_RENDER_IMAGE:-zoj-editor-renderer:v1}
     build:
       context: ../runner
       dockerfile: Renderer.Dockerfile

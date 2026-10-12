@@ -1,5 +1,48 @@
 # Editor 독립 서버 배포
 
+## GitHub Actions 전용 러너
+
+새 Editor 서버에 저장소별 러너 2개를 등록합니다. 기존 ZOJ 러너는
+재사용하지 않습니다. `deploy/setup-runners.sh`는 Ubuntu 24.04 x86_64용이며
+Docker·Compose·전용 `editor-runner` 계정과 서비스를 설치합니다. 등록
+토큰은 mode 600 파일로 전달하고 설치 종료 시 삭제합니다.
+
+- 백엔드: `zoj-editor-backend`, `zoj-editor,editor-backend` 레이블
+- 프런트엔드: `zoj-editor-frontend`, `zoj-editor,editor-frontend` 레이블
+- 환경변수: `/srv/zoj-editor/config/editor.env` (Git 외부, mode 600)
+- 러너 디렉터리: `/srv/zoj-editor/runners/backend`, `frontend`
+
+설치 방식과 토큰 유효기간은
+[GitHub 공식 러너 등록 문서](https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/add-runners)를
+따릅니다. 공개 저장소의 PR·기능 브랜치는 GitHub 호스팅 러너에서만
+실행합니다. 운영 러너는 검증을 통과한 `main` 배포와 관리자가 수동 실행한
+고정된 러너 점검 작업만 실행합니다. Docker 그룹은 호스트 제어 권한이므로
+저장소 관리자와 운영 `main` 변경 권한을 제한해야 합니다.
+[GitHub 보안 안내](https://docs.github.com/en/actions/reference/security/secure-use)를
+참고하세요.
+
+`integration/editor-v1`은 검토용이며 자동 운영 배포를 하지 않습니다.
+처음에는 두 저장소에 운영 `main`을 준비하고 hosted 검증을 통과시킵니다.
+백엔드 배포가 공통 스택을 준비한 뒤 프런트엔드도 동일한 스택을 사용합니다.
+각 배포는 해당 저장소의 검증된 SHA만 변경하며 상대 저장소는 마지막 정상
+배포 버전을 유지합니다. 첫 배포만 상대 `main`의 테스트/빌드 성공을 확인합니다.
+
+서버의 `flock`은 양쪽 러너 배포를 직렬화합니다. 오래된 이벤트는 최신
+`main`과 비교해 건너뜁니다. 이미지는 커밋 SHA로 구분합니다. 기존 워커는
+새 작업을 받지 않고 실행 중 작업을 마친 뒤 종료하므로 대기열을 유지합니다.
+DB 마이그레이션 전에 쓰기를 멈추고 private `pg_dump` 백업을 보관합니다.
+마이그레이션·상태 확인 실패는 자동으로 DB를 덮어쓰지 않고 실패로 표시합니다.
+
+정상 릴리스 이미지 목록은 `/srv/zoj-editor/config/release.env`에 기록합니다.
+장애 복구에서는 해당 파일의 이전 이미지와 백업을 확인하고 수동으로
+복구합니다. DB 스키마의 역호환성을 확인하기 전 이전 이미지를 무작정
+재시작하지 마세요. 정상 배포의 수동 점검 명령:
+
+```sh
+docker compose --env-file /srv/zoj-editor/config/editor.env \
+  --env-file /srv/zoj-editor/config/release.env -f compose.yaml ps
+```
+
 기존 ZOJ 서버에 이 구성을 적용하지 않습니다. 새 Linux VM에 두 저장소를
 아래 디렉터리명으로 배치하고 Docker Compose를 설치합니다.
 

@@ -3,6 +3,7 @@ import logging
 import signal
 import threading
 import time
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from sqlalchemy import delete, select, update
 from .config import get_settings
@@ -11,6 +12,8 @@ from .pipeline import Pipeline
 
 logger = logging.getLogger("editor.worker")
 stop_event = threading.Event()
+drain_event = threading.Event()
+DRAIN_MARKER = Path("/tmp/editor-worker-drained")
 
 
 class Cancelled(RuntimeError):
@@ -89,15 +92,19 @@ def main():
         Base.metadata.create_all(engine)
     for sig in [signal.SIGTERM, signal.SIGINT]:
         signal.signal(sig, lambda *_: stop_event.set())
+    signal.signal(signal.SIGUSR1, lambda *_: drain_event.set())
+    DRAIN_MARKER.unlink(missing_ok=True)
     with ThreadPoolExecutor(max_workers=get_settings().worker_concurrency) as pool:
         futures = set()
         last_maintenance = 0
         while not stop_event.is_set():
             futures = {f for f in futures if not f.done()}
+            if drain_event.is_set() and not futures:
+                DRAIN_MARKER.touch()
             if time.monotonic() - last_maintenance > 30:
                 maintenance()
                 last_maintenance = time.monotonic()
-            if len(futures) < get_settings().worker_concurrency:
+            if not drain_event.is_set() and len(futures) < get_settings().worker_concurrency:
                 row = claim_job()
                 if row:
                     futures.add(pool.submit(process_job, row))

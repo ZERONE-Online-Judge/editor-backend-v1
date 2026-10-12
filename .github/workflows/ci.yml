@@ -1,5 +1,7 @@
 name: Editor Backend CI
 on: [push, pull_request]
+permissions:
+  contents: read
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -21,3 +23,18 @@ jobs:
           docker build -t zoj-editor-renderer:v1 -f runner/Renderer.Dockerfile runner
       - name: Execute real sandbox tests
         run: RUN_SANDBOX_TESTS=1 pytest -q -m sandbox
+  deploy:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, zoj-editor, editor-backend]
+    environment: production
+    timeout-minutes: 90
+    concurrency:
+      group: editor-backend-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Deploy the tested main commit
+        run: bash deploy/deploy-main.sh backend "$GITHUB_SHA"
