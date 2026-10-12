@@ -26,7 +26,7 @@ async def http_error(request, error):
 
 @app.exception_handler(RequestValidationError)
 async def invalid_request(request, error):
-    return JSONResponse({"error": {"code": "invalid_request", "message": "입력 값을 확인해 주세요.", "errors": str(error)}}, status_code=422)
+    return JSONResponse({"error": {"code": "invalid_request", "message": "입력 값을 확인해 주세요."}}, status_code=422)
 
 
 @app.middleware("http")

@@ -73,7 +73,7 @@ def rate_limit(db, key, limit, seconds):
         fail("rate_limited", "잠시 후 다시 시도해 주세요.", 429)
 
 
-def send_code(email, code):
+def send_code(email, code, purpose="login"):
     settings = get_settings()
     if settings.mail_mode == "console":
         directory = settings.data_dir / "development-mail"
@@ -82,6 +82,10 @@ def send_code(email, code):
         with target.open("w") as out:
             json.dump({"email": email, "code": code, "created_at": now()}, out)
         target.chmod(0o600)
+        return
+    if settings.mail_mode == "zoj":
+        from .mail_relay import send
+        send(email, code, purpose)
         return
     mail = EmailMessage()
     mail["Subject"] = "[ZOJ Editor] 로그인 인증번호"

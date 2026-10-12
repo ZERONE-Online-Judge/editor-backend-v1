@@ -33,8 +33,11 @@ class Settings(BaseSettings):
     zoj_public_origin: str = "https://zoj.kr"
     zoj_bridge_secret: SecretStr | None = None
     zoj_ca_file: Path | None = None
+    mail_relay_url: str = ""
+    mail_relay_secret: SecretStr | None = None
+    mail_relay_ca_file: Path | None = None
 
-    @field_validator("zoj_ca_file", mode="before")
+    @field_validator("zoj_ca_file", "mail_relay_ca_file", mode="before")
     @classmethod
     def optional_ca(cls, value):
         return None if value == "" else value
@@ -43,8 +46,16 @@ class Settings(BaseSettings):
     def validate_production(self):
         if self.env not in {"development", "test", "production"}:
             raise ValueError("Unknown EDITOR_ENV")
-        if self.mail_mode not in {"console", "smtp"}:
-            raise ValueError("EDITOR_MAIL_MODE must be console or smtp")
+        if self.mail_mode not in {"console", "smtp", "zoj"}:
+            raise ValueError("EDITOR_MAIL_MODE must be console, smtp or zoj")
+        if self.mail_mode == "zoj":
+            mail_target = urlsplit(self.mail_relay_url)
+            if mail_target.scheme not in {"http", "https"} or not mail_target.hostname or mail_target.username or mail_target.password or mail_target.query or mail_target.fragment or mail_target.path.rstrip("/") != "/api":
+                raise ValueError("Set a fixed EDITOR_MAIL_RELAY_URL ending in /api")
+            if not self.mail_relay_secret or len(self.mail_relay_secret.get_secret_value()) < 32:
+                raise ValueError("Set EDITOR_MAIL_RELAY_SECRET of at least 32 characters")
+            if self.env == "production" and mail_target.scheme != "https":
+                raise ValueError("Production mail transport requires HTTPS")
         if self.zoj_api_url:
             target = urlsplit(self.zoj_api_url)
             if target.scheme not in {"http", "https"} or not target.hostname or target.username or target.password or target.query or target.fragment or target.path.rstrip("/") != "/api":
@@ -59,7 +70,7 @@ class Settings(BaseSettings):
         if self.env == "production":
             if not self.public_origin.startswith("https://"):
                 raise ValueError("Production requires HTTPS")
-            if self.mail_mode != "smtp" or not self.smtp_host:
+            if self.mail_mode == "console" or (self.mail_mode == "smtp" and not self.smtp_host):
                 raise ValueError("Production requires configured SMTP")
             if len(self.session_secret) < 32 or "development-secret" in self.session_secret or "replace-with" in self.session_secret:
                 raise ValueError("Set a random production session secret")

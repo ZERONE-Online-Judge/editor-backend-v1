@@ -60,7 +60,7 @@ with open(path, 'x') as f:
     f.write('EDITOR_DB_PASSWORD=' + secrets.token_hex(32) + '\n')
     f.write('EDITOR_SESSION_SECRET=' + secrets.token_hex(32) + '\n')
     f.write('EDITOR_DOCKER_GID=' + gid + '\n')
-    f.write('EDITOR_SMTP_HOST=\nEDITOR_SMTP_PORT=587\nEDITOR_SMTP_USER=\nEDITOR_SMTP_PASSWORD=\n')
+    f.write('EDITOR_MAIL_MODE=zoj\nEDITOR_MAIL_RELAY_URL=https://zoj.kr/api\nEDITOR_MAIL_RELAY_SECRET=\nEDITOR_MAIL_RELAY_CA_FILE=\n')
     f.write('EDITOR_MAIL_FROM=ZOJ Editor <noreply@editor.zoj.kr>\n')
     f.write('EDITOR_BIND_ADDRESS=127.0.0.1\nEDITOR_INGRESS_CIDR=127.0.0.1/32\nEDITOR_HTTP_PORT=8090\n')
     f.write('EDITOR_STORAGE_ROOT=/srv/zoj-editor\nEDITOR_WORKER_CONCURRENCY=2\n')
@@ -69,4 +69,4 @@ os.chmod(path, 0o600)
 PY
     chown "$install_user:$install_user" "$env_file"
 fi
-echo 'Both repository runners are installed. SMTP and ingress configuration are still required before production deployment.'
+echo 'Both repository runners are installed. ZOJ mail API and ingress configuration are still required before production deployment.'
