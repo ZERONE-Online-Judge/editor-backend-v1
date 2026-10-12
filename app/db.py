@@ -23,6 +23,7 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(254), unique=True)
     handle: Mapped[str] = mapped_column(String(40), unique=True)
     display_name: Mapped[str] = mapped_column(String(80))
+    central_account_id: Mapped[str | None] = mapped_column(String(36),nullable=True,unique=True,index=True)
     created_at: Mapped[int] = mapped_column(default=now)
 
 

@@ -72,6 +72,8 @@ try:
 except Exception:
     raise SystemExit("Editor production environment is invalid. Review the private configuration; values were not logged.")
 '
+# Confirm central signature/TLS/route compatibility before draining live jobs.
+"${compose[@]}" run --rm --no-deps api python -m app.auth_preflight
 worker_id=$("${compose[@]}" ps -q --status running worker)
 if [[ -n "$worker_id" ]]; then
     "${compose[@]}" exec -T worker python -c 'from app.worker import drain_event' >/dev/null

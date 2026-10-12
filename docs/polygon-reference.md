@@ -32,7 +32,7 @@
 
 ## 현재 동작의 차이
 
-- 로그인은 별도 이메일 OTP 계정입니다. Codeforces 계정과 연동하지 않습니다.
+- 로그인은 ZOJ 공통 이메일 인증·비밀번호 계정입니다. Codeforces 계정과 연동하지 않습니다.
 - REST API는 Editor용이며 Polygon의 `apiSig` API와 wire-compatible하지
   않습니다. API 토큰·사용자 그룹·문제 PIN·공개 익명 접근은 구현하지 않았습니다.
 - 패키지는 Linux 환경에서 확인한 **소스와 테스트 패키지**입니다.

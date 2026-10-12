@@ -6,7 +6,9 @@ import smtplib
 import ssl
 from email.message import EmailMessage
 from pathlib import Path
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, Request, Response, HTTPException
+from fastapi.responses import StreamingResponse
+from starlette.concurrency import run_in_threadpool
 from pydantic import EmailStr, Field
 from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
@@ -38,6 +40,9 @@ def check_browser_request(request: Request):
 
 
 def current_user(request: Request, db: Session = Depends(session_dependency)):
+    if get_settings().auth_mode=='zoj':
+        from .shared_auth import current_user as shared_user
+        return shared_user(request,db)
     token = request.cookies.get(COOKIE, "")
     session = db.get(LoginSession, digest(token)) if token else None
     if not session or session.expires_at <= now():
@@ -49,7 +54,7 @@ def current_user(request: Request, db: Session = Depends(session_dependency)):
 
 
 def user_json(user):
-    return {"id": user.id, "email": user.email, "handle": user.handle, "display_name": user.display_name}
+    return {"id": user.id, "account_id":user.central_account_id,"email": user.email, "handle": user.handle, "display_name": user.display_name}
 
 
 def rate_limit(db, key, limit, seconds):
@@ -103,14 +108,26 @@ class RequestCode(Strict):
     email: EmailStr
 
 
+@router.post('/login-options')
+def login_options(values: RequestCode, request: Request):
+    if get_settings().auth_mode == 'zoj':
+        from .shared_auth import call
+        return call(request,'login-options',{'email':str(values.email)})
+    return {'password_available':False}
+
+
 class VerifyCode(RequestCode):
     code: str = Field(pattern=r"^\d{6}$")
     display_name: str = Field(default="", max_length=80)
+    force_new_session: bool = False
 
 
 @router.post("/code")
 def request_code(values: RequestCode, request: Request, db: Session = Depends(session_dependency)):
     check_browser_request(request)
+    if get_settings().auth_mode=='zoj':
+        from .shared_auth import call
+        return call(request,'code-request',values.model_dump(mode='json'))
     email = str(values.email).lower()
     rate_limit(db, "request:" + digest(request.client.host), 30, 3600)
     rate_limit(db, "email:" + digest(email), 10, 3600)
@@ -135,6 +152,9 @@ def request_code(values: RequestCode, request: Request, db: Session = Depends(se
 @router.post("/verify")
 def verify_code(values: VerifyCode, request: Request, response: Response, db: Session = Depends(session_dependency)):
     check_browser_request(request)
+    if get_settings().auth_mode=='zoj':
+        from .shared_auth import call,finish
+        return finish(request,response,db,call(request,'code-verify',{'email':str(values.email),'code':values.code,'force_new_session':values.force_new_session}))
     email = str(values.email).lower()
     rate_limit(db, "verify:" + digest(request.client.host), 60, 3600)
     row = db.scalar(select(LoginCode).where(LoginCode.email == email).with_for_update())
@@ -170,9 +190,26 @@ def me(user: User = Depends(current_user)):
     return user_json(user)
 
 
+@router.get('/session-events')
+async def watch_shared_session(request:Request):
+    from .shared_auth import call,session_events
+    await run_in_threadpool(call,request,'me')
+    return StreamingResponse(session_events(request),media_type='text/event-stream',headers={'Cache-Control':'no-store','X-Accel-Buffering':'no'})
+
+
 @router.post("/logout")
 def logout(request: Request, response: Response, db: Session = Depends(session_dependency)):
     check_browser_request(request)
+    if get_settings().auth_mode=='zoj':
+        from .shared_auth import COOKIE as SSO_COOKIE,call,clear_cookie
+        if request.cookies.get(SSO_COOKIE):
+            try:
+                call(request,'logout')
+            except HTTPException as error:
+                if error.status_code!=401:
+                    raise
+        clear_cookie(response)
+        return {'ok':True}
     if request.cookies.get(COOKIE):
         db.execute(delete(LoginSession).where(LoginSession.digest == digest(request.cookies[COOKIE])))
         db.commit()
@@ -186,9 +223,12 @@ class Profile(Strict):
 
 
 @router.patch("/profile")
-def update_profile(values: Profile, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
+def update_profile(values: Profile,request: Request,user: User = Depends(current_user), db: Session = Depends(session_dependency)):
     if db.scalar(select(User).where(User.handle == values.handle, User.id != user.id)):
         fail("handle_taken", "이미 사용 중인 아이디입니다.")
+    if get_settings().auth_mode=='zoj':
+        from .shared_auth import call
+        call(request,'profile',{'display_name':values.display_name})
     row = db.get(User, user.id)
     row.display_name, row.handle = values.display_name.strip(), values.handle
     db.commit()

@@ -5,6 +5,8 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      EDITOR_AUTH_MODE: local
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

@@ -27,11 +27,13 @@ Docker·Compose·전용 `editor-runner` 계정과 서비스를 설치합니다. 
 각 배포는 해당 저장소의 검증된 SHA만 변경하며 상대 저장소는 마지막 정상
 배포 버전을 유지합니다. 첫 배포만 상대 `main`의 테스트/빌드 성공을 확인합니다.
 
-이메일 로그인은 `EDITOR_MAIL_MODE=zoj`로 ZOJ 메일 API를 사용합니다.
-`EDITOR_MAIL_RELAY_URL`과 별도 `EDITOR_MAIL_RELAY_SECRET`을 양쪽 서버에
-설정하세요. SMTP 비밀번호를 Editor 서버에 복사하지 않습니다. 인증 메일
-큐를 처리하는 ZOJ 메일 작업자가 실행 중이어야 합니다. 직접 SMTP 방식은
-선택적으로 지원하지만 기본 운영 구성에는 사용하지 않습니다.
+로그인과 인증 메일은 ZOJ 공통 인증 API를 사용합니다.
+`EDITOR_AUTH_API_URL`과 별도 `EDITOR_AUTH_BRIDGE_SECRET`을 양쪽 서버에
+설정하세요. 내부 HTTPS 연결은 `EDITOR_AUTH_CA_FILE`로 공개 CA 인증서를
+검증합니다. SMTP 비밀번호를 Editor에 복사하지 않습니다. ZOJ 메일 작업자는
+기존 설정을 유지합니다. [공통 로그인](../docs/shared-login.md)을 확인하세요.
+배포는 중앙 인증 API의 서명·TLS·호환성을 먼저 확인하고, 성공한 뒤에만
+기존 API·워커를 멈춥니다. ZOJ 인증 API를 먼저 배포해야 합니다.
 
 서버의 `flock`은 양쪽 러너 배포를 직렬화합니다. 오래된 이벤트는 최신
 `main`과 비교해 건너뜁니다. 이미지는 커밋 SHA로 구분합니다. 기존 워커는
@@ -70,7 +72,7 @@ stat -c '%g' /var/run/docker.sock
 
 출력한 무작위 값을 `EDITOR_SESSION_SECRET`에, Docker 소켓 그룹 번호를
 `EDITOR_DOCKER_GID`에 넣습니다. DB 비밀번호는 무작위 영문·숫자로
-지정합니다. ZOJ 메일 API 주소와 전용 릴레이 키를 입력합니다.
+지정합니다. ZOJ 공통 인증 API 주소와 전용 인증 연결 키를 입력합니다.
 키와 비밀번호는 Git에 넣지 않습니다.
 
 별도 리버스 프록시를 사용할 경우 `EDITOR_BIND_ADDRESS`는 새 VM의 사설

@@ -36,8 +36,13 @@ class Settings(BaseSettings):
     mail_relay_url: str = ""
     mail_relay_secret: SecretStr | None = None
     mail_relay_ca_file: Path | None = None
+    auth_mode: str = "zoj"
+    auth_api_url: str = ""
+    auth_bridge_secret: SecretStr | None = None
+    auth_ca_file: Path | None = None
+    sso_cookie_domain: str | None = None
 
-    @field_validator("zoj_ca_file", "mail_relay_ca_file", mode="before")
+    @field_validator("zoj_ca_file", "mail_relay_ca_file", "auth_ca_file", mode="before")
     @classmethod
     def optional_ca(cls, value):
         return None if value == "" else value
@@ -48,7 +53,17 @@ class Settings(BaseSettings):
             raise ValueError("Unknown EDITOR_ENV")
         if self.mail_mode not in {"console", "smtp", "zoj"}:
             raise ValueError("EDITOR_MAIL_MODE must be console, smtp or zoj")
-        if self.mail_mode == "zoj":
+        if self.auth_mode not in {"local","zoj"}:
+            raise ValueError("EDITOR_AUTH_MODE must be local or zoj")
+        if self.auth_mode == "zoj":
+            target = urlsplit(self.auth_api_url)
+            if target.scheme not in {"http","https"} or not target.hostname or target.username or target.password or target.query or target.fragment or target.path.rstrip('/') != '/api':
+                raise ValueError("Set a fixed EDITOR_AUTH_API_URL ending in /api")
+            if not self.auth_bridge_secret or len(self.auth_bridge_secret.get_secret_value()) < 32:
+                raise ValueError("Set a separate EDITOR_AUTH_BRIDGE_SECRET of at least 32 characters")
+            if self.env == "production" and target.scheme != "https":
+                raise ValueError("Production shared authentication requires HTTPS")
+        if self.mail_mode == "zoj" and self.auth_mode != "zoj":
             mail_target = urlsplit(self.mail_relay_url)
             if mail_target.scheme not in {"http", "https"} or not mail_target.hostname or mail_target.username or mail_target.password or mail_target.query or mail_target.fragment or mail_target.path.rstrip("/") != "/api":
                 raise ValueError("Set a fixed EDITOR_MAIL_RELAY_URL ending in /api")
@@ -70,8 +85,8 @@ class Settings(BaseSettings):
         if self.env == "production":
             if not self.public_origin.startswith("https://"):
                 raise ValueError("Production requires HTTPS")
-            if self.mail_mode == "console" or (self.mail_mode == "smtp" and not self.smtp_host):
-                raise ValueError("Production requires configured SMTP")
+            if self.auth_mode != "zoj":
+                raise ValueError("Production Editor requires shared ZOJ authentication")
             if len(self.session_secret) < 32 or "development-secret" in self.session_secret or "replace-with" in self.session_secret:
                 raise ValueError("Set a random production session secret")
             if not self.database_url.startswith("postgresql"):

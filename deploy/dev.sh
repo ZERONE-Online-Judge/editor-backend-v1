@@ -2,6 +2,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export EDITOR_ENV=development EDITOR_MAIL_MODE=console
+# Standalone fixtures only. Shared-login development runs both services.
+export EDITOR_AUTH_MODE=local
 export EDITOR_DATABASE_URL=sqlite:///./data/preview/editor.db
 export EDITOR_DATA_DIR=./data/preview EDITOR_WORK_DIR=./data/preview/work
 export EDITOR_PUBLIC_ORIGIN=http://127.0.0.1:5190

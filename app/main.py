@@ -47,6 +47,8 @@ def health():
 
 
 app.include_router(auth.router)
+from . import password_auth
+app.include_router(password_auth.router)
 app.include_router(folders.router)
 app.include_router(problems.router)
 app.include_router(collaboration.router)

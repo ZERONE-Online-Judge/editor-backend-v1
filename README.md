@@ -1,13 +1,13 @@
 # ZOJ Editor Backend
 
 `editor.zoj.kr`의 독립 문제 제작 API와 검증 워커입니다.
-계정·DB·채점 노드·배포는 기존 ZOJ와 별도로 운영합니다.
+문제 DB·검증 워커·배포는 별도로 운영하며, 계정·비밀번호·로그인은 ZOJ와 공유합니다.
 선택적으로 같은 이메일의 ZOJ 운영자 권한으로 문제를 전송할 수 있습니다.
 프런트엔드 저장소: https://github.com/ZERONE-Online-Judge/editor-frontend-v1
 
 ## 구현한 작업 흐름
 
-1. 이메일 인증번호로 독립 계정에 로그인합니다.
+1. ZOJ 공통 계정의 이메일 인증번호 또는 등록한 비밀번호로 로그인합니다.
    내 폴더·하위 폴더에 문제를 정리하고 여러 문제를 한 번에 옮깁니다.
 2. 문제 생성 후 개인 작업 사본에서 지문·파일·풀이·테스트를 편집합니다.
 3. 생성기로 입력을 만들고 validator, Main 풀이, checker를 실행합니다.
@@ -47,7 +47,8 @@ http://127.0.0.1:5190 에서 확인합니다. 개발 스크립트는 별도
 `data/preview` DB를 사용하고 명시적으로 로컬 메일 모드로 실행합니다.
 `editor@example.com`에 보낸 인증번호는
 `data/preview/development-mail/*.json`에 저장됩니다. 외부로 메일을 보내지
-않습니다. 다른 이메일로 로그인하면 새로운 독립 계정이 만들어집니다.
+않습니다. 이 독립 실행은 로컬 테스트 계정만 사용합니다. 공통 로그인 개발은
+ZOJ API를 함께 실행하고 `EDITOR_AUTH_MODE=zoj`와 인증 연결을 설정합니다.
 Ctrl+C로 개발 프로세스를 종료합니다. 운영에서는 이 예제와 메일 모드를
 사용할 수 없습니다.
 
@@ -59,8 +60,10 @@ PostgreSQL 17, API, 별도 워커, 프런트엔드를 새 서버에 올립니다
 API에 Docker 소켓을 연결하지 않습니다.
 
 OpenAPI: `/docs`. 브라우저 변경 요청은 `X-Editor-Request: 1` 헤더가 필요합니다.
-인증은 HttpOnly 세션 쿠키입니다. 운영은 HTTPS·PostgreSQL·실제 SMTP·무작위
-세션 비밀키가 없으면 시작하지 않습니다.
+인증은 `.zoj.kr`의 HttpOnly 공통 세션 쿠키입니다. 운영은 HTTPS·PostgreSQL과
+ZOJ 공통 인증 API 연결이 필요합니다. 비밀번호와 인증 메일은 ZOJ가 처리하며,
+Editor에는 비밀번호나 SMTP 자격 증명을 저장하지 않습니다.
+자세한 동작은 [공통 로그인](docs/shared-login.md)을 확인하세요.
 
 ## 검증
 
@@ -72,14 +75,14 @@ EDITOR_DATABASE_URL=sqlite:////tmp/editor-schema.db .venv/bin/alembic check
 ```
 
 실제 Docker 실행 테스트는 위 두 런타임 이미지를 빌드해야 통과합니다.
-SMTP 발송은 개발 테스트에서 외부로 전송하지 않습니다. 운영 SMTP는 서버
-환경변수를 넣은 뒤 실제 수신 메일로 별도 확인해야 합니다.
+메일 발송은 개발 테스트에서 외부로 전송하지 않습니다. 운영 인증 메일은
+기존 ZOJ 메일 큐와 발송 작업자가 처리합니다.
 
 ## 브랜치와 커밋
 
 기능별 브랜치를 다음 순서로 쌓습니다. 각 브랜치는 앞 브랜치에 의존합니다.
 `integration/editor-v1`은 전체 구현을 포함하는 검토용 브랜치입니다.
-원격 main 반영이나 운영 배포를 실행하는 CI는 없습니다.
+기능 브랜치는 hosted CI로 검증하며, `main`만 전용 러너에서 배포합니다.
 
 - `feature/platform-foundation`: 독립 설정·데이터 모델·마이그레이션
 - `feature/email-auth`: 인증번호 로그인·세션·프로필
@@ -102,3 +105,7 @@ Codeforces의 비공개 소스나 서비스 계정을 가져오지 않습니다.
 
 - `feature/project-folders`: 개인 폴더·하위 폴더·일괄 이동
 - `feature/zoj-publishing`: ZOJ 형식 패키지·권한 확인·문제 전송
+
+- `feature/zoj-library`: ZOJ에서 본인 문제 가져오기
+- `feature/self-hosted-deployment`: 전용 러너와 검증 후 순차 배포
+- `feature/shared-login`: 공통 계정·비밀번호·로그인 세션
