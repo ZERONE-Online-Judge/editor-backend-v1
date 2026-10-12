@@ -35,20 +35,32 @@ if [[ -f "$root/config/release.env" ]]; then
     other_sha=$(sed -n "s/^${image_key}=zoj-editor-[^:]*://p" "$root/config/release.env")
     [[ $other_sha =~ ^[a-f0-9]{40}$ ]] || exit 1
 else
-    # First release: the companion's hosted validation job must have passed.
+    # First release: wait for the exact companion main commit's hosted job.
+    # Hosted validation does not use this server lock, so both repositories
+    # can start their first main workflows without racing each other.
     python3 - "$other" "$other_sha" <<'PY'
-import json, sys, urllib.request
+import json, sys, time, urllib.request
 component, sha = sys.argv[1:]
 base = 'https://api.github.com/repos/ZERONE-Online-Judge/editor-' + component + '-v1'
 def get(path):
     request = urllib.request.Request(base + path, headers={'User-Agent':'ZOJ-Editor-Deploy', 'Accept':'application/vnd.github+json'})
     with urllib.request.urlopen(request, timeout=30) as response:
         return json.load(response)
-runs = get('/actions/workflows/ci.yml/runs?head_sha=' + sha + '&event=push&per_page=10')['workflow_runs']
 required = 'test' if component == 'backend' else 'build'
-assert any(any(job['name'] == required and job['conclusion'] == 'success'
-               for job in get('/actions/runs/' + str(run['id']) + '/jobs')['jobs'])
-           for run in runs if run['head_branch'] == 'main'), 'Companion main validation has not passed yet; rerun deployment after its CI passes.'
+deadline = time.monotonic() + 900
+while True:
+    runs = get('/actions/workflows/ci.yml/runs?head_sha=' + sha + '&event=push&per_page=10')['workflow_runs']
+    jobs = [job for run in runs if run['head_branch'] == 'main' and run['head_sha'] == sha
+            for job in get('/actions/runs/' + str(run['id']) + '/jobs')['jobs']
+            if job['name'] == required]
+    if any(job['conclusion'] == 'success' for job in jobs):
+        break
+    if jobs and all(job['status'] == 'completed' for job in jobs):
+        raise SystemExit('Companion main validation failed; deployment stopped before changing the service.')
+    if time.monotonic() >= deadline:
+        raise SystemExit('Companion main validation is still pending; rerun deployment after its CI passes.')
+    print('Waiting for companion main validation: ' + component, flush=True)
+    time.sleep(60)
 PY
 fi
 git -C "$target_repo" checkout --detach "$event_sha"
