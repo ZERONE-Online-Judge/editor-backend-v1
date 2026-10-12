@@ -76,6 +76,17 @@ services:
     depends_on:
       api:
         condition: service_healthy
+  internal-gateway:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - 10.10.10.118:9443:443
+    volumes:
+      - ./internal-tls.conf:/etc/nginx/conf.d/default.conf:ro
+      - ${EDITOR_STORAGE_ROOT:-/srv/zoj-editor}/tls:/tls:ro
+    depends_on:
+      api:
+        condition: service_healthy
   runtime:
     image: ${EDITOR_RUNNER_IMAGE:-zoj-editor-runtime:v1}
     build:

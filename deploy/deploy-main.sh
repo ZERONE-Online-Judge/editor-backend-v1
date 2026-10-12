@@ -91,7 +91,7 @@ backup="$root/backups/$(date -u +%Y%m%dT%H%M%SZ)-${backend_sha:0:12}.dump"
 # The old images remain available. A migration/health failure is explicit;
 # never automatically overwrite or restore a live database.
 "${compose[@]}" run --rm --no-deps api alembic upgrade head
-"${compose[@]}" up -d --wait --wait-timeout 180 api worker frontend
+"${compose[@]}" up -d --wait --wait-timeout 180 api worker frontend internal-gateway
 "${compose[@]}" exec -T api python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health',timeout=5)"
 release=$(mktemp "$root/config/release.env.XXXXXX")
 printf 'EDITOR_API_IMAGE=%s\nEDITOR_FRONTEND_IMAGE=%s\nEDITOR_RUNNER_IMAGE=%s\nEDITOR_RENDER_IMAGE=%s\nEDITOR_RUNTIME_REVISION=%s\n' \
