@@ -47,6 +47,16 @@ class Sandbox:
         self.root = Path(tempfile.mkdtemp(prefix="editor-", dir=self.settings.work_dir)).resolve()
         self.check_cancelled = check_cancelled
         self.programs = {}
+        self.images = {}
+
+    def resolve_image(self, label):
+        if label not in self.images:
+            inspected = subprocess.run(["docker", "image", "inspect", label, "--format", "{{.Id}}"], capture_output=True, text=True, timeout=10)
+            identifier = inspected.stdout.strip()
+            if inspected.returncode or not re.fullmatch(r"sha256:[a-f0-9]{64}", identifier):
+                raise SandboxError("격리 실행 이미지를 먼저 빌드하세요: " + label)
+            self.images[label] = identifier
+        return self.images[label]
 
     def close(self):
         shutil.rmtree(self.root, ignore_errors=True)
@@ -83,7 +93,7 @@ class Sandbox:
                 "--cap-add=SETUID", "--cap-add=SETGID", "--cap-add=CHOWN", "--cap-add=KILL", "--cap-add=DAC_OVERRIDE", "--security-opt=no-new-privileges",
                 "--pids-limit=128", "--cpus=1", f"--memory={memory_mb + 256}m", f"--memory-swap={memory_mb + 256}m",
                 "--ulimit", "nofile=256:256", "--ulimit", "core=0:0", "--tmpfs", "/tmp:rw,nosuid,nodev,size=128m,mode=1777",
-                "--volume", "/work", "--workdir=/work", image or self.settings.runner_image]
+                "--volume", "/work", "--workdir=/work", self.resolve_image(image or self.settings.runner_image)]
         try:
             completed = subprocess.run(argv, input=payload, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=config["wall_seconds"] + 15, check=False)
             try:

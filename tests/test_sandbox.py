@@ -98,9 +98,27 @@ def test_interactive_private_input_and_duplex_output(problem):
 def test_short_cpp_does_not_inherit_python_launcher_memory(problem):
     sandbox=Sandbox()
     try:
-        program=sandbox.compile(source(problem,'tiny.cpp','#include <cstdio>\nint main(){puts("42");}','cpp17'),[])
+        program=sandbox.compile(source(problem,'tiny.cpp','#include <cstdio>\nint main(){puts("42");fputs("MemoryError recovered\\n",stderr);}','cpp17'),[])
         result=sandbox.run(program,memory_mb=4)
         assert result['status']=='ok',result
         assert result['output']==b'42\n'
         assert 0 < result['memory_kb'] < 4096,result
     finally:sandbox.close()
+
+
+def test_runtime_image_stays_pinned_after_tag_changes(problem):
+    import subprocess
+    from app.db import uid
+    sandbox=Sandbox()
+    label='zoj-editor-pin-test:'+uid()
+    try:
+        subprocess.run(['docker','tag',sandbox.settings.runner_image,label],check=True)
+        original=sandbox.resolve_image(label)
+        subprocess.run(['docker','tag',sandbox.settings.render_image,label],check=True)
+        assert sandbox.resolve_image(label)==original
+        folder=sandbox.new_folder()
+        result=sandbox.execute(folder,['g++','--version'],image=label)
+        assert result['exit_code']==0 and result['output'].startswith(b'g++'),result
+    finally:
+        sandbox.close()
+        subprocess.run(['docker','image','rm',label],check=True,capture_output=True)

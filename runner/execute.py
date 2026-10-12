@@ -167,7 +167,7 @@ if not config.get("interactive") and config.get("output_file", "stdout") != "std
     else:
         (root / ".output").write_bytes(b"")
 result["stderr"] = (root / ".stderr").read_bytes()[:32768].decode("utf-8", "replace")
-if result["status"] == "ok" and any(token in result["stderr"] for token in ["MemoryError", "OutOfMemoryError", "std::bad_alloc"]):
+if result["status"] == "ok" and result["exit_code"] != 0 and any(token in result["stderr"] for token in ["MemoryError", "OutOfMemoryError", "std::bad_alloc"]):
     result["status"] = "memory-limit"
 def encoded(path, limit):
     if not path.is_file() or path.is_symlink():

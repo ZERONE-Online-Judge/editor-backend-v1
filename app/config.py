@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     render_image: str = "zoj-editor-renderer:v1"
     worker_concurrency: int = 2
     job_timeout_seconds: int = 1800
-    runtime_revision: str = "editor-runtime-0.1.1"
+    runtime_revision: str = "editor-runtime-0.1.2"
     max_project_bytes: int = 8 * 1024 * 1024 * 1024
     max_uncompressed_archive_bytes: int = 16 * 1024 * 1024 * 1024
     max_upload_bytes: int = 16 * 1024 * 1024

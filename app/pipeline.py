@@ -4,7 +4,6 @@ import shlex
 import math
 import re
 import time
-import subprocess
 from pathlib import Path
 from .db import SessionLocal
 from .domain import parse_script
@@ -23,8 +22,8 @@ class Pipeline:
         self.programs = {}
         self.counter = 0
         self.last_publish = 0
-        inspected = subprocess.run(["docker", "image", "inspect", self.sandbox.settings.runner_image, "--format", "{{.Id}}"], capture_output=True, text=True, timeout=10)
-        self.result["runtime"] = {"image": self.sandbox.settings.runner_image, "image_id": inspected.stdout.strip(), "cpu_measurement": "native-command-and-descendants"}
+        self.result["runtime"] = {"image": self.sandbox.settings.runner_image, "image_id": self.sandbox.resolve_image(self.sandbox.settings.runner_image), "cpu_measurement": "native-command-and-descendants"}
+
 
     def event(self, label, **extra):
         self.result["events"].append({"label": label, **extra})

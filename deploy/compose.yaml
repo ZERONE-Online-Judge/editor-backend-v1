@@ -14,7 +14,7 @@ x-environment: &environment
   EDITOR_WORK_DIR: /tmp/editor-work
   EDITOR_RUNNER_IMAGE: zoj-editor-runtime:v1
   EDITOR_RENDER_IMAGE: zoj-editor-renderer:v1
-  EDITOR_RUNTIME_REVISION: ${EDITOR_RUNTIME_REVISION:-editor-runtime-0.1.1}
+  EDITOR_RUNTIME_REVISION: ${EDITOR_RUNTIME_REVISION:-editor-runtime-0.1.2}
   EDITOR_WORKER_CONCURRENCY: ${EDITOR_WORKER_CONCURRENCY:-2}
 services:
   db:
