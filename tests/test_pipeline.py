@@ -65,3 +65,24 @@ def test_korean_math_pdf_is_rendered_offline(owner,problem):
     assert pdf.status_code==200 and pdf.content.startswith(b'%PDF-')
     html=owner.get(f'/api/problems/{problem}/rendered/{created["id"]}/korean.html')
     assert html.status_code==200 and b'data:font/' in html.content
+
+
+def test_real_verified_zoj_zip_can_restore_editor_project(owner,problem):
+    prepare_problem(problem)
+    state=owner.get(f'/api/problems/{problem}').json()
+    created=owner.post(f'/api/problems/{problem}/jobs',json={'kind':'package','version':state['version'],'options':{'export_format':'zoj','statement_language':'korean'}})
+    assert created.status_code==202,created.text
+    process_job(claim_job())
+    job=owner.get(f'/api/problems/{problem}/jobs/{created.json()["id"]}').json()
+    assert job['status']=='completed',job
+    assert job['result']['verified'] and job['result']['package']['format']=='zoj'
+    archive=owner.get(f'/api/problems/{problem}/packages/{job["id"]}')
+    result=owner.post('/api/imports?name=Restored&slug=zoj-restored',content=archive.content)
+    assert result.status_code==201,result.text
+    doc=owner.get('/api/problems/'+result.json()['id']).json()['document']
+    assert doc['files']==state['document']['files'] and doc['solutions']==state['document']['solutions']
+    # Optional artifact allows the independently versioned ZOJ receiver to check
+    # its real parser without importing its Python package into this service.
+    if os.environ.get('ZOJ_COMPAT_ARTIFACT'):
+        from pathlib import Path
+        Path(os.environ['ZOJ_COMPAT_ARTIFACT']).write_bytes(archive.content)

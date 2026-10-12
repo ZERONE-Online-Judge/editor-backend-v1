@@ -165,6 +165,19 @@ class Collection(Base):
     created_at: Mapped[int] = mapped_column(default=now)
 
 
+class Publication(Base):
+    __tablename__ = "zoj_publications"
+    operation_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    problem_id: Mapped[str] = mapped_column(ForeignKey("problems.id"), index=True)
+    job_id: Mapped[str] = mapped_column(ForeignKey("jobs.id"))
+    contest_id: Mapped[str] = mapped_column(String(36))
+    division_id: Mapped[str] = mapped_column(String(36))
+    problem_code: Mapped[str] = mapped_column(String(16))
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[int] = mapped_column(default=now)
+
+
 settings = get_settings()
 settings.data_dir.mkdir(parents=True, exist_ok=True)
 engine = create_engine(settings.database_url, connect_args={"check_same_thread": False, "timeout": 15} if settings.database_url.startswith("sqlite") else {}, pool_pre_ping=True)

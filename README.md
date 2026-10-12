@@ -1,17 +1,23 @@
 # ZOJ Editor Backend
 
 `editor.zoj.kr`의 독립 문제 제작 API와 검증 워커입니다.
-기존 ZOJ의 계정·DB·채점 노드·배포와 연결하지 않습니다.
+계정·DB·채점 노드·배포는 기존 ZOJ와 별도로 운영합니다.
+선택적으로 같은 이메일의 ZOJ 운영자 권한으로 문제를 전송할 수 있습니다.
 프런트엔드 저장소: https://github.com/ZERONE-Online-Judge/editor-frontend-v1
 
 ## 구현한 작업 흐름
 
 1. 이메일 인증번호로 독립 계정에 로그인합니다.
+   내 폴더·하위 폴더에 문제를 정리하고 여러 문제를 한 번에 옮깁니다.
 2. 문제 생성 후 개인 작업 사본에서 지문·파일·풀이·테스트를 편집합니다.
 3. 생성기로 입력을 만들고 validator, Main 풀이, checker를 실행합니다.
 4. 풀이의 실제 판정과 MA/OK/WA/TL/ML 등 기대 판정을 비교합니다.
 5. 동료와 이슈·권한·리비전을 공유하고, 충돌을 명시적으로 해결합니다.
-6. 커밋한 문제를 검증하여 ZIP으로 내보냅니다. ZIP을 다시 등록할 수 있습니다.
+6. 커밋한 문제를 검증하여 Editor 또는 ZOJ ZIP으로 내보냅니다.
+   Editor에서 내보낸 두 형식 모두 작업 자료를 복원할 수 있습니다.
+7. ZOJ 문제 등록 권한이 있는 대회·참가 유형을 선택해 새 문제로 전송합니다.
+
+설정·지원 범위는 [ZOJ 전송 안내](docs/zoj-publishing.md)를 확인하세요.
 
 다국어 LaTeX/KaTeX 지문, 한글 PDF, 표준/사용자 checker, validator 자체
 테스트, 추가 validator, interactor, grader 리소스, 테스트 세트·그룹·부분
@@ -93,3 +99,6 @@ Codeforces의 비공개 소스나 서비스 계정을 가져오지 않습니다.
 `testlib.h`와 표준 checker는 upstream 원본과 MIT 라이선스를 포함합니다.
 이 문제 제작 서비스의 시간·메모리 수치는 기존 ZOJ 운영 채점 VM에서
 측정한 값이 아닙니다. 최종 제한은 배포 대상 채점 환경에서 재검증하세요.
+
+- `feature/project-folders`: 개인 폴더·하위 폴더·일괄 이동
+- `feature/zoj-publishing`: ZOJ 형식 패키지·권한 확인·문제 전송

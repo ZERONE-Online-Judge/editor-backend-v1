@@ -24,6 +24,8 @@ class JobOptions(Strict):
     iterations: int = Field(default=50, ge=1, le=1000)
     verify: bool = True
     package_type: Literal["linux", "sources"] = "linux"
+    export_format: Literal["editor", "zoj"] = "editor"
+    statement_language: str = Field(default="korean", min_length=1, max_length=100)
 
 
 class JobRequest(Strict):
@@ -50,11 +52,14 @@ def create_job(problem_id: str, values: JobRequest, user: User = Depends(current
     doc = copy.deepcopy(problem.document if values.kind == "package" else wc.document)
     if values.kind == "package" and wc.document != problem.document:
         fail("commit_required", "패키지를 만들기 전에 변경사항을 커밋하세요.", 409)
+    options = values.options.model_dump()
+    if values.kind == "package" and options["export_format"] == "zoj":
+        from .zoj_package import check_compatibility
+        check_compatibility(doc, options)
     if values.kind in {"package", "verify"}:
         blockers = [c for c in cautions(doc) if c["blocking"]]
         if blockers:
             fail("not_ready", "필수 자료를 먼저 준비하세요.", cautions=blockers)
-    options = values.options.model_dump()
     options["runtime_revision"] = get_settings().runtime_revision
     if options["testset"] not in doc["testsets"]:
         fail("invalid_testset", "테스트 세트를 찾을 수 없습니다.")

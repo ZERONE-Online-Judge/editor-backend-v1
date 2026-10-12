@@ -1,6 +1,7 @@
 from pathlib import Path
 from functools import lru_cache
-from pydantic import model_validator
+from pydantic import SecretStr, field_validator, model_validator
+from urllib.parse import urlsplit
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -28,6 +29,15 @@ class Settings(BaseSettings):
     max_uncompressed_archive_bytes: int = 16 * 1024 * 1024 * 1024
     max_upload_bytes: int = 16 * 1024 * 1024
     max_archive_bytes: int = 128 * 1024 * 1024
+    zoj_api_url: str = ""
+    zoj_public_origin: str = "https://zoj.kr"
+    zoj_bridge_secret: SecretStr | None = None
+    zoj_ca_file: Path | None = None
+
+    @field_validator("zoj_ca_file", mode="before")
+    @classmethod
+    def optional_ca(cls, value):
+        return None if value == "" else value
 
     @model_validator(mode="after")
     def validate_production(self):
@@ -35,6 +45,17 @@ class Settings(BaseSettings):
             raise ValueError("Unknown EDITOR_ENV")
         if self.mail_mode not in {"console", "smtp"}:
             raise ValueError("EDITOR_MAIL_MODE must be console or smtp")
+        if self.zoj_api_url:
+            target = urlsplit(self.zoj_api_url)
+            if target.scheme not in {"http", "https"} or not target.hostname or target.username or target.password or target.query or target.fragment or target.path.rstrip("/") != "/api":
+                raise ValueError("EDITOR_ZOJ_API_URL must be a fixed HTTP(S) URL ending in /api")
+            if self.env == "production" and target.scheme != "https":
+                raise ValueError("Production ZOJ transport requires HTTPS")
+            if not self.zoj_bridge_secret or len(self.zoj_bridge_secret.get_secret_value()) < 32:
+                raise ValueError("Set a separate ZOJ bridge secret of at least 32 characters")
+        origin = urlsplit(self.zoj_public_origin)
+        if origin.scheme not in {"http", "https"} or not origin.hostname or origin.username or origin.password or origin.path not in {"", "/"} or origin.query or origin.fragment:
+            raise ValueError("EDITOR_ZOJ_PUBLIC_ORIGIN must be an HTTP(S) origin")
         if self.env == "production":
             if not self.public_origin.startswith("https://"):
                 raise ValueError("Production requires HTTPS")

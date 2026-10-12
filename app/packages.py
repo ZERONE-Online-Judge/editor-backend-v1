@@ -101,6 +101,9 @@ def descriptor(job, testsets):
 
 
 def build_package(job, testsets):
+    if job.options.get("export_format") == "zoj":
+        from .zoj_package import build_zoj_package
+        return build_zoj_package(job, testsets)
     doc = copy.deepcopy(job.document)
     for name, tests in testsets.items():
         doc["testsets"][name]["tests"] = {str(t["index"]): {key: value for key, value in t.items() if key in {"index", "input_sha", "answer_sha", "command", "group", "points", "description", "sample"}} for t in tests}
@@ -154,7 +157,7 @@ def build_package(job, testsets):
                 if path.is_file():
                     archive.write(path, "assets/katex/" + str(path.relative_to(katex)))
         archive.writestr("README.txt", "ZOJ Editor problem package\nSources and generated tests; no compiled binaries.\nCompile source files with their declared language.\nAll platform testlib sources retain the upstream MIT license.\n")
-    return {"filename": job.problem_id[:8] + f"-r{job.revision}.zip", "size": destination.stat().st_size, "verified": bool(job.options["verify"]), "sha256": hashlib.sha256(destination.read_bytes()).hexdigest()}
+    return {"filename": job.problem_id[:8] + f"-r{job.revision}.zip", "format": "editor", "size": destination.stat().st_size, "verified": bool(job.options["verify"]), "sha256": hashlib.sha256(destination.read_bytes()).hexdigest()}
 
 
 def checked_archive(content):
@@ -350,6 +353,9 @@ async def import_package(request: Request, name: str, slug: str, folder_id: str 
                 stored = put_blob(db, problem.id, archive.read(prefix + "blobs/" + sha))
                 if stored["sha256"] != sha:
                     raise ValueError("Blob checksum mismatch")
+        elif "manifest.json" in archive.namelist():
+            from .zoj_package import restore_editor_snapshot
+            doc = restore_editor_snapshot(archive, db, problem.id)
         else:
             doc = polygon_document(archive, db, problem.id, values.name)
         problem.document = validate_document(db, problem.id, doc)
