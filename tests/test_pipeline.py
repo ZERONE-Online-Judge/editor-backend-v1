@@ -1,10 +1,13 @@
 import os
+import copy
+import time
 import pytest
 from app.db import Job, Problem, Revision, SessionLocal
 from app.demo import populate
 from app.pipeline import Pipeline
 from app.packages import build_package
 from app.worker import claim_job, process_job
+from app.storage import put_blob
 
 pytestmark = [pytest.mark.sandbox, pytest.mark.skipif(os.environ.get("RUN_SANDBOX_TESTS") != "1", reason="Real Editor runtime images required")]
 
@@ -117,3 +120,46 @@ def test_real_generation_auto_apply_and_role_package_roundtrip(owner, problem):
     assert doc['files']['validator.cpp']['roles'] == ['validator']
     assert doc['files']['gen.cpp']['roles'] == ['generator']
     assert doc['solutions']['main.cpp']['tag'] == 'MA'
+
+
+def test_real_stress_shares_inputs_and_collects_multiple_solution_failures(owner, problem):
+    prepare_problem(problem)
+    state = owner.get(f"/api/problems/{problem}").json()
+    duplicate = copy.deepcopy(state["document"]["solutions"]["wrong.py"])
+    duplicate["name"] = "wrong2.py"
+    state["document"]["solutions"]["wrong2.py"] = duplicate
+    saved = owner.put(f"/api/problems/{problem}/working-copy", json={"version": state["version"], "document": state["document"]})
+    requested = owner.post(f"/api/problems/{problem}/jobs", json={"kind": "stress", "version": saved.json()["version"], "options": {
+        "generator": "gen {seed}", "reference": "main.cpp", "candidates": ["wrong.py", "wrong2.py"],
+        "iterations": 3, "stop_on_first": False, "counterexample_limit": 5,
+    }})
+    assert requested.status_code == 202, requested.text
+    process_job(claim_job())
+    job = owner.get(f"/api/problems/{problem}/jobs/{requested.json()['id']}").json()
+    assert job["status"] == "completed", job
+    assert len(job["result"]["counterexamples"]) > 1
+    assert all([finding["verdict"] for finding in ce["findings"]] == ["WA", "WA"] for ce in job["result"]["counterexamples"])
+    assert all(row["tested"] == 3 for row in job["result"]["candidate_summaries"])
+
+
+def test_real_stress_duration_stops_an_active_program(owner, problem):
+    prepare_problem(problem)
+    state = owner.get(f"/api/problems/{problem}").json()
+    with SessionLocal() as db:
+        blob = put_blob(db, problem, b"while True: pass\n")
+        db.commit()
+    state["document"]["solutions"]["slow.py"] = {"name": "slow.py", "kind": "source", "language": "python3", "tag": "TL", "extra_tags": {}, **blob}
+    state["document"]["info"]["time_limit_ms"] = 15000
+    saved = owner.put(f"/api/problems/{problem}/working-copy", json={"version": state["version"], "document": state["document"]})
+    requested = owner.post(f"/api/problems/{problem}/jobs", json={"kind": "stress", "version": saved.json()["version"], "options": {
+        "generator": "gen {seed}", "reference": "main.cpp", "candidate": "slow.py", "iterations": 1000,
+        "duration_seconds": 2, "stop_on_first": False, "counterexample_limit": 5,
+    }})
+    assert requested.status_code == 202, requested.text
+    started = time.monotonic()
+    process_job(claim_job())
+    elapsed = time.monotonic() - started
+    job = owner.get(f"/api/problems/{problem}/jobs/{requested.json()['id']}").json()
+    assert job["status"] == "completed", job
+    assert job["result"]["stress"]["stop_reason"] == "duration"
+    assert elapsed < 8, elapsed

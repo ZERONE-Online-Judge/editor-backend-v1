@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import tempfile
 import stat
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from .config import get_settings
@@ -105,21 +106,44 @@ class Sandbox:
                 "--pids-limit=128", "--cpus=1", f"--memory={memory_mb + 256}m", f"--memory-swap={memory_mb + 256}m",
                 "--ulimit", "nofile=256:256", "--ulimit", "core=0:0", "--tmpfs", "/tmp:rw,nosuid,nodev,size=128m,mode=1777",
                 "--volume", "/work", "--workdir=/work", self.resolve_image(image or self.settings.runner_image)]
+        process = None
         try:
-            completed = subprocess.run(argv, input=payload, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=config["wall_seconds"] + 15, check=False)
+            self.check_cancelled()
+            process = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            deadline = time.monotonic() + config["wall_seconds"] + 15
+            first = True
+            while True:
+                self.check_cancelled()
+                try:
+                    stdout, stderr = process.communicate(payload if first else None, timeout=0.2)
+                    break
+                except subprocess.TimeoutExpired:
+                    first = False
+                    if time.monotonic() >= deadline:
+                        raise SandboxError("격리 감독 프로세스 응답 시간이 초과되었습니다.")
             try:
-                result = json.loads(completed.stdout)
+                result = json.loads(stdout)
             except (ValueError, UnicodeError):
                 state = subprocess.run(["docker", "inspect", name, "--format", "{{.State.OOMKilled}}"], capture_output=True, text=True, timeout=10)
                 if state.stdout.strip() == "true":
                     result = {"status": "memory-limit", "cpu_ms": None, "wall_ms": None, "memory_kb": None, "exit_code": 137, "stderr": "컨테이너 OOM으로 자원 계측을 완료하지 못했습니다.", "metrics_available": False}
                 else:
-                    raise SandboxError("격리 실행 환경 오류: " + completed.stderr[:4096].decode("utf-8", "replace"))
+                    raise SandboxError("격리 실행 환경 오류: " + stderr[:4096].decode("utf-8", "replace"))
             return self.restore_result(folder, result, compile_language)
         except subprocess.TimeoutExpired:
             raise SandboxError("격리 감독 프로세스 응답 시간이 초과되었습니다.")
         finally:
-            subprocess.run(["docker", "rm", "-fv", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
+            try:
+                subprocess.run(["docker", "rm", "-fv", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
+            finally:
+                if process:
+                    if process.poll() is None:
+                        process.kill()
+                    try:
+                        process.communicate(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.communicate(timeout=5)
 
     def restore_result(self, folder, result, compile_language):
         result["output"] = base64.b64decode(result.pop("output_base64", ""), validate=True)
