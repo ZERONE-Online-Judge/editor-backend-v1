@@ -217,7 +217,7 @@ def list_jobs(problem_id: str, user: User = Depends(current_user), db: Session =
     authorize(db, problem_id, user)
     rows = db.execute(select(Job, JobApplication).outerjoin(JobApplication,
         (JobApplication.job_id == Job.id) & (JobApplication.user_id == user.id))
-        .options(load_only(Job.id, Job.problem_id, Job.kind, Job.status, Job.document_hash, Job.workspace_version,
+        .options(load_only(Job.id, Job.problem_id, Job.user_id, Job.kind, Job.status, Job.document_hash, Job.workspace_version,
             Job.revision, Job.options, Job.created_at, Job.started_at, Job.finished_at, Job.result))
         .where(Job.problem_id == problem_id).order_by(Job.created_at.desc()).limit(100))
     return [job_json(row, False, applied) for row, applied in rows]
