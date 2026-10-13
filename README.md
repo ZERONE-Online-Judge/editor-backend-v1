@@ -23,6 +23,9 @@
 테스트, 추가 validator, interactor, grader 리소스, 테스트 세트·그룹·부분
 점수·의존 그룹, 스트레스 테스트와 유효한 반례 보관을 포함합니다.
 
+선택 범위 실행과 검수자 권한, 반례 수집·반영 및 서버 실행 한도는
+[Invocation 안내](docs/invocations.md)를 확인하세요.
+
 ## 개발 실행
 
 Python 3.13, Docker, Node 22.12+가 필요합니다. 두 저장소는 다음 이름으로
