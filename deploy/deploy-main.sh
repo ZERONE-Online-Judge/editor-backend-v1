@@ -76,7 +76,7 @@ cd "$source_root/editor_backend_v1/deploy"
 compose=(docker compose --project-name zoj-editor --env-file "$env_file" -f compose.yaml)
 # Validate required configuration without printing the resolved secrets.
 "${compose[@]}" config --quiet
-"${compose[@]}" --profile images build api frontend runtime renderer
+"${compose[@]}" build api frontend
 "${compose[@]}" run --rm --no-deps api python -c '
 from app.config import get_settings
 try:
@@ -86,6 +86,7 @@ except Exception:
 '
 # Confirm central signature/TLS/route compatibility before draining live jobs.
 "${compose[@]}" run --rm --no-deps api python -m app.auth_preflight
+"${compose[@]}" run --rm --no-deps api python -m app.execution_preflight
 worker_id=$("${compose[@]}" ps -q --status running worker)
 if [[ -n "$worker_id" ]]; then
     "${compose[@]}" exec -T worker python -c 'from app.worker import drain_event' >/dev/null

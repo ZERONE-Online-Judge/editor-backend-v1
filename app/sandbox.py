@@ -41,15 +41,23 @@ class Program:
 
 
 class Sandbox:
-    def __init__(self, check_cancelled=lambda: None):
+    def __init__(self, check_cancelled=lambda: None, remote_context=None):
         self.settings = get_settings()
         self.settings.work_dir.mkdir(parents=True, exist_ok=True)
         self.root = Path(tempfile.mkdtemp(prefix="editor-", dir=self.settings.work_dir)).resolve()
         self.check_cancelled = check_cancelled
         self.programs = {}
         self.images = {}
+        self.agent_transport = None
+        if self.settings.execution_transport == "agent":
+            if not remote_context:
+                raise SandboxError("채점 에이전트 실행 문맥이 필요합니다.")
+            from .agent_transport import AgentTransport
+            self.agent_transport = AgentTransport(self, remote_context)
 
     def resolve_image(self, label):
+        if self.agent_transport:
+            return self.agent_transport.context["runtime_revision"]
         if label not in self.images:
             inspected = subprocess.run(["docker", "image", "inspect", label, "--format", "{{.Id}}"], capture_output=True, text=True, timeout=10)
             identifier = inspected.stdout.strip()
@@ -89,6 +97,9 @@ class Sandbox:
                     raise SandboxError("한 실행의 입력·소스·리소스 합계는 64MiB 이하여야 합니다.")
                 files[str(path.relative_to(folder))] = {"base64": base64.b64encode(path.read_bytes()).decode("ascii"), "executable": bool(path.stat().st_mode & 0o111)}
         payload = json.dumps({"config": config, "files": files}).encode()
+        if self.agent_transport:
+            result = self.agent_transport.execute(config, files, "renderer" if image == self.settings.render_image else "runtime")
+            return self.restore_result(folder, result, compile_language)
         argv = ["docker", "run", "-i", "--name", name, "--network=none", "--read-only", "--cap-drop=ALL",
                 "--cap-add=SETUID", "--cap-add=SETGID", "--cap-add=CHOWN", "--cap-add=KILL", "--cap-add=DAC_OVERRIDE", "--security-opt=no-new-privileges",
                 "--pids-limit=128", "--cpus=1", f"--memory={memory_mb + 256}m", f"--memory-swap={memory_mb + 256}m",
@@ -104,29 +115,32 @@ class Sandbox:
                     result = {"status": "memory-limit", "cpu_ms": None, "wall_ms": None, "memory_kb": None, "exit_code": 137, "stderr": "컨테이너 OOM으로 자원 계측을 완료하지 못했습니다.", "metrics_available": False}
                 else:
                     raise SandboxError("격리 실행 환경 오류: " + completed.stderr[:4096].decode("utf-8", "replace"))
-            result["output"] = base64.b64decode(result.pop("output_base64", ""), validate=True)
-            artifacts = result.pop("artifacts", {})
-            target_root = folder / "run"
-            target_root.mkdir(exist_ok=True)
-            for relative, encoded in artifacts.items():
-                parts = Path(relative).parts
-                if not parts or Path(relative).is_absolute() or any(part in {"..", "."} for part in parts):
-                    raise SandboxError("Invalid artifact path")
-                for index, part in enumerate(parts):
-                    java_class = compile_language in {"java17", "java8"} and index == len(parts) - 1 and part.endswith('.class')
-                    if java_class and all(c.isalnum() or c in '_$.' for c in part):
-                        continue  # javac creates valid nested-class names with $.
-                    safe_name(part)
-                target = target_root / relative
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(base64.b64decode(encoded, validate=True))
-                target.chmod(0o755 if relative == "program" else 0o644)
-            self.check_cancelled()
-            return result
+            return self.restore_result(folder, result, compile_language)
         except subprocess.TimeoutExpired:
             raise SandboxError("격리 감독 프로세스 응답 시간이 초과되었습니다.")
         finally:
             subprocess.run(["docker", "rm", "-fv", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
+
+    def restore_result(self, folder, result, compile_language):
+        result["output"] = base64.b64decode(result.pop("output_base64", ""), validate=True)
+        artifacts = result.pop("artifacts", {})
+        target_root = folder / "run"
+        target_root.mkdir(exist_ok=True)
+        for relative, encoded in artifacts.items():
+            parts = Path(relative).parts
+            if not parts or Path(relative).is_absolute() or any(part in {"..", "."} for part in parts):
+                raise SandboxError("Invalid artifact path")
+            for index, part in enumerate(parts):
+                java_class = compile_language in {"java17", "java8"} and index == len(parts) - 1 and part.endswith('.class')
+                if java_class and all(c.isalnum() or c in '_$.' for c in part):
+                    continue  # javac creates valid nested-class names with $.
+                safe_name(part)
+            target = target_root / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(base64.b64decode(encoded, validate=True))
+            target.chmod(0o755 if relative == "program" else 0o644)
+        self.check_cancelled()
+        return result
 
     def compile(self, source, resources, is_solution=False):
         cache_key = (source["name"], source["sha256"], source["language"], is_solution)

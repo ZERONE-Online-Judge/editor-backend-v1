@@ -91,6 +91,13 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
         from .judge_bridge import compatible, capabilities
         compatible(doc, options, values.kind)
         options["judge_revision"] = capabilities(user)["runtime_revision"]
+    options["execution_transport"] = get_settings().execution_transport
+    if options["execution_transport"] == "agent":
+        from .judge_bridge import capabilities
+        execution = capabilities(user).get("execution", {})
+        if execution.get("protocol") != "editor-execute-v1" or execution.get("online_nodes", 0) < 1:
+            fail("execution_agents_unavailable", "Editor 실행이 허용된 채점 에이전트가 준비되지 않았습니다. 관리자에게 문의하세요.", 503)
+        options["execution_revision"] = execution["runtime_revision"]
     hash_value = document_hash(doc)
     if values.reuse:
         cached = db.scalars(select(Job).where(Job.problem_id == problem_id, Job.document_hash == hash_value, Job.kind == values.kind, Job.status.in_(["queued", "running", "completed"])).order_by(Job.created_at.desc())).all()

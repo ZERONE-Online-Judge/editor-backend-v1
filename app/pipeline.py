@@ -6,7 +6,7 @@ import re
 import time
 import threading
 from pathlib import Path
-from .db import SessionLocal
+from .db import SessionLocal, User
 from .domain import parse_script
 from .sandbox import Sandbox, SandboxError, VENDOR
 from .storage import put_blob, read_blob
@@ -18,13 +18,32 @@ class Pipeline:
         self.job = job
         self.doc = job.document
         self.publish = publish
-        self.sandbox = Sandbox(check_cancelled)
+        from .config import get_settings
+        context = None
+        if get_settings().execution_transport == "agent":
+            with SessionLocal() as db:
+                user = db.get(User, job.user_id)
+                if not user:
+                    raise SandboxError("실행 요청 계정을 찾을 수 없습니다.")
+                context = {"email": user.email, "job_kind": job.kind, "runtime_revision": job.options.get("execution_revision", "editor-agent-v1")}
+        self.sandbox = Sandbox(check_cancelled, remote_context=context)
         self.result = {"summary": "자료를 준비하고 있습니다.", "progress": 0, "events": [], "testsets": {}, "solutions": [], "unit_tests": []}
         self.programs = {}
         self.counter = 0
         self.last_publish = 0
         self.result_lock = threading.RLock()
-        runtime = {"backend": "editor", "image": self.sandbox.settings.runner_image, "image_id": self.sandbox.resolve_image(self.sandbox.settings.runner_image), "cpu_measurement": "native-command-and-descendants"}
+        runtime = {"backend": "agent" if self.sandbox.agent_transport else "editor", "image": self.sandbox.settings.runner_image, "image_id": self.sandbox.resolve_image(self.sandbox.settings.runner_image), "cpu_measurement": "native-command-and-descendants"}
+        if self.sandbox.agent_transport:
+            runtime["runtime_revision"] = context["runtime_revision"]
+            runtime.pop("image_id", None)
+            runtime.pop("image", None)
+            self.result["execution_runs"] = []
+            def record_execution(record):
+                with self.result_lock:
+                    self.result["execution_runs"].append(record)
+                    self.result["execution_runs"] = self.result["execution_runs"][-2000:]
+                    self.publish(copy.deepcopy(self.result))
+            self.sandbox.agent_transport.on_result = record_execution
         self.remote_judging = job.options.get("execution_backend") == "zoj" and job.kind in {"verify", "package"}
         self.result["runtime"] = {"backend": "zoj", "runtime_revision": job.options.get("judge_revision")} if self.remote_judging else runtime
         if self.remote_judging:
@@ -118,7 +137,7 @@ class Pipeline:
         program = self.program(name, True)
         cpu_ms, memory_mb = info["time_limit_ms"], info["memory_limit_mb"]
         if preparation and self.remote_judging:
-            # This only creates reference answers on Editor hardware. The
+            # This creates reference answers on the selected execution VM. The
             # requested problem limits are enforced later by the ZOJ agent.
             cpu_ms = min(60000, max(10000, cpu_ms * 10 + 3000))
             memory_mb = max(1024, memory_mb * 2 + 256)

@@ -188,6 +188,9 @@ def test_bridge_misconfiguration_is_not_reported_as_user_logout(client, central)
 def test_production_cannot_use_independent_credentials_or_plaintext_transport():
     base = dict(
         env="production",
+        execution_transport="agent",
+        zoj_api_url="https://zoj.kr/api",
+        zoj_bridge_secret=KEY,
         public_origin="https://editor.zoj.kr",
         database_url="postgresql+psycopg://unused",
         session_secret="s" * 32,

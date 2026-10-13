@@ -16,6 +16,7 @@ x-environment: &environment
   EDITOR_RUNTIME_REVISION: ${EDITOR_RUNTIME_REVISION:-editor-runtime-0.1.2}
   EDITOR_JUDGE_BACKEND: ${EDITOR_JUDGE_BACKEND:-zoj}
   EDITOR_JUDGE_CONCURRENCY: ${EDITOR_JUDGE_CONCURRENCY:-3}
+  EDITOR_EXECUTION_TRANSPORT: agent
   EDITOR_WORKER_CONCURRENCY: ${EDITOR_WORKER_CONCURRENCY:-2}
   EDITOR_ZOJ_API_URL: ${EDITOR_ZOJ_API_URL:-}
   EDITOR_ZOJ_BRIDGE_SECRET: ${EDITOR_ZOJ_BRIDGE_SECRET:-}
@@ -61,11 +62,8 @@ services:
     restart: unless-stopped
     command: [python, -m, app.worker]
     environment: *environment
-    group_add:
-      - ${EDITOR_DOCKER_GID:?Set the Docker socket group ID}
     volumes:
       - ${EDITOR_STORAGE_ROOT:-/srv/zoj-editor}/data:/data
-      - /var/run/docker.sock:/var/run/docker.sock
       - ${EDITOR_STORAGE_ROOT:-/srv/zoj-editor}/certs:/certs:ro
     depends_on:
       db:

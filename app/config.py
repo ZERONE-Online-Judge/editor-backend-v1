@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     mail_from: str = "ZOJ Editor <noreply@editor.zoj.kr>"
     runner_image: str = "zoj-editor-runtime:v1"
     render_image: str = "zoj-editor-renderer:v1"
+    execution_transport: Literal["local", "agent"] | None = None
     worker_concurrency: int = 2
     job_timeout_seconds: int = 1800
     runtime_revision: str = "editor-runtime-0.1.2"
@@ -52,6 +53,8 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_production(self):
+        if self.execution_transport is None:
+            self.execution_transport = "agent" if self.env == "production" else "local"
         if self.env not in {"development", "test", "production"}:
             raise ValueError("Unknown EDITOR_ENV")
         if self.mail_mode not in {"console", "smtp", "zoj"}:
@@ -90,6 +93,10 @@ class Settings(BaseSettings):
         if origin.scheme not in {"http", "https"} or not origin.hostname or origin.username or origin.password or origin.path not in {"", "/"} or origin.query or origin.fragment:
             raise ValueError("EDITOR_ZOJ_PUBLIC_ORIGIN must be an HTTP(S) origin")
         if self.env == "production":
+            if self.execution_transport != "agent":
+                raise ValueError("Production Editor executes tools only on authorized judge agents")
+            if not self.zoj_api_url:
+                raise ValueError("Production agent transport requires EDITOR_ZOJ_API_URL")
             if not self.public_origin.startswith("https://"):
                 raise ValueError("Production requires HTTPS")
             if self.auth_mode != "zoj":

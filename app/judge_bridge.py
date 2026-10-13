@@ -1,4 +1,4 @@
-"""Final solution verification on ZOJ agents; preparation remains in Editor."""
+"""Final solution verification and preparation on authorized judge agents."""
 import copy
 import hashlib
 import json
@@ -38,7 +38,7 @@ def capabilities(user):
 @router.get("/execution-environment")
 def environment(user: User = Depends(current_user)):
     settings = get_settings()
-    result = {"default_backend": settings.judge_backend, "zoj_configured": bool(settings.zoj_api_url), "zoj": None}
+    result = {"default_backend": settings.judge_backend, "zoj_configured": bool(settings.zoj_api_url), "zoj": None, "execution_transport": settings.execution_transport}
     if settings.zoj_api_url:
         try:
             result["zoj"] = capabilities(user)

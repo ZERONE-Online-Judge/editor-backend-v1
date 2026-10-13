@@ -4,6 +4,7 @@ from pathlib import Path
 
 TEST_ROOT = Path(tempfile.mkdtemp(prefix="zoj-editor-tests-"))
 os.environ["EDITOR_ENV"] = "test"
+os.environ["EDITOR_EXECUTION_TRANSPORT"] = "local"
 os.environ["EDITOR_AUTH_MODE"] = "local"
 os.environ["EDITOR_DATABASE_URL"] = os.environ.get("EDITOR_TEST_DATABASE_URL", "sqlite:///" + str(TEST_ROOT / "test.db"))
 os.environ["EDITOR_DATA_DIR"] = str(TEST_ROOT)
