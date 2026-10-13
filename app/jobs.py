@@ -1,7 +1,7 @@
 import copy
 import hashlib
 import re
-from typing import Literal
+from typing import Annotated, Literal
 from fastapi import APIRouter, Depends
 from pydantic import Field, field_validator
 from sqlalchemy import select, update, func
@@ -9,8 +9,8 @@ from sqlalchemy.orm import Session, load_only
 from .config import get_settings
 from .auth import current_user
 from .db import Job, JobApplication, JobComment, Revision, User, WorkingCopy, now, session_dependency
-from .domain import authorize, cautions, document_hash, fail, parse_script, validate_document, workspace
-from .schema import Strict, SourceFile
+from .domain import authorize, cautions, document_hash, expanded_tests, fail, parse_script, validate_document, workspace
+from .schema import Strict, SourceFile, Info
 from .storage import put_blob
 from .execution_limits import MAX_TESTS_PER_SET, MAX_STRESS_ITERATIONS, MAX_ACTIVE_JOBS_PER_USER
 from .prepared_results import application_json, apply_prepared_results, pending_preparations
@@ -40,6 +40,8 @@ class TemporarySolution(Strict):
 
 
 class JobOptions(Strict):
+    name: str = Field(default="", max_length=120)
+    note: str = Field(default="", max_length=8000)
     auto_apply: bool = False
     execution_backend: Literal["editor", "zoj"] | None = None
     testset: str = "tests"
@@ -47,7 +49,7 @@ class JobOptions(Strict):
     snapshot: Literal["working_copy", "committed"] | None = None
     temporary_solutions: list[TemporarySolution] = Field(default_factory=list, max_length=10)
     solutions: list[str] = Field(default_factory=list, max_length=200)
-    test_indices: list[int] = Field(default_factory=list, max_length=1000)
+    test_indices: list[Annotated[int, Field(strict=True, ge=1, le=MAX_TESTS_PER_SET)]] = Field(default_factory=list, max_length=MAX_TESTS_PER_SET)
     generator: str = Field(default="", max_length=4096)
     reference: str = ""
     candidate: str = ""
@@ -61,6 +63,11 @@ class JobOptions(Strict):
     package_type: Literal["linux", "sources"] = "linux"
     export_format: Literal["editor", "zoj"] = "editor"
     statement_language: str = Field(default="korean", min_length=1, max_length=100)
+
+    @field_validator("name")
+    @classmethod
+    def invocation_name(cls, value):
+        return Info.single_line(value).strip()
 
 
 class JobRequest(Strict):
@@ -102,7 +109,7 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
     if values.kind == "package" or from_committed_revision:
         snapshot = "committed"
     wc = workspace(db, problem, user) if writer or translator_render else None
-    if wc and wc.version != values.version:
+    if wc and wc.version != values.version and (snapshot == "working_copy" or (values.kind == "package" and not from_committed_revision)):
         fail("workspace_changed", "최신 작업 사본을 저장한 뒤 실행하세요.", 409)
     revision = problem.revision
     if snapshot == "committed":
@@ -144,9 +151,26 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
     options["runtime_revision"] = get_settings().runtime_revision
     if options["testset"] not in doc["testsets"]:
         fail("invalid_testset", "테스트 세트를 찾을 수 없습니다.")
+    options["solutions"] = list(dict.fromkeys(options["solutions"]))
+    options["test_indices"] = sorted(set(options["test_indices"]))
+    if options["test_indices"] and values.kind != "verify":
+        fail("invalid_options", "테스트 번호 범위는 풀이 검증에서 선택하세요.")
     for name in [*options["solutions"], *options["candidates"], options["reference"], options["candidate"]]:
         if name and name not in doc["solutions"]:
             fail("invalid_solution", "풀이 파일을 찾을 수 없습니다.")
+    if values.kind == "verify":
+        tests = expanded_tests(doc["testsets"][options["testset"]])
+        available = {test["index"] for test in tests}
+        unknown = set(options["test_indices"]) - available
+        if unknown:
+            fail("invalid_test_indices", "선택한 세트에 없는 테스트 번호입니다.", indices=sorted(unknown))
+        selected_solutions = options["solutions"] or list(doc["solutions"])
+        runnable = [name for name in selected_solutions if doc["solutions"][name]["tag"] != "NR"]
+        if not tests or not runnable:
+            fail("empty_scope", "실행할 테스트와 NR 이외의 풀이를 선택하세요.")
+        options["scope"] = {"testset": options["testset"], "solutions": runnable,
+                            "test_indices": options["test_indices"],
+                            "test_count": len(options["test_indices"]) if options["test_indices"] else len(tests)}
     if values.kind == "stress":
         options["candidates"] = list(dict.fromkeys(options["candidates"] or ([options["candidate"]] if options["candidate"] else [])))
         if not options["candidates"] or not options["generator"].strip():

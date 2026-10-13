@@ -58,7 +58,8 @@ def compatible(doc, options, kind):
     issues = []
     if info["interactive"] or info["input_file"] != "stdin" or info["output_file"] != "stdout":
         issues.append("현재 ZOJ 채점기는 표준 입출력의 비대화형 문제를 지원합니다.")
-    if info["points_enabled"] or any(t["groups_enabled"] for t in doc["testsets"].values()):
+    testsets = doc["testsets"].values() if kind == "package" else [doc["testsets"][options["testset"]]]
+    if info["points_enabled"] or any(t["groups_enabled"] for t in testsets):
         issues.append("그룹·부분 점수는 Editor 격리 실행을 선택해 검증하세요.")
     if not 100 <= info["time_limit_ms"] <= 10000 or not 16 <= info["memory_limit_mb"] <= 1024:
         issues.append("ZOJ 문제 제한 범위는 100~10,000ms, 16~1,024MiB입니다.")

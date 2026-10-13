@@ -13,7 +13,7 @@ def scoped_pipeline(problem, kind="prepare", **options):
     with SessionLocal() as db:
         for name in ("tests", "samples", "subtask1"):
             sha = put_blob(db, problem, (name + "\n").encode())["sha256"]
-            doc["testsets"][name] = {"script": "", "tests": {"1": {
+            doc["testsets"][name] = {"script": "", "groups_enabled": False, "groups": {}, "tests": {"1": {
                 "index": 1, "input_sha": sha, "answer_sha": None, "command": "",
                 "group": "", "points": 0, "description": "", "sample": False,
             }}}
@@ -81,3 +81,27 @@ def test_committed_verification_does_not_regenerate_or_replace_answers(problem):
     pipeline.blob = lambda *args: pytest.fail("committed test resources must stay immutable")
     pipeline.prepare()
     assert pipeline.result["testsets"]["tests"][0]["answer_sha"] == sha
+
+
+def test_partial_scope_cannot_claim_full_score_or_unexecuted_extra_tags(problem):
+    pipeline, _ = scoped_pipeline(problem, "verify", test_indices=[2], solutions=["main.cpp"])
+    pipeline.doc["info"]["points_enabled"] = True
+    pipeline.doc["solutions"] = {"main.cpp": {"tag": "MA", "extra_tags": {"samples": "WA"}}}
+    tests = pipeline.doc["testsets"]["tests"]["tests"]
+    tests["2"] = {**tests["1"], "index": 2, "points": 10}
+    pipeline.remote_judging = False
+    pipeline.result["solutions"] = []
+    pipeline.publish = lambda *args: None
+    def store(content):
+        with SessionLocal() as db:
+            value = put_blob(db, problem, content)["sha256"]
+            db.commit()
+            return value
+    pipeline.blob = store
+    pipeline.run_solution = lambda *args, **kwargs: ("AC", {"output": b"42\n", "cpu_ms": 1, "wall_ms": 1, "memory_kb": 1, "stderr": ""})
+    pipeline.checker = lambda *args: ("AC", {"score": 10, "stderr": ""})
+    pipeline.verify()
+    solution = pipeline.result["solutions"][0]
+    assert solution["matched"] is True
+    assert solution["total_score"] is None and solution["score_scope_complete"] is False
+    assert [row["index"] for row in solution["cases"]] == [2]

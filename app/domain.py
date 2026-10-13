@@ -110,6 +110,16 @@ def parse_script(source: str, occupied=()):
     return result
 
 
+def expanded_tests(testset):
+    saved = list(testset["tests"].values())
+    if testset["script"].strip():
+        saved = [test for test in saved if not test["command"]]
+        generated = parse_script(testset["script"], [test["index"] for test in saved])
+        saved += [{"input_sha": None, "answer_sha": None, "group": "", "points": 0,
+                   "description": "", "sample": False, **test} for test in generated]
+    return sorted(saved, key=lambda test: test["index"])
+
+
 def cautions(doc):
     warnings = []
     def add(code, label, section, blocking=False):

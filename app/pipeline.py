@@ -7,7 +7,7 @@ import time
 import threading
 from pathlib import Path
 from .db import SessionLocal, User
-from .domain import parse_script
+from .domain import expanded_tests
 from .sandbox import Sandbox, SandboxError, VENDOR
 from .storage import put_blob, read_blob
 from .scoring import score_results
@@ -33,6 +33,8 @@ class Pipeline:
                 context = {"email": user.email, "job_kind": job.kind, "runtime_revision": job.options.get("execution_revision", "editor-agent-v1")}
         self.sandbox = Sandbox(check_cancelled, remote_context=context)
         self.result = {"summary": "자료를 준비하고 있습니다.", "progress": 0, "events": [], "testsets": {}, "solutions": [], "unit_tests": []}
+        if job.options.get("scope"):
+            self.result["scope"] = copy.deepcopy(job.options["scope"])
         self.programs = {}
         self.counter = 0
         self.last_publish = 0
@@ -178,11 +180,7 @@ class Pipeline:
         self.result["processed_testsets"] = selected
         for set_name in selected:
             testset = self.doc["testsets"][set_name]
-            saved = list(testset["tests"].values())
-            if testset["script"].strip():
-                saved = [test for test in saved if not test["command"]]
-                generated = parse_script(testset["script"], [test["index"] for test in saved])
-                saved += [{"input_sha": None, "answer_sha": None, "group": "", "points": 0, "description": "", "sample": False, **test} for test in generated]
+            saved = expanded_tests(testset)
             prepared = []
             seen = set()
             for test in sorted(saved, key=lambda t: t["index"]):
@@ -271,8 +269,10 @@ class Pipeline:
             tag_matches = self.expected_matches(source["tag"], verdicts)
             for set_name, expected_tag in source.get("extra_tags", {}).items():
                 scoped = [r["verdict"] for r in rows if r["testset"] == set_name or next((t["group"] for t in self.result["testsets"].get(r["testset"], []) if t["index"] == r["index"]), "") == set_name]
-                tag_matches = tag_matches and self.expected_matches(expected_tag, scoped)
-            self.result["solutions"].append({"name": name, "tag": source["tag"], "matched": tag_matches, "cases": rows, "skipped": False, **score_results(self.doc, self.result["testsets"], rows)})
+                if scoped:
+                    tag_matches = tag_matches and self.expected_matches(expected_tag, scoped)
+            score_scope = {name: expanded_tests(self.doc["testsets"][name]) for name in self.result["testsets"]}
+            self.result["solutions"].append({"name": name, "tag": source["tag"], "matched": tag_matches, "cases": rows, "skipped": False, **score_results(self.doc, score_scope, rows)})
             self.publish(copy.deepcopy(self.result))
         mismatches = [s["name"] for s in self.result["solutions"] if not s["matched"]]
         self.result["verified"] = not mismatches
