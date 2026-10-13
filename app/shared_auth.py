@@ -53,7 +53,7 @@ def signed(action, values):
     if s.auth_mode != "zoj" or not s.auth_api_url or not s.auth_bridge_secret:
         fail(
             "shared_auth_not_configured",
-            "ZOJ 공통 로그인이 아직 설정되지 않았습니다.",
+            "ZOJ 로그인이 아직 설정되지 않았습니다.",
             503,
         )
     path = "/api/editor/auth/" + action
@@ -109,17 +109,17 @@ def client():
 
 def check_response(response, body):
     if response.is_redirect:
-        fail("shared_auth_redirect", "공통 인증 서버 주소를 확인하세요.", 502)
+        fail("shared_auth_redirect", "ZOJ 로그인 서버 주소를 확인하세요.", 502)
     try:
         result = json.loads(body)
         if not isinstance(result, dict):
             raise ValueError()
     except ValueError:
-        fail("shared_auth_invalid", "공통 인증 서버 응답이 올바르지 않습니다.", 502)
+        fail("shared_auth_invalid", "ZOJ 로그인 서버 응답이 올바르지 않습니다.", 502)
     if response.is_error:
         error = result.get("error", {})
         if not isinstance(error, dict):
-            fail("shared_auth_invalid", "공통 인증 서버 응답이 올바르지 않습니다.", 502)
+            fail("shared_auth_invalid", "ZOJ 로그인 서버 응답이 올바르지 않습니다.", 502)
         if error.get("code") in {
             "editor_signature_invalid",
             "editor_signature_replayed",
@@ -127,17 +127,17 @@ def check_response(response, body):
         }:
             fail(
                 "shared_auth_configuration",
-                "공통 로그인 연결 설정을 관리자에게 확인해 주세요.",
+                "ZOJ 로그인 연결 설정을 관리자에게 확인해 주세요.",
                 503,
             )
         fail(
             error.get("code", "shared_auth_failed"),
-            error.get("message", "공통 인증 요청에 실패했습니다."),
+            error.get("message", "ZOJ 로그인 요청에 실패했습니다."),
             response.status_code,
             **(error.get("details") or {}),
         )
     if not isinstance(result.get("data"), dict):
-        fail("shared_auth_invalid", "공통 인증 서버 응답이 올바르지 않습니다.", 502)
+        fail("shared_auth_invalid", "ZOJ 로그인 서버 응답이 올바르지 않습니다.", 502)
     return result["data"]
 
 
@@ -149,12 +149,12 @@ def call(request, action, values=None):
             for chunk in response.iter_bytes():
                 raw.extend(chunk)
                 if len(raw) > 65536:
-                    fail("shared_auth_invalid", "공통 인증 응답이 너무 큽니다.", 502)
+                    fail("shared_auth_invalid", "ZOJ 로그인 응답이 너무 큽니다.", 502)
             return check_response(response, raw)
     except (httpx.HTTPError, OSError):
         fail(
             "shared_auth_unavailable",
-            "공통 로그인 서버에 연결하지 못했습니다. 잠시 후 다시 시도하세요.",
+            "ZOJ 로그인 서버에 연결하지 못했습니다. 잠시 후 다시 시도하세요.",
             503,
         )
 
