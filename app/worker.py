@@ -64,13 +64,17 @@ def process_job(job):
     thread = threading.Thread(target=heartbeat, daemon=True)
     thread.start()
     status = "completed"
+    pipeline = None
     try:
-        latest = Pipeline(job, publish, check).run()
+        pipeline = Pipeline(job, publish, check)
+        latest = pipeline.run()
     except Cancelled as error:
         status = "cancelled"
+        latest = copy.deepcopy(getattr(pipeline, "result", latest))
         latest = {**latest, "summary": str(error)}
     except Exception as error:
         status = "failed"
+        latest = copy.deepcopy(getattr(pipeline, "result", latest))
         latest = {**latest, "summary": "작업을 완료하지 못했습니다.", "error": str(error)[:32768]}
         logger.exception("Editor job %s failed", job.id)
     finally:

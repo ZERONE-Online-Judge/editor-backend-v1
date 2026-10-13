@@ -1,5 +1,6 @@
 import copy
 import hashlib
+import re
 from typing import Literal
 from fastapi import APIRouter, Depends
 from pydantic import Field, field_validator
@@ -7,10 +8,11 @@ from sqlalchemy import select, update, func
 from sqlalchemy.orm import Session, load_only
 from .config import get_settings
 from .auth import current_user
-from .db import Job, JobApplication, JobComment, Revision, User, now, session_dependency
-from .domain import authorize, cautions, document_hash, fail, workspace
+from .db import Job, JobApplication, JobComment, Revision, User, WorkingCopy, now, session_dependency
+from .domain import authorize, cautions, document_hash, fail, parse_script, validate_document, workspace
 from .schema import Strict, SourceFile
 from .storage import put_blob
+from .execution_limits import MAX_TESTS_PER_SET, MAX_STRESS_ITERATIONS, MAX_ACTIVE_JOBS_PER_USER
 from .prepared_results import application_json, apply_prepared_results, pending_preparations
 
 router = APIRouter(prefix="/api/problems", tags=["execution"])
@@ -49,7 +51,12 @@ class JobOptions(Strict):
     generator: str = Field(default="", max_length=4096)
     reference: str = ""
     candidate: str = ""
-    iterations: int = Field(default=50, ge=1, le=1000)
+    candidates: list[str] = Field(default_factory=list, max_length=200)
+    iterations: int = Field(default=50, ge=1, le=MAX_STRESS_ITERATIONS)
+    duration_seconds: int | None = Field(default=None, ge=1, le=86400)
+    stop_on_first: bool = True
+    counterexample_limit: Literal[1, 5, 10] = 1
+    counterexample_verdicts: list[Literal["WA", "TLE", "MLE", "RE", "PE", "OLE", "IDLENESS_LIMIT", "PARTIAL"]] = Field(default_factory=lambda: ["WA", "TLE", "MLE", "RE", "PE", "OLE", "IDLENESS_LIMIT", "PARTIAL"], min_length=1, max_length=8)
     verify: bool = True
     package_type: Literal["linux", "sources"] = "linux"
     export_format: Literal["editor", "zoj"] = "editor"
@@ -137,9 +144,18 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
     options["runtime_revision"] = get_settings().runtime_revision
     if options["testset"] not in doc["testsets"]:
         fail("invalid_testset", "테스트 세트를 찾을 수 없습니다.")
-    for name in [*options["solutions"], options["reference"], options["candidate"]]:
+    for name in [*options["solutions"], *options["candidates"], options["reference"], options["candidate"]]:
         if name and name not in doc["solutions"]:
             fail("invalid_solution", "풀이 파일을 찾을 수 없습니다.")
+    if values.kind == "stress":
+        options["candidates"] = list(dict.fromkeys(options["candidates"] or ([options["candidate"]] if options["candidate"] else [])))
+        if not options["candidates"] or not options["generator"].strip():
+            fail("invalid_stress", "생성기 명령과 비교할 풀이를 선택하세요.")
+        main = next((name for name, source in doc["solutions"].items() if source["tag"] == "MA"), "")
+        if (options["reference"] or main) in options["candidates"]:
+            fail("invalid_stress", "기준 풀이와 비교할 풀이는 서로 달라야 합니다.")
+        if options["duration_seconds"] and options["duration_seconds"] > min(get_settings().stress_max_seconds, get_settings().job_timeout_seconds):
+            fail("invalid_stress_duration", "실행 시간이 서버의 작업 한도를 넘습니다.")
     options["execution_backend"] = options["execution_backend"] or get_settings().judge_backend
     if values.kind not in {"verify", "package"} or (values.kind == "package" and not options["verify"]):
         options["execution_backend"] = "editor"
@@ -161,8 +177,8 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
             if row.options == options:
                 return job_json(row, application=db.get(JobApplication, (row.id, user.id)))
     active = db.scalars(select(Job).where(Job.user_id == user.id, Job.status.in_(["queued", "running"]))).all()
-    if len(active) >= 5:
-        fail("too_many_jobs", "동시에 요청할 수 있는 검증 작업은 5개입니다.", 429)
+    if len(active) >= MAX_ACTIVE_JOBS_PER_USER:
+        fail("too_many_jobs", f"동시에 요청할 수 있는 검증 작업은 {MAX_ACTIVE_JOBS_PER_USER}개입니다.", 429)
     for _, content in temporary:
         put_blob(db, problem_id, content)
     row = Job(problem_id=problem_id, user_id=user.id, kind=values.kind, document=doc, document_hash=hash_value,
@@ -241,6 +257,79 @@ def add_comment(problem_id: str, job_id: str, values: InvocationComment, user: U
 
 class ApplyResults(Strict):
     version: int = Field(ge=0)
+
+
+class ApplyCounterexamples(ApplyResults):
+    testset: str
+    counterexample_ids: list[str] = Field(min_length=1, max_length=10)
+
+    @field_validator("counterexample_ids")
+    @classmethod
+    def valid_ids(cls, value):
+        if len(value) != len(set(value)) or any(not re.fullmatch(r"[a-f0-9]{32}", item) for item in value):
+            raise ValueError("Use unique counterexample identifiers")
+        return value
+
+
+@router.post("/{problem_id}/jobs/{job_id}/counterexamples/apply")
+def apply_counterexamples(problem_id: str, job_id: str, values: ApplyCounterexamples, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
+    problem, _ = authorize(db, problem_id, user, write=True)
+    job = db.get(Job, job_id)
+    if not job or job.problem_id != problem_id:
+        fail("not_found", "실행 기록을 찾을 수 없습니다.", 404)
+    if job.kind != "stress" or job.status not in {"completed", "cancelled", "failed"}:
+        fail("not_ready", "종료된 스트레스 테스트의 유효한 반례만 추가할 수 있습니다.")
+    wc = workspace(db, problem, user)
+    db.refresh(wc, with_for_update=True)
+    if wc.version != values.version:
+        fail("workspace_changed", "다른 창의 변경을 불러온 뒤 다시 추가하세요.", 409)
+    previous = db.get(JobApplication, (job.id, user.id))
+    expected_hash = previous.document_hash if previous else (job.options.get("source_document_hash") or job.document_hash)
+    if expected_hash != document_hash(wc.document):
+        fail("stale_results", "문제 자료가 변경되었습니다. 현재 자료로 스트레스 테스트를 다시 실행하세요.", 409)
+    if values.testset not in wc.document["testsets"]:
+        fail("invalid_testset", "추가할 테스트 세트를 찾을 수 없습니다.")
+    examples = job.result.get("counterexamples") or ([job.result["counterexample"]] if job.result.get("counterexample") else [])
+    by_id = {item.get("id", item["input_sha"][:32]): item for item in examples}
+    if any(identifier not in by_id for identifier in values.counterexample_ids):
+        fail("invalid_counterexample", "이 실행에서 검증한 반례를 선택하세요.")
+    doc = copy.deepcopy(wc.document)
+    testset = doc["testsets"][values.testset]
+    occupied = {test["index"] for test in testset["tests"].values()}
+    occupied.update(test["index"] for test in parse_script(testset["script"], occupied))
+    existing = {test["input_sha"] for test in testset["tests"].values() if test["input_sha"]}
+    chosen, duplicates = [], 0
+    for identifier in values.counterexample_ids:
+        example = by_id[identifier]
+        if example["input_sha"] in existing:
+            duplicates += 1
+            continue
+        existing.add(example["input_sha"])
+        chosen.append(example)
+    free = [index for index in range(1, MAX_TESTS_PER_SET + 1) if index not in occupied]
+    if len(chosen) > len(free):
+        fail("test_limit", "생성 스크립트까지 포함해 세트당 테스트 한도를 넘습니다.")
+    indices = free[:len(chosen)]
+    for example, index in zip(chosen, indices):
+        key = str(index)
+        while key in testset["tests"]:
+            key = "stress-" + key
+        testset["tests"][key] = {"index": index, "input_sha": example["input_sha"], "answer_sha": example["answer_sha"],
+                               "command": "", "group": "", "points": 0, "sample": False,
+                               "description": f"스트레스 반례 · 반복 {example['iteration']}"}
+    doc = validate_document(db, problem_id, doc)
+    version = values.version + bool(chosen)
+    updated = db.execute(update(WorkingCopy).where(WorkingCopy.problem_id == problem_id, WorkingCopy.user_id == user.id,
+                         WorkingCopy.version == values.version).values(document=doc, version=version, updated_at=now()))
+    if not updated.rowcount:
+        db.rollback()
+        fail("workspace_changed", "다른 창에서 변경되었습니다. 다시 불러오세요.", 409)
+    if previous:
+        previous.applied_at, previous.workspace_version, previous.document_hash = now(), version, document_hash(doc)
+    else:
+        db.add(JobApplication(job_id=job.id, user_id=user.id, workspace_version=version, document_hash=document_hash(doc)))
+    db.commit()
+    return {"version": version, "added_count": len(chosen), "duplicate_count": duplicates, "indices": indices}
 
 
 @router.post("/{problem_id}/jobs/{job_id}/apply")

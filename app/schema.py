@@ -1,6 +1,7 @@
 import re
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator, model_serializer
+from .execution_limits import MAX_TESTS_PER_SET
 
 
 class Strict(BaseModel):
@@ -104,7 +105,7 @@ class Solution(SourceFile):
 
 
 class Test(Strict):
-    index: int = Field(ge=1, le=1000)
+    index: int = Field(ge=1, le=MAX_TESTS_PER_SET)
     input_sha: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     answer_sha: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     command: str = Field(default="", max_length=4096)
@@ -137,8 +138,8 @@ class TestSet(Strict):
         for name in self.groups:
             safe_name(name)
         done = set()
-        if len(self.tests) > 1000:
-            raise ValueError("At most 1000 tests per testset")
+        if len(self.tests) > MAX_TESTS_PER_SET:
+            raise ValueError(f"At most {MAX_TESTS_PER_SET} tests per testset")
         if len({t.index for t in self.tests.values()}) != len(self.tests):
             raise ValueError("Test indexes must be unique")
         for t in self.tests.values():

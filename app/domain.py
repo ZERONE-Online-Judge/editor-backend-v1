@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from .db import Access, Blob, Problem, WorkingCopy, now
 from .schema import Document
+from .execution_limits import MAX_TESTS_PER_SET
 
 
 def fail(code: str, message: str, status: int = 400, **details):
@@ -99,8 +100,8 @@ def parse_script(source: str, occupied=()):
             command, destination = tokens[:-2], tokens[-1]
             if not command or any(x in {"|", ";", "&&", "||", "<", ">>"} for x in command):
                 raise ValueError("Shell operators are not supported")
-            index = next((i for i in range(1, 1001) if i not in used), 1001) if destination == "$" else int(destination)
-            if index < 1 or index > 1000 or index in used:
+            index = next((i for i in range(1, MAX_TESTS_PER_SET + 1) if i not in used), MAX_TESTS_PER_SET + 1) if destination == "$" else int(destination)
+            if index < 1 or index > MAX_TESTS_PER_SET or index in used:
                 raise ValueError("Duplicate or out-of-range test number")
         except ValueError as error:
             fail("invalid_script", f"생성 스크립트 {line_number}행: {error}")

@@ -14,7 +14,10 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Depends, HTTPException
 from .auth import current_user
 from .config import get_settings
-from .db import SessionLocal, User
+from .db import SessionLocal, User, Job, session_dependency
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+from .execution_limits import public_limits
 from .domain import fail
 from .sandbox import SandboxError, VENDOR
 from .storage import read_blob
@@ -36,9 +39,12 @@ def capabilities(user):
 
 
 @router.get("/execution-environment")
-def environment(user: User = Depends(current_user)):
+def environment(user: User = Depends(current_user), db: Session = Depends(session_dependency)):
     settings = get_settings()
     result = {"default_backend": settings.judge_backend, "zoj_configured": bool(settings.zoj_api_url), "zoj": None, "execution_transport": settings.execution_transport}
+    result["limits"] = public_limits(settings)
+    counts = dict(db.execute(select(Job.status, func.count()).where(Job.status.in_(["running", "queued"])).group_by(Job.status)).all())
+    result["capacity"] = {"running_jobs": counts.get("running", 0), "queued_jobs": counts.get("queued", 0)}
     if settings.zoj_api_url:
         try:
             result["zoj"] = capabilities(user)

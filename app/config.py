@@ -1,6 +1,6 @@
 from pathlib import Path
 from functools import lru_cache
-from pydantic import SecretStr, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from urllib.parse import urlsplit
 from typing import Literal
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -24,8 +24,9 @@ class Settings(BaseSettings):
     runner_image: str = "zoj-editor-runtime:v1"
     render_image: str = "zoj-editor-renderer:v1"
     execution_transport: Literal["local", "agent"] | None = None
-    worker_concurrency: int = 2
-    job_timeout_seconds: int = 1800
+    worker_concurrency: int = Field(default=2, ge=1, le=32)
+    job_timeout_seconds: int = Field(default=1800, ge=1, le=86400)
+    stress_max_seconds: int = Field(default=1800, ge=1, le=86400)
     runtime_revision: str = "editor-runtime-0.1.2"
     judge_backend: Literal["editor", "zoj"] = "editor"
     judge_concurrency: int = 3
