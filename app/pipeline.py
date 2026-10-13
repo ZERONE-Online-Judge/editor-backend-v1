@@ -208,7 +208,9 @@ class Pipeline:
                     verdict, result = self.run_solution(main, input_bytes, read_blob(test["answer_sha"]) if self.doc["info"]["interactive"] and test["answer_sha"] else b"", preparation=True)
                     if verdict != "AC":
                         raise SandboxError(f"Main 풀이가 {set_name} #{index}에서 {verdict}입니다.\n{result['stderr']}")
-                    answer = result["output"]
+                    # Interactive answer files are interactor resources, not a
+                    # contestant transcript. Preserve supplied reference data.
+                    answer = (read_blob(test["answer_sha"]) if test["answer_sha"] else b"") if self.doc["info"]["interactive"] else result["output"]
                 check, checked = self.checker(input_bytes, answer, answer, test["points"])
                 if check != "AC":
                     raise SandboxError(f"checker가 Main 출력을 거부했습니다.\n{checked['stderr']}")
