@@ -7,7 +7,7 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from sqlalchemy import delete, select, update
 from .config import get_settings
-from .db import Base, Job, LoginCode, LoginSession, RateLimit, SessionLocal, engine, now, uid
+from .db import Base, Job, LoginCode, LoginSession, RateLimit, SessionLocal, User, engine, now, uid
 from .pipeline import Pipeline
 
 logger = logging.getLogger("editor.worker")
@@ -73,8 +73,25 @@ def process_job(job):
         finished.set()
         thread.join(timeout=5)
     with SessionLocal() as db:
-        db.execute(update(Job).where(Job.id == job.id, Job.status == "running", Job.lease == job.lease).values(status=status, result=latest, heartbeat_at=now(), finished_at=now()))
+        updated = db.execute(update(Job).where(Job.id == job.id, Job.status == "running", Job.lease == job.lease).values(status=status, result=latest, heartbeat_at=now(), finished_at=now()))
         db.commit()
+        if updated.rowcount and status == "completed" and job.kind == "prepare" and job.options.get("auto_apply"):
+            from fastapi import HTTPException
+            from .prepared_results import apply_prepared_results
+            row = db.get(Job, job.id)
+            try:
+                apply_prepared_results(db, row, db.get(User, job.user_id), job.workspace_version)
+                outcome = {"status": "applied"}
+            except HTTPException as error:
+                db.rollback()
+                outcome = {"status": "blocked", **error.detail}
+            except Exception:
+                db.rollback()
+                logger.exception("Auto-apply failed for Editor job %s", job.id)
+                outcome = {"status": "blocked", "message": "자동 반영에 실패했습니다. 결과를 확인한 뒤 직접 반영하세요."}
+            db.execute(update(Job).where(Job.id == job.id, Job.status == "completed", Job.lease == job.lease)
+                       .values(result={**latest, "auto_apply": outcome}))
+            db.commit()
 
 
 def maintenance():

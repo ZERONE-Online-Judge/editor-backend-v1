@@ -1,0 +1,60 @@
+"""Apply successful generation atomically, without overwriting newer edits."""
+import copy
+from sqlalchemy import select, update
+from sqlalchemy.orm import load_only
+from .db import Job, JobApplication, WorkingCopy, now
+from .domain import authorize, document_hash, fail, validate_document, workspace
+
+
+def application_json(row):
+    return {"applied_at": row.applied_at, "workspace_version": row.workspace_version,
+            "document_hash": row.document_hash} if row else None
+
+
+def pending_preparations(db, problem_id, user_id, current_hash):
+    rows = db.scalars(select(Job).options(load_only(Job.id, Job.document_hash, Job.created_at))
+        .outerjoin(JobApplication, (JobApplication.job_id == Job.id) & (JobApplication.user_id == user_id))
+        .where(Job.problem_id == problem_id, Job.user_id == user_id, Job.kind == "prepare",
+               Job.status == "completed", JobApplication.job_id.is_(None))
+        .order_by(Job.created_at.desc())).all()
+    return [{"id": row.id, "created_at": row.created_at,
+             "stale": row.document_hash != current_hash} for row in rows]
+
+
+def apply_prepared_results(db, job, user, version):
+    problem, _ = authorize(db, job.problem_id, user, write=True)
+    wc = workspace(db, problem, user)
+    db.refresh(wc, with_for_update=True)
+    if job.kind != "prepare" or job.status != "completed":
+        fail("not_ready", "완료된 입력·정답 생성 작업만 반영할 수 있습니다.")
+    previous = db.get(JobApplication, (job.id, user.id))
+    if previous:
+        return {"version": wc.version, "application": application_json(previous)}
+    if wc.version != version:
+        fail("workspace_changed", "다른 창에서 변경되었습니다. 최신 작업 사본을 불러오세요.", 409)
+    if job.document_hash != document_hash(wc.document):
+        fail("stale_results", "실행 이후 자료가 변경되었습니다. 입력·정답을 다시 생성하세요.", 409)
+    doc = copy.deepcopy(wc.document)
+    for name, tests in job.result.get("testsets", {}).items():
+        for test in tests:
+            key = next((key for key, saved in doc["testsets"][name]["tests"].items()
+                        if saved["index"] == test["index"]), str(test["index"]))
+            doc["testsets"][name]["tests"][key] = {k: v for k, v in test.items()
+                if k in {"index", "input_sha", "answer_sha", "command", "group", "points", "description", "sample"}}
+        doc["testsets"][name]["script"] = ""
+    doc = validate_document(db, problem.id, doc)
+    changed = document_hash(doc) != document_hash(wc.document)
+    next_version = version + int(changed)
+    # Even unchanged outputs claim the version to serialize application against
+    # concurrent saves. The copy and its application record commit together.
+    result = db.execute(update(WorkingCopy).where(
+        WorkingCopy.problem_id == problem.id, WorkingCopy.user_id == user.id,
+        WorkingCopy.version == version).values(document=doc, version=next_version, updated_at=now()))
+    if not result.rowcount:
+        db.rollback()
+        fail("workspace_changed", "다른 창에서 변경되었습니다. 최신 작업 사본을 불러오세요.", 409)
+    record = JobApplication(job_id=job.id, user_id=user.id, applied_at=now(),
+                            workspace_version=next_version, document_hash=document_hash(doc))
+    db.add(record)
+    db.commit()
+    return {"version": next_version, "application": application_json(record)}

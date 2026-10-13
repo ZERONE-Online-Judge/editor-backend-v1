@@ -86,3 +86,34 @@ def test_real_verified_zoj_zip_can_restore_editor_project(owner,problem):
     if os.environ.get('ZOJ_COMPAT_ARTIFACT'):
         from pathlib import Path
         Path(os.environ['ZOJ_COMPAT_ARTIFACT']).write_bytes(archive.content)
+
+
+def test_real_generation_auto_apply_and_role_package_roundtrip(owner, problem):
+    prepare_problem(problem)
+    state = owner.get(f"/api/problems/{problem}").json()
+    state["document"]["files"]["validator.cpp"]["roles"] = ["validator"]
+    state["document"]["files"]["gen.cpp"]["roles"] = ["generator"]
+    saved = owner.put(f"/api/problems/{problem}/working-copy", json={"version": state["version"], "document": state["document"]})
+    assert saved.status_code == 200, saved.text
+    prepared = owner.post(f"/api/problems/{problem}/jobs", json={"kind": "prepare", "version": saved.json()["version"], "options": {"auto_apply": True}})
+    assert prepared.status_code == 202, prepared.text
+    process_job(claim_job())
+    result = owner.get(f"/api/problems/{problem}/jobs/{prepared.json()['id']}").json()
+    assert result["status"] == "completed", result
+    assert result["result"]["auto_apply"]["status"] == "applied", result
+    assert result["application"]
+    state = owner.get(f"/api/problems/{problem}").json()
+    assert state["pending_preparations"] == []
+    assert owner.post(f"/api/problems/{problem}/commit", json={"version": state["version"], "message": "생성 결과 반영"}).status_code == 200
+    state = owner.get(f"/api/problems/{problem}").json()
+    created = owner.post(f"/api/problems/{problem}/jobs", json={"kind": "package", "version": state["version"]})
+    assert created.status_code == 202, created.text
+    process_job(claim_job())
+    archive = owner.get(f"/api/problems/{problem}/packages/{created.json()['id']}")
+    assert archive.status_code == 200, archive.text
+    imported = owner.post('/api/imports?name=RoleRoundtrip&slug=role-roundtrip', content=archive.content)
+    assert imported.status_code == 201, imported.text
+    doc = owner.get('/api/problems/' + imported.json()['id']).json()['document']
+    assert doc['files']['validator.cpp']['roles'] == ['validator']
+    assert doc['files']['gen.cpp']['roles'] == ['generator']
+    assert doc['solutions']['main.cpp']['tag'] == 'MA'

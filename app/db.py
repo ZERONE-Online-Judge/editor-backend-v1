@@ -142,6 +142,15 @@ class Job(Base):
     finished_at: Mapped[int | None] = mapped_column(nullable=True)
 
 
+class JobApplication(Base):
+    __tablename__ = "job_applications"
+    job_id: Mapped[str] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    applied_at: Mapped[int] = mapped_column(default=now)
+    workspace_version: Mapped[int]
+    document_hash: Mapped[str] = mapped_column(String(64))
+
+
 class Issue(Base):
     __tablename__ = "issues"
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=uid)

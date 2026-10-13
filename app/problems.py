@@ -12,6 +12,7 @@ from .folders import owned_folder, place
 from .domain import authorize, cautions, document_hash, fail, references, three_way_merge, validate_document, workspace
 from .schema import Document, Strict, empty_document
 from .storage import put_blob, read_blob
+from .prepared_results import pending_preparations
 
 router = APIRouter(prefix="/api/problems", tags=["problems"])
 
@@ -70,7 +71,8 @@ def get_problem(problem_id: str, user: User = Depends(current_user), db: Session
     doc = wc.document if editable else problem.document
     return {"problem": problem_json(db, problem, user), "document": doc,
             "version": wc.version, "base_revision": wc.base_revision,
-            "document_hash": document_hash(doc), "cautions": cautions(doc)}
+            "document_hash": document_hash(doc), "cautions": cautions(doc),
+            "pending_preparations": pending_preparations(db, problem_id, user.id, document_hash(doc)) if editable else []}
 
 
 class SaveWorking(Strict):
@@ -103,7 +105,8 @@ def save_document(problem_id: str, values: SaveWorking, user: User = Depends(cur
             if key not in {"statements"} and doc[key] != wc.document[key]:
                 fail("translator_scope", "번역자는 지문만 수정할 수 있습니다.", 403)
     save_working(db, wc, doc, values.version)
-    return {"version": wc.version, "document_hash": document_hash(doc), "modified": doc != wc.base_document, "cautions": cautions(doc)}
+    return {"version": wc.version, "document_hash": document_hash(doc), "modified": doc != wc.base_document,
+            "cautions": cautions(doc), "pending_preparations": pending_preparations(db, problem_id, user.id, document_hash(doc))}
 
 
 class WorkingAction(Strict):
@@ -113,6 +116,27 @@ class WorkingAction(Strict):
 class Commit(WorkingAction):
     message: str = Field(min_length=1, max_length=1000)
     minor: bool = False
+    expected_revision: int | None = Field(default=None, ge=0)
+
+
+class CommitPreview(WorkingAction):
+    document: Document
+
+
+@router.post("/{problem_id}/commit-preview")
+def preview_commit(problem_id: str, values: CommitPreview, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
+    problem, access = authorize(db, problem_id, user)
+    if access.role not in {"OWNER", "WRITE"} and not access.translator:
+        fail("forbidden", "커밋 권한이 필요합니다.", 403)
+    wc = workspace(db, problem, user)
+    if wc.version != values.version:
+        fail("workspace_changed", "최신 작업 사본을 불러오세요.", 409)
+    doc = validate_document(db, problem.id, values.document.model_dump())
+    if access.role == "READ" and any(doc[k] != wc.base_document[k] for k in doc if k != "statements"):
+        fail("translator_scope", "번역자는 지문 변경만 커밋할 수 있습니다.", 403)
+    proposed, conflicts = three_way_merge(wc.base_document, doc, problem.document)
+    return {"revision": problem.revision, "before": problem.document, "after": proposed,
+            "conflicts": conflicts}
 
 
 @router.post("/{problem_id}/commit")
@@ -121,6 +145,8 @@ def commit(problem_id: str, values: Commit, user: User = Depends(current_user), 
     if access.role not in {"OWNER", "WRITE"} and not access.translator:
         fail("forbidden", "커밋 권한이 필요합니다.", 403)
     wc = workspace(db, problem, user)
+    if values.expected_revision is not None and values.expected_revision != problem.revision:
+        fail("preview_changed", "공유 리비전이 변경되었습니다. 변경사항을 다시 확인한 뒤 커밋하세요.", 409)
     if wc.version != values.version:
         fail("workspace_changed", "최신 작업 사본을 불러오세요.", 409)
     if access.role == "READ" and any(wc.document[k] != wc.base_document[k] for k in wc.document if k != "statements"):

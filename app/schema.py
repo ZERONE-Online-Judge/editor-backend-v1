@@ -1,6 +1,6 @@
 import re
 from typing import Literal
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator, model_serializer
 
 
 class Strict(BaseModel):
@@ -73,6 +73,23 @@ class SourceFile(Strict):
     entry_class: str = Field(default="", pattern=r"^(?:[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)?$")
     sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     size: int = Field(ge=0, le=16777216)
+    roles: list[Literal["validator", "checker", "generator", "interactor"]] = Field(default_factory=list, max_length=4)
+
+    @model_serializer(mode="wrap")
+    def serialize(self, handler):
+        value = handler(self)
+        # Preserve hashes of legacy documents that have no role metadata.
+        if not self.roles:
+            value.pop("roles", None)
+        return value
+
+    @model_validator(mode="after")
+    def executable_roles(self):
+        if self.roles and (self.kind != "source" or self.language == "text"):
+            raise ValueError("Program roles require executable source files")
+        if len(self.roles) != len(set(self.roles)):
+            raise ValueError("Program roles must be unique")
+        return self
     @field_validator("name")
     @classmethod
     def check_name(cls, value):

@@ -6,15 +6,25 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session, load_only
 from .config import get_settings
 from .auth import current_user
-from .db import Blob, Job, User, WorkingCopy, now, session_dependency
+from .db import Job, JobApplication, User, now, session_dependency
 from .domain import authorize, cautions, document_hash, fail, workspace
-from .problems import save_working
 from .schema import Strict
+from .prepared_results import application_json, apply_prepared_results, pending_preparations
 
 router = APIRouter(prefix="/api/problems", tags=["execution"])
 
 
+@router.get("/{problem_id}/preparation-status")
+def preparation_status(problem_id: str, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
+    problem, access = authorize(db, problem_id, user)
+    wc = workspace(db, problem, user)
+    editable = access.role in {"OWNER", "WRITE"}
+    return {"version": wc.version, "pending_preparations":
+            pending_preparations(db, problem_id, user.id, document_hash(wc.document)) if editable else []}
+
+
 class JobOptions(Strict):
+    auto_apply: bool = False
     execution_backend: Literal["editor", "zoj"] | None = None
     testset: str = "tests"
     solutions: list[str] = Field(default_factory=list, max_length=200)
@@ -36,11 +46,12 @@ class JobRequest(Strict):
     reuse: bool = True
 
 
-def job_json(job, include_result=True):
+def job_json(job, include_result=True, application=None):
     return {"id": job.id, "problem_id": job.problem_id, "kind": job.kind, "status": job.status,
             "document_hash": job.document_hash, "workspace_version": job.workspace_version,
             "revision": job.revision, "options": job.options, "created_at": job.created_at,
             "started_at": job.started_at, "finished_at": job.finished_at,
+            "application": application_json(application),
             "result": job.result if include_result else {"summary": job.result.get("summary", ""), "progress": job.result.get("progress", 0)}}
 
 
@@ -58,6 +69,8 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
     if values.kind == "package" and wc.document != problem.document and not from_committed_revision:
         fail("commit_required", "패키지를 만들기 전에 변경사항을 커밋하세요.", 409)
     options = values.options.model_dump()
+    if options["auto_apply"] and values.kind != "prepare":
+        fail("invalid_options", "자동 반영은 입력·정답 생성에서만 사용할 수 있습니다.")
     if values.kind == "package" and options["export_format"] == "zoj":
         from .zoj_package import check_compatibility
         check_compatibility(doc, options)
@@ -83,7 +96,7 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
         cached = db.scalars(select(Job).where(Job.problem_id == problem_id, Job.document_hash == hash_value, Job.kind == values.kind, Job.status.in_(["queued", "running", "completed"])).order_by(Job.created_at.desc())).all()
         for row in cached:
             if row.options == options:
-                return job_json(row)
+                return job_json(row, application=db.get(JobApplication, (row.id, user.id)))
     active = db.scalars(select(Job).where(Job.user_id == user.id, Job.status.in_(["queued", "running"]))).all()
     if len(active) >= 5:
         fail("too_many_jobs", "동시에 요청할 수 있는 검증 작업은 5개입니다.", 429)
@@ -97,7 +110,12 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
 @router.get("/{problem_id}/jobs")
 def list_jobs(problem_id: str, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
     authorize(db, problem_id, user)
-    return [job_json(row, False) for row in db.scalars(select(Job).options(load_only(Job.id, Job.problem_id, Job.kind, Job.status, Job.document_hash, Job.workspace_version, Job.revision, Job.options, Job.created_at, Job.started_at, Job.finished_at, Job.result)).where(Job.problem_id == problem_id).order_by(Job.created_at.desc()).limit(100))]
+    rows = db.execute(select(Job, JobApplication).outerjoin(JobApplication,
+        (JobApplication.job_id == Job.id) & (JobApplication.user_id == user.id))
+        .options(load_only(Job.id, Job.problem_id, Job.kind, Job.status, Job.document_hash, Job.workspace_version,
+            Job.revision, Job.options, Job.created_at, Job.started_at, Job.finished_at, Job.result))
+        .where(Job.problem_id == problem_id).order_by(Job.created_at.desc()).limit(100))
+    return [job_json(row, False, applied) for row, applied in rows]
 
 
 @router.get("/{problem_id}/jobs/{job_id}")
@@ -106,7 +124,7 @@ def get_job(problem_id: str, job_id: str, user: User = Depends(current_user), db
     row = db.get(Job, job_id)
     if not row or row.problem_id != problem_id:
         fail("not_found", "실행 기록을 찾을 수 없습니다.", 404)
-    return job_json(row)
+    return job_json(row, application=db.get(JobApplication, (row.id, user.id)))
 
 
 @router.post("/{problem_id}/jobs/{job_id}/cancel")
@@ -129,16 +147,6 @@ class ApplyResults(Strict):
 def apply_prepared(problem_id: str, job_id: str, values: ApplyResults, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
     problem, _ = authorize(db, problem_id, user, write=True)
     row = db.get(Job, job_id)
-    wc = workspace(db, problem, user)
-    if not row or row.problem_id != problem_id or row.status != "completed" or row.kind != "prepare":
-        fail("not_ready", "완료된 테스트 생성 작업만 반영할 수 있습니다.")
-    if row.document_hash != document_hash(wc.document):
-        fail("stale_results", "자료가 변경되었습니다. 테스트를 다시 생성하세요.", 409)
-    doc = copy.deepcopy(wc.document)
-    for testset, tests in row.result.get("testsets", {}).items():
-        for test in tests:
-            key = next((key for key, saved in doc["testsets"][testset]["tests"].items() if saved["index"] == test["index"]), str(test["index"]))
-            doc["testsets"][testset]["tests"][key] = {k: v for k, v in test.items() if k in {"index", "input_sha", "answer_sha", "command", "group", "points", "description", "sample"}}
-        doc["testsets"][testset]["script"] = ""
-    save_working(db, wc, doc, values.version)
-    return {"version": wc.version}
+    if not row or row.problem_id != problem_id:
+        fail("not_found", "실행 기록을 찾을 수 없습니다.", 404)
+    return apply_prepared_results(db, row, user, values.version)
