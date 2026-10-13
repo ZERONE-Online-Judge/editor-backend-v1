@@ -2,6 +2,7 @@ import copy
 import hashlib
 import io
 import json
+import os
 import uuid
 import zipfile
 from pathlib import Path
@@ -10,23 +11,84 @@ import pytest
 from app.db import Access, Job, Problem, Revision, SessionLocal, User, WorkingCopy
 from app.demo import populate
 from app.domain import document_hash
-from app.zoj_package import build_zoj_package
+from app.zoj_package import build_zoj_package, check_compatibility
 from app.config import get_settings
 from app import zoj
 
 
-def saved_package(problem, owner):
+def saved_package(problem, owner, languages=None, default='korean'):
     with SessionLocal() as db:
         p=db.get(Problem,problem);p.document=populate(db,p)
+        if languages:
+            p.document['statements'] = languages
         db.get(Revision,(problem,0)).document=copy.deepcopy(p.document)
         u=db.get(User,p.owner_id)
         job=Job(problem_id=problem,user_id=u.id,kind='package',status='completed',document=p.document,
                 document_hash=document_hash(p.document),workspace_version=0,revision=0,
-                options={'export_format':'zoj','testset':'tests','statement_language':'korean','verify':True})
+                options={'export_format':'zoj','testset':'tests','statement_language':default,'verify':True})
         db.add(job);db.flush()
         package=build_zoj_package(job,{'tests':list(p.document['testsets']['tests']['tests'].values())})
         job.result={'package':package};db.commit()
         return job.id, get_settings().data_dir/'packages'/(job.id+'.zip')
+
+
+def test_all_authored_languages_are_visible_in_native_zoj_fields(owner, problem):
+    from app.schema import Statement
+    languages = {
+        'korean': Statement(name='합', legend='한국어 본문 ![그림](diagram.png)', input='두 정수', output='합', notes='한국어 노트', tutorial='한국어 해설').model_dump(),
+        'english': Statement(name='Sum in English', legend='Compute $a+b$. ![Diagram](diagram.png)', input='Two integers', output='Their sum', notes='English note', tutorial='Add both integers').model_dump(),
+    }
+    # Populate once, then attach a statement image to both language versions.
+    saved_package(problem, owner)
+    from app.storage import put_blob
+    from app.schema import SourceFile
+    with SessionLocal() as db:
+        p = db.get(Problem, problem)
+        blob = put_blob(db, problem, b'\x89PNG\r\n\x1a\nfixture')
+        p.document['files']['diagram.png'] = SourceFile(name='diagram.png', sha256=blob['sha256'], size=blob['size'], kind='statement').model_dump()
+        # JSON columns require a new assigned object to persist nested mutations.
+        doc = copy.deepcopy(p.document)
+        doc['statements'] = languages
+        p.document = doc
+        u = db.get(User, p.owner_id)
+        job = Job(problem_id=problem, user_id=u.id, kind='package', status='completed', document=doc,
+                  document_hash=document_hash(doc), workspace_version=0, revision=0,
+                  options={'export_format':'zoj','testset':'tests','statement_language':'english','verify':True})
+        db.add(job); db.flush()
+        package = build_zoj_package(job, {'tests': list(doc['testsets']['tests']['tests'].values())})
+        job.result={'package':package}; db.commit()
+        path = get_settings().data_dir/'packages'/(job.id+'.zip')
+    with zipfile.ZipFile(path) as z:
+        manifest = json.loads(z.read('manifest.json'))
+        fields = manifest['problem']
+        assert fields['default_statement_language'] == 'en' and fields['title'] == 'Sum in English'
+        assert set(fields['statement_translations']) == {'ko'}
+        assert fields['editorial_translations'] == {'ko': '한국어 해설'}
+        snapshot = next(a for a in manifest['assets'] if a['original_filename'] == 'editor-project.json')
+        assert snapshot['category'] == 'package-files/package-resource'
+        for text in [fields['statement'], fields['statement_translations']['ko']['statement']]:
+            assert 'asset://' in text
+            meta = json.loads(text.split('<!--ZOJ_META:', 1)[1].split('-->')[0])
+            assert meta['examples'][0]['input'] == '1 2\n'
+        assert fields['statement_translations']['ko']['title'] == '합'
+    restored = owner.post('/api/imports?name=Multilingual&slug=multilingual', content=path.read_bytes())
+    assert restored.status_code == 201, restored.text
+    result = owner.get('/api/problems/'+restored.json()['id']).json()
+    assert result['document']['statements'] == languages
+    if os.environ.get('ZOJ_MULTILINGUAL_ARTIFACT'):
+        Path(os.environ['ZOJ_MULTILINGUAL_ARTIFACT']).write_bytes(path.read_bytes())
+
+
+def test_export_rejects_language_alias_collisions_before_queuing(owner, problem):
+    from fastapi import HTTPException
+    saved_package(problem, owner)
+    with SessionLocal() as db:
+        doc = copy.deepcopy(db.get(Problem, problem).document)
+    doc['statements']['EN'] = copy.deepcopy(doc['statements']['korean'])
+    doc['statements']['english'] = copy.deepcopy(doc['statements']['korean'])
+    with pytest.raises(HTTPException) as error:
+        check_compatibility(doc, {'statement_language': 'korean'})
+    assert error.value.detail['code'] == 'zoj_incompatible'
 
 
 def test_zoj_manifest_assets_samples_checksum_and_editor_roundtrip(owner,problem):

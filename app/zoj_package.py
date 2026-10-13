@@ -13,6 +13,18 @@ from .storage import put_blob, read_blob
 from .sandbox import VENDOR
 
 
+def statement_language_code(value):
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,99}", value):
+        raise ValueError("ZOJ 지문 언어는 영문 언어 코드로 지정하세요.")
+    aliases = {"korean": "ko", "english": "en", "japanese": "ja", "chinese": "zh", "russian": "ru",
+               "german": "de", "french": "fr", "spanish": "es", "portuguese": "pt"}
+    parts = aliases.get(value.lower(), value).replace("_", "-").split("-")
+    return "-".join([parts[0].lower(), *(
+        part.title() if len(part) == 4 and part.isalpha()
+        else part.upper() if len(part) == 2 and part.isalpha()
+        else part.lower() for part in parts[1:])])
+
+
 def check_compatibility(doc, options):
     issues = []
     info = doc["info"]
@@ -31,6 +43,12 @@ def check_compatibility(doc, options):
         issues.append("ZOJ checker는 C++17·C·Python 소스만 지원합니다. 해당 언어로 검증하세요.")
     if options["statement_language"] not in doc["statements"]:
         issues.append("내보낼 지문 언어를 선택하세요.")
+    try:
+        codes = [statement_language_code(name) for name in doc["statements"]]
+        if len(set(codes)) != len(codes):
+            issues.append("같은 언어 코드에 해당하는 지문이 여러 개입니다. 언어를 정리한 뒤 내보내세요.")
+    except ValueError as error:
+        issues.append(str(error))
     if issues:
         fail("zoj_incompatible", " ".join(issues), 400, issues=issues)
 
@@ -115,25 +133,37 @@ def build_zoj_package(job, testsets):
             manifest["testcase_sets"].append({"version": version, "is_active": active, "testcases": cases})
         for sha in references(doc) | references(job.document):
             if sha not in mappings:
-                asset("blob-" + sha + ".bin", read_blob(sha), "assets")
-        # The source snapshot retains other languages, groups, materials and component
-        # self-tests for reimport without adding unsupported manifest fields.
+                asset("blob-" + sha + ".bin", read_blob(sha), "package-files/package-resource")
+        # The source snapshot preserves Editor-only metadata for reimport.
         snapshot = {"format": "zoj-editor-source-v1", "document": doc, "source_document": job.document,
                     "revision": job.revision, "document_hash": job.document_hash, "blobs": dict(mappings)}
         encoded_snapshot = json.dumps(snapshot, ensure_ascii=False).encode()
         if len(encoded_snapshot) > get_settings().max_upload_bytes:
             raise ValueError("Editor 작업 자료가 개별 파일 16MiB 한도를 초과했습니다.")
-        asset("editor-project.json", encoded_snapshot, "assets")
-        statement = doc["statements"][job.options["statement_language"]]
+        # The snapshot includes editorials and solution metadata; it is never a
+        # public statement attachment, even when some statements are published.
+        asset("editor-project.json", encoded_snapshot, "package-files/package-resource")
+        default_language = job.options["statement_language"]
+        statement = doc["statements"][default_language]
         def rewrite(text):
             # Match full Markdown resource targets, never arbitrary occurrences.
             return re.sub(r"(?<=\]\()(?:\.\/)?([^\s)]+)(?=\))", lambda m: images.get(m[1], m[0]), text)
-        meta = {"inputDescription": rewrite(statement["input"]), "outputDescription": rewrite(statement["output"]),
-                "note": rewrite(statement["notes"]), "examples": examples}
-        statement_text = "<!--ZOJ_META:" + json.dumps(meta, ensure_ascii=False).replace("-->", "\\u002d\\u002d>") + "-->\n" + rewrite(statement["legend"])
+        def statement_text(item):
+            meta = {"inputDescription": rewrite(item["input"]), "outputDescription": rewrite(item["output"]),
+                    "note": rewrite(item["notes"]), "examples": examples}
+            return "<!--ZOJ_META:" + json.dumps(meta, ensure_ascii=False).replace("-->", "\\u002d\\u002d>") + "-->\n" + rewrite(item["legend"])
         manifest["problem"] = {"problem_code": "A", "title": statement["name"] or doc["info"]["name"],
-            "statement": statement_text, "editorial": rewrite(statement["tutorial"]), "time_limit_ms": doc["info"]["time_limit_ms"],
+            "statement": statement_text(statement), "editorial": rewrite(statement["tutorial"]), "time_limit_ms": doc["info"]["time_limit_ms"],
             "memory_limit_mb": doc["info"]["memory_limit_mb"], "language_resource_limits": {}, "display_order": 1}
+        # Expose translations through ZOJ's native fields, separate from the
+        # private Editor snapshot. Single-language Korean archives stay unchanged.
+        language_codes = {name: statement_language_code(name) for name in doc["statements"]}
+        if len(doc["statements"]) > 1 or language_codes[default_language] != "ko":
+            manifest["problem"].update(default_statement_language=language_codes[default_language],
+                statement_translations={language_codes[name]: {"title": item["name"] or doc["info"]["name"], "statement": statement_text(item)}
+                    for name, item in doc["statements"].items() if name != default_language and item["legend"].strip()},
+                editorial_translations={language_codes[name]: rewrite(item["tutorial"])
+                    for name, item in doc["statements"].items() if name != default_language and item["tutorial"].strip()})
         encoded = json.dumps(manifest, ensure_ascii=False).encode()
         if len(encoded) > 8 * 1048576 or total + len(encoded) > 2 * 1024**3:
             raise ValueError("ZOJ 문제 메타데이터의 크기 한도를 초과했습니다.")
