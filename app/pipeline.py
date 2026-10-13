@@ -167,7 +167,11 @@ class Pipeline:
 
     def prepare(self):
         main = self.main()
-        for set_name, testset in self.doc["testsets"].items():
+        all_sets = self.job.kind == "package" or self.job.options.get("all_testsets", False)
+        selected = list(self.doc["testsets"]) if all_sets else [self.job.options.get("testset", "tests")]
+        self.result["processed_testsets"] = selected
+        for set_name in selected:
+            testset = self.doc["testsets"][set_name]
             saved = list(testset["tests"].values())
             if testset["script"].strip():
                 saved = [test for test in saved if not test["command"]]
@@ -176,6 +180,8 @@ class Pipeline:
             prepared = []
             seen = set()
             for test in sorted(saved, key=lambda t: t["index"]):
+                if self.job.kind == "verify" and self.job.options.get("test_indices") and test["index"] not in self.job.options["test_indices"]:
+                    continue
                 self.sandbox.check_cancelled()
                 index = test["index"]
                 self.event(f"테스트 준비 · {set_name} #{index}")
@@ -199,7 +205,7 @@ class Pipeline:
                 row = {**test, "input_sha": self.blob(input_bytes), "answer_sha": self.blob(answer), "validator": "VALID", "main_cpu_ms": result["cpu_ms"], "main_memory_kb": result["memory_kb"], "main_wall_ms": result["wall_ms"]}
                 prepared.append(row)
             self.result["testsets"][set_name] = prepared
-        self.event("입력 검증과 Main 기대 출력 생성이 완료되었습니다.")
+        self.event(f"입력 검증과 Main 기대 출력 생성 완료 · {', '.join(selected)}")
 
     @staticmethod
     def expected_matches(tag, verdicts):

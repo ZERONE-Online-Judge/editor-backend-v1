@@ -27,6 +27,7 @@ class JobOptions(Strict):
     auto_apply: bool = False
     execution_backend: Literal["editor", "zoj"] | None = None
     testset: str = "tests"
+    all_testsets: bool = False
     solutions: list[str] = Field(default_factory=list, max_length=200)
     test_indices: list[int] = Field(default_factory=list, max_length=1000)
     generator: str = Field(default="", max_length=4096)
@@ -69,6 +70,8 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
     if values.kind == "package" and wc.document != problem.document and not from_committed_revision:
         fail("commit_required", "패키지를 만들기 전에 변경사항을 커밋하세요.", 409)
     options = values.options.model_dump()
+    if options["all_testsets"] and values.kind not in {"prepare", "package"}:
+        fail("invalid_options", "전체 세트 생성은 입력·정답 생성에서 선택하세요.")
     if options["auto_apply"] and values.kind != "prepare":
         fail("invalid_options", "자동 반영은 입력·정답 생성에서만 사용할 수 있습니다.")
     if values.kind == "package" and options["export_format"] == "zoj":
