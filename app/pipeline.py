@@ -167,6 +167,7 @@ class Pipeline:
 
     def prepare(self):
         main = self.main()
+        frozen = self.job.kind == "verify" and self.job.options.get("snapshot") == "committed"
         all_sets = self.job.kind == "package" or self.job.options.get("all_testsets", False)
         selected = list(self.doc["testsets"]) if all_sets else [self.job.options.get("testset", "tests")]
         self.result["processed_testsets"] = selected
@@ -185,7 +186,9 @@ class Pipeline:
                 self.sandbox.check_cancelled()
                 index = test["index"]
                 self.event(f"테스트 준비 · {set_name} #{index}")
-                input_bytes = self.generator(test["command"]) if test["command"] else read_blob(test["input_sha"])
+                if frozen and (not test["input_sha"] or not test["answer_sha"]):
+                    raise SandboxError(f"{set_name} #{index}: 작성자가 입력·정답 생성 결과를 반영하고 커밋한 뒤 검수하세요.")
+                input_bytes = read_blob(test["input_sha"]) if frozen or not test["command"] else self.generator(test["command"])
                 sha = hashlib.sha256(input_bytes).hexdigest()
                 if sha in seen and not self.doc["info"]["skip_duplicate_validation"]:
                     raise SandboxError(f"{set_name} #{index}: 중복된 입력입니다.")
@@ -195,17 +198,21 @@ class Pipeline:
                 valid, validator = self.validator(input_bytes, set_name, test["group"])
                 if not valid:
                     raise SandboxError(f"{set_name} #{index}: 입력 조건 위반\n{validator['stderr']}")
-                verdict, result = self.run_solution(main, input_bytes, read_blob(test["answer_sha"]) if self.doc["info"]["interactive"] and test["answer_sha"] else b"", preparation=True)
-                if verdict != "AC":
-                    raise SandboxError(f"Main 풀이가 {set_name} #{index}에서 {verdict}입니다.\n{result['stderr']}")
-                answer = result["output"]
+                if frozen:
+                    answer = read_blob(test["answer_sha"])
+                    result = {"cpu_ms": None, "memory_kb": None, "wall_ms": None}
+                else:
+                    verdict, result = self.run_solution(main, input_bytes, read_blob(test["answer_sha"]) if self.doc["info"]["interactive"] and test["answer_sha"] else b"", preparation=True)
+                    if verdict != "AC":
+                        raise SandboxError(f"Main 풀이가 {set_name} #{index}에서 {verdict}입니다.\n{result['stderr']}")
+                    answer = result["output"]
                 check, checked = self.checker(input_bytes, answer, answer, test["points"])
                 if check != "AC":
                     raise SandboxError(f"checker가 Main 출력을 거부했습니다.\n{checked['stderr']}")
-                row = {**test, "input_sha": self.blob(input_bytes), "answer_sha": self.blob(answer), "validator": "VALID", "main_cpu_ms": result["cpu_ms"], "main_memory_kb": result["memory_kb"], "main_wall_ms": result["wall_ms"]}
+                row = {**test, "input_sha": test["input_sha"] if frozen else self.blob(input_bytes), "answer_sha": test["answer_sha"] if frozen else self.blob(answer), "validator": "VALID", "main_cpu_ms": result["cpu_ms"], "main_memory_kb": result["memory_kb"], "main_wall_ms": result["wall_ms"]}
                 prepared.append(row)
             self.result["testsets"][set_name] = prepared
-        self.event(f"입력 검증과 Main 기대 출력 생성 완료 · {', '.join(selected)}")
+        self.event(f"{'커밋된 입력·기대 출력 확인 완료' if frozen else '입력 검증과 Main 기대 출력 생성 완료'} · {', '.join(selected)}")
 
     @staticmethod
     def expected_matches(tag, verdicts):

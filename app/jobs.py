@@ -1,14 +1,16 @@
 import copy
+import hashlib
 from typing import Literal
 from fastapi import APIRouter, Depends
-from pydantic import Field
-from sqlalchemy import select, update
+from pydantic import Field, field_validator
+from sqlalchemy import select, update, func
 from sqlalchemy.orm import Session, load_only
 from .config import get_settings
 from .auth import current_user
-from .db import Job, JobApplication, User, now, session_dependency
+from .db import Job, JobApplication, JobComment, Revision, User, now, session_dependency
 from .domain import authorize, cautions, document_hash, fail, workspace
-from .schema import Strict
+from .schema import Strict, SourceFile
+from .storage import put_blob
 from .prepared_results import application_json, apply_prepared_results, pending_preparations
 
 router = APIRouter(prefix="/api/problems", tags=["execution"])
@@ -23,11 +25,25 @@ def preparation_status(problem_id: str, user: User = Depends(current_user), db: 
             pending_preparations(db, problem_id, user.id, document_hash(wc.document)) if editable else []}
 
 
+class TemporarySolution(Strict):
+    name: str = Field(min_length=1, max_length=100)
+    language: Literal["cpp17", "cpp20", "c17", "c99", "python3", "java17", "java8"] = "python3"
+    tag: Literal["OK", "RJ", "TL", "TO", "TM", "WA", "PE", "ML", "NR", "RE"] = "OK"
+    content: str = Field(min_length=1, max_length=1048576)
+
+    @field_validator("name")
+    @classmethod
+    def safe_temporary_name(cls, value):
+        return SourceFile.check_name(value)
+
+
 class JobOptions(Strict):
     auto_apply: bool = False
     execution_backend: Literal["editor", "zoj"] | None = None
     testset: str = "tests"
     all_testsets: bool = False
+    snapshot: Literal["working_copy", "committed"] | None = None
+    temporary_solutions: list[TemporarySolution] = Field(default_factory=list, max_length=10)
     solutions: list[str] = Field(default_factory=list, max_length=200)
     test_indices: list[int] = Field(default_factory=list, max_length=1000)
     generator: str = Field(default="", max_length=4096)
@@ -43,6 +59,7 @@ class JobOptions(Strict):
 class JobRequest(Strict):
     kind: Literal["prepare", "verify", "validator-tests", "checker-tests", "stress", "package", "render"]
     version: int = Field(ge=0)
+    revision: int | None = Field(default=None, ge=0)
     options: JobOptions = Field(default_factory=JobOptions)
     reuse: bool = True
 
@@ -50,7 +67,7 @@ class JobRequest(Strict):
 def job_json(job, include_result=True, application=None):
     return {"id": job.id, "problem_id": job.problem_id, "kind": job.kind, "status": job.status,
             "document_hash": job.document_hash, "workspace_version": job.workspace_version,
-            "revision": job.revision, "options": job.options, "created_at": job.created_at,
+            "revision": job.revision, "options": job.options, "created_at": job.created_at, "requested_by": job.user_id,
             "started_at": job.started_at, "finished_at": job.finished_at,
             "application": application_json(application),
             "result": job.result if include_result else {"summary": job.result.get("summary", ""), "progress": job.result.get("progress", 0)}}
@@ -62,14 +79,50 @@ def create_job(problem_id: str, values: JobRequest, user: User = Depends(current
 
 
 def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *, from_committed_revision: bool = False):
-    problem, _ = authorize(db, problem_id, user, write=values.kind != "render")
-    wc = workspace(db, problem, user)
-    if wc.version != values.version:
+    problem, access = authorize(db, problem_id, user)
+    writer = access.role in {"WRITE", "OWNER"}
+    translator_render = values.kind == "render" and access.translator and not access.reviewer
+    if not writer and not access.reviewer and not translator_render:
+        fail("forbidden", "실행에는 쓰기 권한 또는 검수자 권한이 필요합니다.", 403)
+    if not writer and values.kind in {"prepare", "package"}:
+        fail("forbidden", "검수자는 입력·정답 생성이나 패키지 생성을 할 수 없습니다.", 403)
+    options = values.options.model_dump()
+    if not writer and options["auto_apply"]:
+        fail("forbidden", "검수 결과는 문제 자료에 자동 반영할 수 없습니다.", 403)
+    if not writer and not translator_render and options["snapshot"] == "working_copy":
+        fail("forbidden", "검수자는 커밋된 리비전으로만 실행할 수 있습니다.", 403)
+    snapshot = options["snapshot"] or ("committed" if not writer and not translator_render else "working_copy")
+    if values.kind == "package" or from_committed_revision:
+        snapshot = "committed"
+    wc = workspace(db, problem, user) if writer or translator_render else None
+    if wc and wc.version != values.version:
         fail("workspace_changed", "최신 작업 사본을 저장한 뒤 실행하세요.", 409)
-    doc = copy.deepcopy(problem.document if values.kind == "package" else wc.document)
+    revision = problem.revision
+    if snapshot == "committed":
+        revision = values.revision if values.revision is not None else problem.revision
+        committed = db.get(Revision, (problem_id, revision))
+        if not committed:
+            fail("invalid_revision", "커밋된 리비전을 찾을 수 없습니다.", 404)
+        doc = copy.deepcopy(committed.document)
+    else:
+        doc = copy.deepcopy(wc.document)
     if values.kind == "package" and wc.document != problem.document and not from_committed_revision:
         fail("commit_required", "패키지를 만들기 전에 변경사항을 커밋하세요.", 409)
-    options = values.options.model_dump()
+    options.update(snapshot=snapshot, source_document_hash=document_hash(doc), source_revision=revision,
+                   permission_mode="write" if writer else "translator" if translator_render else "reviewer")
+    temporary = []
+    if options["temporary_solutions"] and values.kind not in {"verify", "stress"}:
+        fail("invalid_options", "임시 검수 코드는 풀이 검증이나 스트레스 테스트에서 실행하세요.")
+    for source in values.options.temporary_solutions:
+        if source.name in doc["files"] or source.name in doc["solutions"]:
+            fail("temporary_name_conflict", "임시 코드는 기존 문제 파일과 다른 이름을 사용하세요.")
+        content = source.content.encode()
+        if len(content) > 1048576:
+            fail("too_large", "임시 검수 코드는 파일당 1MiB 이하여야 합니다.", 413)
+        metadata = SourceFile(name=source.name, language=source.language, sha256=hashlib.sha256(content).hexdigest(), size=len(content)).model_dump()
+        doc["solutions"][source.name] = {**metadata, "tag": source.tag, "extra_tags": {}}
+        temporary.append((metadata, content))
+    options["temporary_solutions"] = [{**metadata, "tag": doc["solutions"][metadata["name"]]["tag"]} for metadata, _ in temporary]
     if options["all_testsets"] and values.kind not in {"prepare", "package"}:
         fail("invalid_options", "전체 세트 생성은 입력·정답 생성에서 선택하세요.")
     if options["auto_apply"] and values.kind != "prepare":
@@ -110,8 +163,10 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
     active = db.scalars(select(Job).where(Job.user_id == user.id, Job.status.in_(["queued", "running"]))).all()
     if len(active) >= 5:
         fail("too_many_jobs", "동시에 요청할 수 있는 검증 작업은 5개입니다.", 429)
+    for _, content in temporary:
+        put_blob(db, problem_id, content)
     row = Job(problem_id=problem_id, user_id=user.id, kind=values.kind, document=doc, document_hash=hash_value,
-              workspace_version=wc.version, revision=problem.revision, options=options)
+              workspace_version=wc.version if wc else values.version, revision=revision, options=options)
     db.add(row)
     db.commit()
     return job_json(row)
@@ -139,14 +194,49 @@ def get_job(problem_id: str, job_id: str, user: User = Depends(current_user), db
 
 @router.post("/{problem_id}/jobs/{job_id}/cancel")
 def cancel_job(problem_id: str, job_id: str, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
-    authorize(db, problem_id, user, write=True)
+    _, access = authorize(db, problem_id, user)
     row = db.get(Job, job_id)
     if not row or row.problem_id != problem_id:
         fail("not_found", "실행 기록을 찾을 수 없습니다.", 404)
+    if access.role not in {"WRITE", "OWNER"} and not (access.reviewer and row.user_id == user.id):
+        fail("forbidden", "검수자는 자신이 요청한 실행만 취소할 수 있습니다.", 403)
     db.execute(update(Job).where(Job.id == job_id, Job.status.in_(["queued", "running"])).values(status="cancelled", finished_at=now()))
     db.commit()
     db.refresh(row)
     return job_json(row)
+
+
+class InvocationComment(Strict):
+    content: str = Field(min_length=1, max_length=8000)
+
+
+@router.get("/{problem_id}/jobs/{job_id}/comments")
+def list_comments(problem_id: str, job_id: str, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
+    authorize(db, problem_id, user)
+    job = db.get(Job, job_id)
+    if not job or job.problem_id != problem_id:
+        fail("not_found", "실행 기록을 찾을 수 없습니다.", 404)
+    rows = db.execute(select(JobComment, User.display_name).join(User, User.id == JobComment.user_id)
+                      .where(JobComment.job_id == job_id).order_by(JobComment.created_at, JobComment.id).limit(1000))
+    return [{"id": note.id, "author": name, "content": note.content, "created_at": note.created_at} for note, name in rows]
+
+
+@router.post("/{problem_id}/jobs/{job_id}/comments", status_code=201)
+def add_comment(problem_id: str, job_id: str, values: InvocationComment, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
+    _, access = authorize(db, problem_id, user)
+    if access.role not in {"WRITE", "OWNER"} and not access.reviewer:
+        fail("forbidden", "의견 작성에는 쓰기 권한 또는 검수자 권한이 필요합니다.", 403)
+    job = db.scalar(select(Job).where(Job.id == job_id, Job.problem_id == problem_id).with_for_update())
+    if not job:
+        fail("not_found", "실행 기록을 찾을 수 없습니다.", 404)
+    if not values.content.strip():
+        fail("empty_comment", "검수 의견을 입력하세요.")
+    if db.scalar(select(func.count()).select_from(JobComment).where(JobComment.job_id == job_id)) >= 1000:
+        fail("comment_limit", "이 실행에 보관할 수 있는 의견 한도에 도달했습니다.", 429)
+    row = JobComment(job_id=job_id, user_id=user.id, content=values.content.strip())
+    db.add(row)
+    db.commit()
+    return {"id": row.id, "author": user.display_name, "content": row.content, "created_at": row.created_at}
 
 
 class ApplyResults(Strict):

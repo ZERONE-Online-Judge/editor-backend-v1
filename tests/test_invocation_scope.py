@@ -67,3 +67,17 @@ def test_all_sets_flag_cannot_expand_verification_scope(owner, problem):
     })
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "invalid_options"
+
+
+def test_committed_verification_does_not_regenerate_or_replace_answers(problem):
+    pipeline, _ = scoped_pipeline(problem, "verify", snapshot="committed")
+    with SessionLocal() as db:
+        sha = put_blob(db, problem, b"committed answer\n")["sha256"]
+        db.commit()
+    test = pipeline.doc["testsets"]["tests"]["tests"]["1"]
+    test["answer_sha"], test["command"] = sha, "must-not-regenerate"
+    pipeline.generator = lambda *args: pytest.fail("committed input must not regenerate")
+    pipeline.run_solution = lambda *args, **kwargs: pytest.fail("committed answer must not replace")
+    pipeline.blob = lambda *args: pytest.fail("committed test resources must stay immutable")
+    pipeline.prepare()
+    assert pipeline.result["testsets"]["tests"][0]["answer_sha"] == sha

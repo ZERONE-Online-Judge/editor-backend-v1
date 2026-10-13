@@ -151,6 +151,15 @@ class JobApplication(Base):
     document_hash: Mapped[str] = mapped_column(String(64))
 
 
+class JobComment(Base):
+    __tablename__ = "job_comments"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=uid)
+    job_id: Mapped[str] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    content: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[int] = mapped_column(default=now)
+
+
 class Issue(Base):
     __tablename__ = "issues"
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=uid)
