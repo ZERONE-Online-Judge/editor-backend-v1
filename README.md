@@ -112,3 +112,44 @@ Codeforces의 비공개 소스나 서비스 계정을 가져오지 않습니다.
 - `feature/zoj-library`: ZOJ에서 본인 문제 가져오기
 - `feature/self-hosted-deployment`: 전용 러너와 검증 후 순차 배포
 - `feature/shared-login`: 공통 계정·비밀번호·로그인 세션
+
+## 공유 작업 폴더
+
+`feature/shared-workspaces`는 개인 폴더와 구분되는 공동 작업 공간을
+추가합니다. DB에는 `alembic upgrade head`가 필요합니다. 기존 개인 폴더,
+문제 소유권, 문제별 직접 공유는 그대로 유지됩니다.
+
+- `POST /api/shared-folders`: 최상위 공유 폴더 생성
+- `GET /api/shared-folders/invitations`: 로그인 이메일로 받은 초대
+- `POST /api/shared-folders/invitations/{id}/accept` 또는 `/decline`
+- `GET /api/shared-folders/{id}/members`: 구성원 조회
+- `POST /api/shared-folders/{id}/invitations`: 이메일·역할로 초대
+- `PUT/DELETE /api/shared-folders/{id}/members/{user_id}`: 권한 변경·해제
+- `DELETE /api/shared-folders/{id}/invitations/{invitation_id}`: 초대 취소
+
+초대는 7일간 유효합니다. 이메일을 발송하지 않고 로그인 후 받은 초대에
+표시합니다. 수락 전에는 접근 권한이 생기지 않습니다. 폴더 관리자는 모든
+하위 폴더에 동일한 구성원 권한을 적용합니다.
+
+| 역할 | 가능한 작업 |
+| --- | --- |
+| 관리자 | 구성원 초대·권한 관리, 자료 편집·실행·커밋, 폴더 정리 |
+| 편집자 | 자료 편집·실행·커밋, 문제 추가와 하위 폴더 정리 |
+| 검수자 | 커밋된 자료로 검증·임시 검수 코드 실행, 검수 의견과 이슈 |
+| 번역자 | 지문 번역·커밋, 렌더링, 이슈 작성; 기준 원문·공통 자료 제외 |
+| 읽기 | 문제 자료·실행 결과 열람 |
+
+소유자는 관리자 권한을 포함하며 다른 구성원이 해제할 수 없습니다.
+문제 삭제·ZOJ 배포는 원래 문제 소유자만 할 수 있습니다. 공유 폴더를 통해
+얻은 편집 권한으로 문제에 영구적인 직접 공유를 추가할 수 없습니다.
+
+문제 이동은 기존 `/api/folders/move-problems`를 사용합니다. 공유 범위를
+바꾸려면 문제 소유자의 `share_confirmed: true` 확인이 필요합니다.
+같은 공유 폴더 안의 정리는 편집자도 할 수 있습니다. 폴더 자체는 개인
+영역과 공유 영역 사이 또는 서로 다른 공유 폴더 사이로 이동할 수 없습니다.
+
+탈퇴·내보내기 후에는 폴더를 통한 접근과 실행 권한이 사라집니다. 문제
+소유권이나 문제별 직접 공유가 남아 있다면 해당 권한은 계속 적용됩니다.
+워커는 진행 중에도 권한을 확인하여 실행 권한이 사라진 작업을 취소합니다.
+최상위 공유 폴더는 하위 폴더와 문제(휴지통 포함)가 없을 때 소유자만
+삭제할 수 있습니다. 하위 폴더 삭제는 기존처럼 내용을 상위로 옮깁니다.

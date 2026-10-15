@@ -9,6 +9,7 @@ from sqlalchemy import delete, select, update
 from .config import get_settings
 from .db import Access, Base, Job, LoginCode, LoginSession, RateLimit, SessionLocal, User, engine, now, uid
 from .pipeline import Pipeline
+from .folder_access import effective_access
 
 logger = logging.getLogger("editor.worker")
 stop_event = threading.Event()
@@ -44,7 +45,7 @@ def process_job(job):
             state = db.get(Job, job.id)
             if stop_event.is_set() or not state or state.status != "running" or state.lease != job.lease:
                 raise Cancelled("작업이 취소되거나 워커가 중지되었습니다.")
-            access = db.get(Access, (job.problem_id, job.user_id))
+            access = effective_access(db, job.problem_id, job.user_id)
             mode = job.options.get("permission_mode", "write")
             if not access or not (access.role in {"WRITE", "OWNER"} or mode == "reviewer" and access.reviewer or mode == "translator" and job.kind == "render" and access.translator):
                 raise Cancelled("문제 실행 권한이 해제되었습니다.")

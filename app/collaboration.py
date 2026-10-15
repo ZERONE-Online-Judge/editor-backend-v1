@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from .auth import current_user
 from .db import Access, Collection, Issue, Problem, User, now, session_dependency
 from .domain import authorize, fail
+from .folder_access import effective_access, can_manage_access
 from .problems import problem_json
 from .schema import Strict
 
@@ -29,6 +30,8 @@ class SetAccess(Strict):
 @router.put("/problems/{problem_id}/accesses")
 def set_access(problem_id: str, values: SetAccess, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
     problem, _ = authorize(db, problem_id, user, write=True)
+    if not can_manage_access(db, problem, user):
+        fail("workspace_access_managed", "공유 폴더의 구성원 권한은 폴더 관리자에게 요청하세요. 문제별 직접 공유는 문제 소유자만 변경할 수 있습니다.", 403)
     target = db.scalar(select(User).where((User.handle == values.login) | (User.email == values.login.lower())))
     if not target:
         fail("user_not_found", "Editor에 먼저 로그인한 사용자의 이메일 또는 아이디를 입력하세요.", 404)
@@ -70,7 +73,7 @@ def assignee(db, problem_id, handle):
     if not handle:
         return None
     target = db.scalar(select(User).where(User.handle == handle))
-    member = db.get(Access, (problem_id, target.id)) if target else None
+    member = effective_access(db, problem_id, target.id) if target else None
     if not member or member.role not in {"WRITE", "OWNER"}:
         fail("invalid_assignee", "쓰기 권한이 있는 담당자를 선택하세요.")
     return target.id

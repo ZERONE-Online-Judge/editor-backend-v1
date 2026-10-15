@@ -15,6 +15,9 @@ from .db import Folder, Job, LibraryNonce, Placement, Problem, User, WorkingCopy
 from .domain import document_hash, fail, workspace
 from .jobs import JobOptions, JobRequest, _create_job
 from .schema import Strict
+from .folders import accessible_folders
+from .folder_access import workspace_role
+from .db import SharedPlacement
 
 router = APIRouter(prefix="/api/zoj-library", tags=["ZOJ library"])
 
@@ -77,16 +80,18 @@ def list_projects(q: str = Query(default="", max_length=200), offset: int = Quer
               "problems": [], "folders": [], "total": 0, "offset": offset, "limit": limit}
     if not user:
         return result
+    available = accessible_folders(db, user)
+    shared = select(SharedPlacement.problem_id).join(Folder, Folder.id == SharedPlacement.folder_id).where(Folder.id.in_([f.id for f in available if f.workspace_id]))
     query = select(Problem).where(Problem.owner_id == user.id, Problem.deleted.is_(False))
     if folder != "all":
         if folder == "root":
             classified = select(Placement.problem_id).where(Placement.user_id == user.id, Placement.folder_id.is_not(None))
-            query = query.where(Problem.id.not_in(classified))
+            query = query.where(Problem.id.not_in(classified), Problem.id.not_in(shared))
         else:
             own_folder = db.get(Folder, folder)
-            if not own_folder or own_folder.user_id != user.id:
+            if not own_folder or (not workspace_role(db, own_folder.workspace_id, user.id) if own_folder.workspace_id else own_folder.user_id != user.id):
                 fail("library_folder_not_found", "내 폴더를 찾을 수 없습니다.", 404)
-            placed = select(Placement.problem_id).where(Placement.user_id == user.id, Placement.folder_id == folder)
+            placed = select(SharedPlacement.problem_id).where(SharedPlacement.folder_id == folder) if own_folder.workspace_id else select(Placement.problem_id).where(Placement.user_id == user.id, Placement.folder_id == folder, Placement.problem_id.not_in(shared))
             query = query.where(Problem.id.in_(placed))
     if q.strip():
         needle = "%" + q.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
@@ -96,6 +101,7 @@ def list_projects(q: str = Query(default="", max_length=200), offset: int = Quer
     ids = [p.id for p in rows]
     copies = {w.problem_id: w for w in db.scalars(select(WorkingCopy).where(WorkingCopy.user_id == user.id, WorkingCopy.problem_id.in_(ids)))}
     placements = {p.problem_id: p.folder_id for p in db.scalars(select(Placement).where(Placement.user_id == user.id, Placement.problem_id.in_(ids)))}
+    placements.update({p.problem_id:p.folder_id for p in db.scalars(select(SharedPlacement).where(SharedPlacement.problem_id.in_(ids), SharedPlacement.folder_id.in_([f.id for f in available if f.workspace_id])))})
     for problem in rows:
         wc = copies.get(problem.id)
         result["problems"].append({"id": problem.id, "name": problem.document["info"]["name"], "slug": problem.slug,
@@ -103,7 +109,7 @@ def list_projects(q: str = Query(default="", max_length=200), offset: int = Quer
             "uncommitted": bool(wc and wc.document != wc.base_document), "testsets": list(problem.document["testsets"]),
             "statement_languages": list(problem.document["statements"]),
             "url": get_settings().public_origin.rstrip("/") + "/problems/" + problem.id + "/packages"})
-    result["folders"] = [{"id": f.id, "name": f.name, "parent_id": f.parent_id} for f in db.scalars(select(Folder).where(Folder.user_id == user.id).order_by(Folder.name_key))]
+    result["folders"] = [{"id": f.id, "name": f.name, "parent_id": f.parent_id} for f in available]
     return result
 
 

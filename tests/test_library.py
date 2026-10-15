@@ -117,3 +117,26 @@ def test_download_checks_owner_current_revision_verification_and_hash(client, ow
         db.get(Problem, problem).revision += 1
         db.commit()
     assert signed(client, "GET", path).json()["error"]["code"] == "library_package_stale"
+
+
+def test_shared_folders_keep_zoj_library_owner_only(client,owner,problem,clients):
+    from test_shared_folders import shared,join,add_problem
+    space=shared(owner);member=clients('member');join(owner,member,space,'EDITOR','member')
+    peer=add_problem(member,space,'peer-owned')
+    assert owner.post('/api/folders/move-problems',json={'problem_ids':[problem],'folder_id':space,'share_confirmed':True}).status_code==200
+    result=signed(client,'GET',ROOT+'?folder='+space).json()
+    assert [p['id'] for p in result['problems']]==[problem]
+    assert result['problems'][0]['folder_id']==space
+    assert signed(client,'GET',ROOT+'?folder=root').json()['total']==0
+    result=signed(client,'GET',ROOT+'?folder='+space,'member@example.com').json()
+    assert [p['id'] for p in result['problems']]==[peer]
+    assert signed(client,'POST',ROOT+'/'+problem+'/packages','member@example.com',{}).status_code==404
+
+
+def test_shared_placement_overrides_old_personal_filing(client,owner,problem):
+    private=owner.post('/api/folders',json={'name':'Private'}).json()['id']
+    owner.post('/api/folders/move-problems',json={'problem_ids':[problem],'folder_id':private})
+    space=owner.post('/api/shared-folders',json={'name':'Team'}).json()['id']
+    owner.post('/api/folders/move-problems',json={'problem_ids':[problem],'folder_id':space,'share_confirmed':True})
+    assert signed(client,'GET',ROOT+'?folder='+private).json()['total']==0
+    assert signed(client,'GET',ROOT+'?folder='+space).json()['problems'][0]['folder_id']==space

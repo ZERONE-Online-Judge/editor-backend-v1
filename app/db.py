@@ -75,11 +75,40 @@ class Access(Base):
     translator: Mapped[bool] = mapped_column(default=False)
 
 
+class SharedWorkspace(Base):
+    __tablename__ = "shared_workspaces"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=uid)
+    owner_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    created_at: Mapped[int] = mapped_column(default=now)
+
+
+class WorkspaceMember(Base):
+    __tablename__ = "workspace_members"
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("shared_workspaces.id", ondelete="CASCADE"), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    role: Mapped[str] = mapped_column(String(20))
+    created_at: Mapped[int] = mapped_column(default=now)
+
+
+class WorkspaceInvitation(Base):
+    __tablename__ = "workspace_invitations"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=uid)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("shared_workspaces.id", ondelete="CASCADE"), index=True)
+    email: Mapped[str] = mapped_column(String(254), index=True)
+    role: Mapped[str] = mapped_column(String(20))
+    inviter_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    created_at: Mapped[int] = mapped_column(default=now)
+    expires_at: Mapped[int]
+    __table_args__ = (UniqueConstraint("workspace_id", "email"),)
+
+
 class Folder(Base):
     __tablename__ = "folders"
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=uid)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     parent_id: Mapped[str | None] = mapped_column(ForeignKey("folders.id", ondelete="SET NULL"), nullable=True)
+    workspace_id: Mapped[str | None] = mapped_column(ForeignKey("shared_workspaces.id"), nullable=True, index=True)
     parent_key: Mapped[str] = mapped_column(String(32), default="")
     name: Mapped[str] = mapped_column(String(80))
     name_key: Mapped[str] = mapped_column(String(240))
@@ -91,6 +120,12 @@ class Placement(Base):
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
     problem_id: Mapped[str] = mapped_column(ForeignKey("problems.id", ondelete="CASCADE"), primary_key=True)
     folder_id: Mapped[str | None] = mapped_column(ForeignKey("folders.id", ondelete="SET NULL"), nullable=True, index=True)
+
+
+class SharedPlacement(Base):
+    __tablename__ = "shared_placements"
+    problem_id: Mapped[str] = mapped_column(ForeignKey("problems.id", ondelete="CASCADE"), primary_key=True)
+    folder_id: Mapped[str] = mapped_column(ForeignKey("folders.id", ondelete="RESTRICT"), index=True)
 
 
 class WorkingCopy(Base):

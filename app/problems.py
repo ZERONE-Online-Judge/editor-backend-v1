@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from .auth import current_user, user_json
 from .db import Access, Blob, Issue, Job, Placement, Problem, Revision, User, WorkingCopy, now, session_dependency
 from .folders import owned_folder, place
+from .folder_access import visible_problem_ids, merge_access, problem_access_context
 from .domain import authorize, cautions, document_hash, fail, references, three_way_merge, validate_document, workspace
 from .config import get_settings
 from .execution_limits import public_limits
@@ -19,8 +20,11 @@ from .prepared_results import pending_preparations
 router = APIRouter(prefix="/api/problems", tags=["problems"])
 
 
-def problem_json(db, problem, user):
-    access = db.get(Access, (problem.id, user.id))
+def problem_json(db, problem, user, context=None):
+    direct, shared_rows, roles, roots = context or problem_access_context(db, [problem.id], user.id)
+    shared = shared_rows.get(problem.id)
+    inherited_role = roles.get(shared.workspace_id) if shared else None
+    access = merge_access(direct.get(problem.id), inherited_role)
     working = db.get(WorkingCopy, (problem.id, user.id))
     owner = db.get(User, problem.owner_id)
     placement = db.get(Placement, (user.id, problem.id))
@@ -32,13 +36,18 @@ def problem_json(db, problem, user):
             "modified": bool(working and document_hash(working.document) != document_hash(working.base_document)),
             "tags": doc["info"]["tags"], "note": problem.note, "deleted": problem.deleted,
             "created_at": problem.created_at, "updated_at": problem.updated_at,
-            "folder_id": placement.folder_id if placement else None}
+            "folder_id": shared.id if inherited_role else placement.folder_id if placement else None,
+            "workspace_id": shared.workspace_id if inherited_role else None,
+            "workspace_role": inherited_role,
+            "workspace_name": roots.get(shared.workspace_id) if inherited_role else None,
+            "can_manage_access": problem.owner_id == user.id or shared is None}
 
 
 @router.get("")
 def list_problems(deleted: bool = False, q: str = "", user: User = Depends(current_user), db: Session = Depends(session_dependency)):
-    rows = db.scalars(select(Problem).join(Access).where(Access.user_id == user.id, Problem.deleted == deleted).order_by(Problem.updated_at.desc())).all()
-    result = [problem_json(db, p, user) for p in rows]
+    rows = db.scalars(select(Problem).where((Problem.id.in_(select(Access.problem_id).where(Access.user_id == user.id))) | (Problem.id.in_(visible_problem_ids(db, user.id)))).where(Problem.deleted == deleted).order_by(Problem.updated_at.desc())).all()
+    context = problem_access_context(db, [p.id for p in rows], user.id)
+    result = [problem_json(db, p, user, context) for p in rows]
     if q:
         result = [p for p in result if q.lower() in " ".join([p["name"], p["slug"], p["owner"], *p["tags"]]).lower()]
     return result
@@ -300,7 +309,7 @@ def resolve_conflicts(problem_id: str, values: Resolve, user: User = Depends(cur
     if access.role not in {"WRITE", "OWNER"} and not access.translator:
         fail("forbidden", "충돌을 해결할 권한이 없습니다.", 403)
     wc = workspace(db, problem, user)
-    if access.role == "READ" and any(wc.document[k] != wc.base_document[k] for k in wc.document if k != "statements"):
+    if access.role == "READ" and any(wc.document.get(k) != wc.base_document.get(k) for k in set(wc.document) | set(wc.base_document) if k not in {"statements", "translation_reviews"}):
         fail("translator_scope", "번역자는 지문 변경만 커밋할 수 있습니다.", 403)
     if problem.revision != values.revision:
         fail("revision_changed", "공유 리비전이 변경되었습니다. 최신 충돌을 다시 확인하세요.", 409)
@@ -326,6 +335,9 @@ def resolve_conflicts(problem_id: str, values: Resolve, user: User = Depends(cur
         else:
             target[parts[-1]] = copy.deepcopy(source)
     doc = validate_document(db, problem_id, merged)
+    basis = problem.document.get("translation_source")
+    if access.role == "READ" and basis and doc["statements"].get(basis) != problem.document["statements"].get(basis):
+        fail("translator_scope", "번역자는 기준 원문을 변경할 수 없습니다.", 403)
     changed = db.execute(update(WorkingCopy).where(WorkingCopy.problem_id == problem_id, WorkingCopy.user_id == user.id, WorkingCopy.version == values.version).values(document=doc, base_document=copy.deepcopy(problem.document), base_revision=problem.revision, version=values.version + 1, updated_at=now()))
     if not changed.rowcount:
         db.rollback()

@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from .db import Access, Blob, Problem, WorkingCopy, now
 from .schema import Document
+from .folder_access import effective_access
 from .execution_limits import MAX_TESTS_PER_SET
 
 
@@ -19,7 +20,7 @@ def document_hash(doc):
 
 def authorize(db, problem_id, user, write=False, owner=False, allow_deleted=False):
     problem = db.get(Problem, problem_id)
-    access = db.get(Access, (problem_id, user.id))
+    access = effective_access(db, problem_id, user.id)
     if not problem or not access or (problem.deleted and not allow_deleted):
         fail("not_found", "문제를 찾을 수 없습니다.", 404)
     if owner and access.role != "OWNER":
