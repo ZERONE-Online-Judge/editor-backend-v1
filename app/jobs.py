@@ -79,6 +79,7 @@ class JobOptions(Strict):
     counterexample_limit: Literal[1, 5, 10] = 1
     counterexample_verdicts: list[Literal["WA", "TLE", "MLE", "RE", "PE", "OLE", "IDLENESS_LIMIT", "PARTIAL"]] = Field(default_factory=lambda: ["WA", "TLE", "MLE", "RE", "PE", "OLE", "IDLENESS_LIMIT", "PARTIAL"], min_length=1, max_length=8)
     verify: bool = True
+    prepare_mode: Literal["full", "inputs", "validate", "answers"] = "full"
     package_type: Literal["linux", "sources"] = "linux"
     export_format: Literal["editor", "zoj", "linux"] = "editor"
     statement_language: str = Field(default="korean", min_length=1, max_length=100)
@@ -179,8 +180,20 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
         fail("invalid_testset", "테스트 세트를 찾을 수 없습니다.")
     options["solutions"] = list(dict.fromkeys(options["solutions"]))
     options["test_indices"] = sorted(set(options["test_indices"]))
-    if options["test_indices"] and values.kind != "verify":
-        fail("invalid_options", "테스트 번호 범위는 풀이 검증에서 선택하세요.")
+    if options["test_indices"] and values.kind not in {"verify", "prepare"}:
+        fail("invalid_options", "테스트 번호 범위는 풀이 검증·테스트 준비에서 선택하세요.")
+    if values.kind != "prepare" and options["prepare_mode"] != "full":
+        fail("invalid_options", "부분 생성 모드는 테스트 준비에서만 사용하세요.")
+    if values.kind == "prepare":
+        if options["test_indices"] and options["all_testsets"]:
+            fail("invalid_options", "선택 번호는 한 테스트 세트에서 지정하세요.")
+        sets = doc["testsets"].values() if options["all_testsets"] else [doc["testsets"][options["testset"]]]
+        if (options["test_indices"] or options["prepare_mode"] != "full") and any(config["script"].strip() for config in sets):
+            fail("materialize_first", "전체 입력·정답을 생성하고 반영하여 생성 규칙을 등록 테스트로 확정한 뒤 부분 작업을 실행하세요.")
+        if options["test_indices"]:
+            available = {test["index"] for test in expanded_tests(doc["testsets"][options["testset"]])}
+            if set(options["test_indices"]) - available:
+                fail("invalid_test_indices", "현재 세트에 없는 테스트 번호입니다.")
     for name in [*options["solutions"], *options["candidates"], options["reference"], options["candidate"]]:
         if name and name not in doc["solutions"]:
             fail("invalid_solution", "풀이 파일을 찾을 수 없습니다.")

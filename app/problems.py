@@ -10,6 +10,8 @@ from .auth import current_user, user_json
 from .db import Access, Blob, Issue, Job, Placement, Problem, Revision, User, WorkingCopy, now, session_dependency
 from .folders import owned_folder, place
 from .domain import authorize, cautions, document_hash, fail, references, three_way_merge, validate_document, workspace
+from .config import get_settings
+from .execution_limits import public_limits
 from .schema import Document, Strict, empty_document
 from .storage import put_blob, read_blob
 from .prepared_results import pending_preparations
@@ -72,6 +74,7 @@ def get_problem(problem_id: str, user: User = Depends(current_user), db: Session
     return {"problem": problem_json(db, problem, user), "document": doc,
             "version": wc.version, "base_revision": wc.base_revision,
             "document_hash": document_hash(doc), "cautions": cautions(doc),
+            "limits": public_limits(get_settings()),
             "pending_preparations": pending_preparations(db, problem_id, user.id, document_hash(doc)) if editable else []}
 
 

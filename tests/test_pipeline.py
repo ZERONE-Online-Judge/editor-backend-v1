@@ -20,6 +20,35 @@ def prepare_problem(problem):
         db.commit()
 
 
+def test_real_selected_input_and_answer_regeneration_preserves_other_tests(owner,problem):
+    with SessionLocal() as db:
+        row=db.get(Problem,problem)
+        doc=populate(db,row)
+        doc['testsets']['tests']['tests']['3']['command']='gen 20261015'
+        original=copy.deepcopy(doc['testsets']['tests']['tests'])
+        row.document=doc;db.get(Revision,(problem,0)).document=copy.deepcopy(doc);db.commit()
+    state=owner.get(f'/api/problems/{problem}').json()
+    def execute(mode,version):
+        response=owner.post(f'/api/problems/{problem}/jobs',json={'kind':'prepare','version':version,'options':{'test_indices':[3],'prepare_mode':mode,'auto_apply':True}})
+        assert response.status_code==202,response.text
+        process_job(claim_job())
+        job=owner.get(f'/api/problems/{problem}/jobs/{response.json()["id"]}').json()
+        assert job['status']=='completed',job
+        assert len(job['result']['testsets']['tests'])==1
+        return job,owner.get(f'/api/problems/{problem}').json()
+    inputs,state=execute('inputs',state['version'])
+    tests=state['document']['testsets']['tests']['tests']
+    assert tests['1']==original['1'] and tests['2']==original['2']
+    assert tests['3']['input_sha']!=original['3']['input_sha'] and tests['3']['answer_sha'] is None
+    assert not any('main.cpp' in event['label'] for event in inputs['result']['events'])
+    generated=tests['3']['input_sha']
+    answers,state=execute('answers',state['version'])
+    tests=state['document']['testsets']['tests']['tests']
+    assert tests['3']['input_sha']==generated and tests['3']['answer_sha']
+    assert tests['1']==original['1'] and tests['2']==original['2']
+    assert not any('컴파일 · gen.cpp' in event['label'] for event in answers['result']['events'])
+
+
 def test_real_display_samples_are_checked_without_replacing_judge_data(owner, problem):
     with SessionLocal() as db:
         row=db.get(Problem,problem)

@@ -171,7 +171,9 @@ class Pipeline:
         return names[0]
 
     def prepare(self):
-        main = self.main()
+        mode = self.job.options.get("prepare_mode", "full") if self.job.kind == "prepare" else "full"
+        main = self.main() if mode in {"full", "answers"} else None
+        self.result["prepare_mode"] = mode
         frozen = self.job.kind == "verify" and self.job.options.get("snapshot") == "committed"
         all_sets = self.job.kind == "package" or self.job.options.get("all_testsets", False)
         selected = list(self.doc["testsets"]) if all_sets else [self.job.options.get("testset", "tests")]
@@ -180,16 +182,19 @@ class Pipeline:
             testset = self.doc["testsets"][set_name]
             saved = expanded_tests(testset)
             prepared = []
-            seen = set()
+            indices = self.job.options.get("test_indices") if self.job.kind in {"verify", "prepare"} else []
+            seen = {test["input_sha"] for test in saved if self.job.kind == "prepare" and mode in {"full", "inputs"} and indices and test["index"] not in indices and test["input_sha"]}
             for test in sorted(saved, key=lambda t: t["index"]):
-                if self.job.kind == "verify" and self.job.options.get("test_indices") and test["index"] not in self.job.options["test_indices"]:
+                if self.job.kind in {"verify", "prepare"} and self.job.options.get("test_indices") and test["index"] not in self.job.options["test_indices"]:
                     continue
                 self.sandbox.check_cancelled()
                 index = test["index"]
                 self.event(f"테스트 준비 · {set_name} #{index}")
                 if frozen and (not test["input_sha"] or not test["answer_sha"]):
                     raise SandboxError(f"{set_name} #{index}: 작성자가 입력·정답 생성 결과를 반영하고 커밋한 뒤 검수하세요.")
-                input_bytes = read_blob(test["input_sha"]) if frozen or not test["command"] else self.generator(test["command"])
+                if mode in {"validate", "answers"} and not test["input_sha"]:
+                    raise SandboxError(f"{set_name} #{index}: 저장된 입력이 없습니다. 먼저 입력을 생성하세요.")
+                input_bytes = read_blob(test["input_sha"]) if frozen or mode in {"validate", "answers"} or not test["command"] else self.generator(test["command"])
                 sha = hashlib.sha256(input_bytes).hexdigest()
                 if sha in seen and not self.doc["info"]["skip_duplicate_validation"]:
                     raise SandboxError(f"{set_name} #{index}: 중복된 입력입니다.")
@@ -199,6 +204,11 @@ class Pipeline:
                 valid, validator = self.validator(input_bytes, set_name, test["group"])
                 if not valid:
                     raise SandboxError(f"{set_name} #{index}: 입력 조건 위반\n{validator['stderr']}")
+                if mode in {"inputs", "validate"}:
+                    answer_sha = test["answer_sha"] if mode == "validate" or sha == test["input_sha"] else None
+                    prepared.append({**test, "input_sha": test["input_sha"] if mode == "validate" else self.blob(input_bytes),
+                                     "answer_sha": answer_sha, "validator": "VALID", "main_cpu_ms": None, "main_memory_kb": None, "main_wall_ms": None})
+                    continue
                 if frozen:
                     answer = read_blob(test["answer_sha"])
                     result = {"cpu_ms": None, "memory_kb": None, "wall_ms": None}
@@ -220,7 +230,8 @@ class Pipeline:
                     self.event(f"지문 표시용 예제 · {set_name} #{index} · {'검증 통과' if sample_status == 'VALID' else '자동 검증 해제'}")
                 prepared.append(row)
             self.result["testsets"][set_name] = prepared
-        self.event(f"{'커밋된 입력·기대 출력 확인 완료' if frozen else '입력 검증과 Main 기대 출력 생성 완료'} · {', '.join(selected)}")
+        label = {'inputs':'입력 재생성과 Validator 검사 완료','validate':'저장된 입력 Validator 검사 완료','answers':'저장된 입력의 Main 정답 재생성 완료'}.get(mode, '커밋된 입력·기대 출력 확인 완료' if frozen else '입력 검증과 Main 기대 출력 생성 완료')
+        self.event(f"{label} · {', '.join(selected)}")
 
     @staticmethod
     def expected_matches(tag, verdicts):
