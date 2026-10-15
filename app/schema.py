@@ -99,9 +99,20 @@ class SourceFile(Strict):
         return safe_name(value)
 
 
+ExpectationTag = Literal["OK", "RJ", "TL", "TO", "TM", "WA", "PE", "ML", "NR", "RE"]
+
+
 class Solution(SourceFile):
     tag: Literal["MA", "OK", "RJ", "TL", "TO", "TM", "WA", "PE", "ML", "NR", "RE"] = "OK"
-    extra_tags: dict[str, str] = Field(default_factory=dict)
+    extra_tags: dict[str, ExpectationTag] = Field(default_factory=dict)
+    group_tags: dict[str, dict[str, ExpectationTag]] = Field(default_factory=dict)
+
+    @model_serializer(mode="wrap")
+    def serialize(self, handler):
+        value = super().serialize(handler)
+        if not self.group_tags:
+            value.pop("group_tags", None)
+        return value
 
 
 class Test(Strict):
@@ -215,6 +226,13 @@ class Document(Strict):
             raise ValueError("Unknown checker")
         if len([s for s in self.solutions.values() if s.tag == "MA"]) > 1:
             raise ValueError("Only one Main solution is allowed")
+        for source in self.solutions.values():
+            for scope in source.extra_tags:
+                if scope not in self.testsets and sum(scope in ts.groups for ts in self.testsets.values()) != 1:
+                    raise ValueError(f"Unknown or ambiguous expectation scope: {scope}")
+            for set_name, groups in source.group_tags.items():
+                if set_name not in self.testsets or set(groups) - set(self.testsets[set_name].groups):
+                    raise ValueError("Expected-verdict groups must exist in their testset")
         for name, material in self.materials.items():
             if any(f not in self.files for f in material.files) or any(s not in self.solutions for s in material.solutions) or any(t not in self.testsets for t in material.testsets):
                 raise ValueError(f"Invalid material reference: {name}")

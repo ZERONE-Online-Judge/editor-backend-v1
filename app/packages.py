@@ -66,6 +66,13 @@ def descriptor(job, testsets):
     for name, source in doc["solutions"].items():
         s = ET.SubElement(solutions, "solution", {"tag": TAG_NAMES[source["tag"]]})
         ET.SubElement(s, "source", {"path": f"solutions/{name}", "type": SOURCE_TYPES[source["language"]]})
+        # Editor extension; do not pretend a private descriptor is Polygon syntax.
+        extra = ET.SubElement(s, "{https://editor.zoj.kr/schema/v1}expectations")
+        for scope, tag in source.get("extra_tags", {}).items():
+            ET.SubElement(extra, "{https://editor.zoj.kr/schema/v1}scope", {"testset": scope, "tag": tag})
+        for set_name, groups in source.get("group_tags", {}).items():
+            for group, tag in groups.items():
+                ET.SubElement(extra, "{https://editor.zoj.kr/schema/v1}scope", {"testset": set_name, "group": group, "tag": tag})
     files = ET.SubElement(root, "files")
     for kind in ["source", "resource", "aux", "statement"]:
         category = ET.SubElement(files, {"source": "sources", "resource": "resources", "aux": "aux", "statement": "statement-resources"}[kind])
@@ -252,6 +259,12 @@ def polygon_document(archive, db, problem_id, name):
             continue
         item = file(src.get("path"), "source", src.get("type", ""))
         item.update(tag=reverse_tags.get(node.get("tag"), node.get("tag", "OK")), extra_tags={})
+        for scope in node.findall("{https://editor.zoj.kr/schema/v1}expectations/{https://editor.zoj.kr/schema/v1}scope"):
+            set_name, group, tag = scope.get("testset"), scope.get("group"), scope.get("tag")
+            if group:
+                item.setdefault("group_tags", {}).setdefault(set_name, {})[group] = tag
+            else:
+                item["extra_tags"][set_name] = tag
         doc["solutions"][item["name"]] = item
     for role in ["checker", "validator", "interactor"]:
         asset = root.find("assets/" + role)

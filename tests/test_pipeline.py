@@ -20,6 +20,33 @@ def prepare_problem(problem):
         db.commit()
 
 
+def test_real_solution_expected_tle_only_in_large_group(owner, problem):
+    with SessionLocal() as db:
+        row = db.get(Problem, problem)
+        doc = populate(db, row)
+        doc['info']['time_limit_ms'] = 250
+        group = {'points_policy': 'COMPLETE_GROUP', 'feedback_policy': 'COMPLETE', 'dependencies': []}
+        doc['testsets']['tests'].update(groups_enabled=True, groups={'small': group, 'large': group})
+        for test in doc['testsets']['tests']['tests'].values():
+            test['group'] = 'large' if test['index'] == 3 else 'small'
+        code = b'#include <iostream>\nint main(){long long a,b;std::cin>>a>>b;if(a>1000){for(;;){asm volatile("" ::: "memory");}}std::cout<<a+b<<"\\n";}\n'
+        doc['solutions']['small.cpp'] = {'name':'small.cpp','kind':'source','language':'cpp17',**put_blob(db,problem,code),
+            'tag':'TL','extra_tags':{},'group_tags':{'tests':{'small':'OK','large':'TL'}}}
+        row.document = doc
+        db.get(Revision, (problem, 0)).document = copy.deepcopy(doc)
+        db.commit()
+    state = owner.get(f'/api/problems/{problem}').json()
+    request = owner.post(f'/api/problems/{problem}/jobs', json={'kind':'verify','version':state['version'], 'options':{'solutions':['small.cpp']}})
+    assert request.status_code == 202, request.text
+    process_job(claim_job())
+    job = owner.get(f'/api/problems/{problem}/jobs/{request.json()["id"]}').json()
+    assert job['status'] == 'completed', job
+    result = job['result']['solutions'][0]
+    assert result['matched'] and result['expectations_complete']
+    assert [case['verdict'] for case in result['cases']] == ['AC','AC','TLE']
+    assert [(scope['group'],scope['tag'],scope['matched']) for scope in result['expectations']] == [('small','OK',True),('large','TL',True)]
+
+
 def test_real_checker_validator_main_wrong_solution_and_package_roundtrip(owner,problem):
     prepare_problem(problem)
     state=owner.get(f'/api/problems/{problem}').json()

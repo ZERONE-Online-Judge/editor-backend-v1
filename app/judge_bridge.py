@@ -185,6 +185,7 @@ def run_batch(pipeline, user, name, set_name, tests, attempt, cancellation, prev
 
 
 def verify_solution(pipeline, user, name, cancellation):
+    from .expectations import expected_tag, evaluate
     source = pipeline.doc["solutions"][name]
     if source["tag"] == "NR":
         return {"name": name, "tag": "NR", "matched": True, "cases": [], "skipped": True, "judge_runs": []}
@@ -193,7 +194,7 @@ def verify_solution(pipeline, user, name, cancellation):
     for set_name, tests in pipeline.result["testsets"].items():
         if pipeline.job.kind != "package" and set_name != pipeline.job.options["testset"]:
             continue
-        remaining = [t for t in tests if pipeline.job.kind == "package" or not pipeline.job.options["test_indices"] or t["index"] in pipeline.job.options["test_indices"]]
+        remaining = [t for t in tests if (pipeline.job.kind == "package" or not pipeline.job.options["test_indices"] or t["index"] in pipeline.job.options["test_indices"]) and expected_tag(source, set_name, t.get("group", ""), pipeline.doc["testsets"])[0] != "NR"]
         attempt = 0
         previous = None
         while remaining:
@@ -212,6 +213,7 @@ def verify_solution(pipeline, user, name, cancellation):
                 break
             for test in observed:
                 cases.append({"testset": set_name, "index": test["index"], "verdict": verdict,
+                              "group": test.get("group", ""),
                               # A batch maximum is not a per-test measurement.
                               "cpu_ms": None, "wall_ms": None, "memory_kb": record.get("memory_kb") if len(remaining) == 1 else None,
                               "comment": record.get("judge_message") or "",
@@ -223,11 +225,12 @@ def verify_solution(pipeline, user, name, cancellation):
             previous = record
             # The agent stops at its first failure. Re-run the other tests so
             # Polygon tags such as TO/TM retain their full-suite meaning.
-            if source["tag"] in {"MA", "OK"} or verdict in {"CE", "JUDGE_ERROR"}:
+            if (source["tag"] in {"MA", "OK"} and not source.get("group_tags") and not source.get("extra_tags")) or verdict in {"CE", "JUDGE_ERROR"}:
                 complete = not remaining
                 break
     verdicts = [c["verdict"] for c in cases]
-    return {"name": name, "tag": source["tag"], "matched": complete and pipeline.expected_matches(source["tag"], verdicts),
+    expectations = evaluate(pipeline.doc, source, pipeline.result["testsets"], cases)
+    return {"name": name, "tag": source["tag"], **expectations, "matched": complete and expectations["matched"],
             "cases": sorted(cases, key=lambda c: (c["testset"], c["index"])), "skipped": False,
             "complete": complete, "judge_runs": records}
 
@@ -255,6 +258,6 @@ def verify(pipeline):
                 future.cancel()
             raise
     mismatches = [s["name"] for s in pipeline.result["solutions"] if not s["matched"]]
-    pipeline.result["verified"] = not mismatches
+    pipeline.result["verified"] = not mismatches and all(s.get("expectations_complete", True) for s in pipeline.result["solutions"])
     pipeline.result["mismatches"] = mismatches
     pipeline.event("ZOJ 채점기 검증 완료" if not mismatches else "ZOJ 판정이 기대와 다르거나 전체 검증을 완료하지 못한 풀이가 있습니다.")

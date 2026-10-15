@@ -13,6 +13,7 @@ from .storage import put_blob, read_blob
 from .scoring import score_results
 from .execution_limits import MAX_GENERATOR_ARGUMENTS, GENERATOR_CPU_MS, GENERATOR_MEMORY_MB, GENERATOR_OUTPUT_BYTES
 from .stress_search import StressSearch
+from .expectations import expected_tag, evaluate as evaluate_expectations, matches
 
 
 class Pipeline:
@@ -218,21 +219,7 @@ class Pipeline:
 
     @staticmethod
     def expected_matches(tag, verdicts):
-        failures = set(verdicts) - {"AC"}
-        if tag in {"MA", "OK"}:
-            return bool(verdicts) and not failures
-        if tag == "NR":
-            return True
-        if "JUDGE_ERROR" in failures or "CE" in failures:
-            return False
-        if tag == "RJ":
-            return bool(failures)
-        if tag == "TO":
-            return bool(verdicts) and failures <= {"TLE"}
-        if tag == "TM":
-            return bool(failures) and failures <= {"TLE", "MLE"}
-        required = {"WA": "WA", "TL": "TLE", "ML": "MLE", "RE": "RE", "PE": "PE"}.get(tag)
-        return required in failures
+        return matches(tag, verdicts)
 
     def verify(self):
         self.prepare()
@@ -254,6 +241,8 @@ class Pipeline:
                 for test in tests:
                     if self.job.kind != "package" and self.job.options["test_indices"] and test["index"] not in self.job.options["test_indices"]:
                         continue
+                    if expected_tag(source, set_name, test["group"], self.doc["testsets"])[0] == "NR":
+                        continue
                     self.event(f"실제 실행 · {name} / {set_name} #{test['index']}")
                     inp, ans = read_blob(test["input_sha"]), read_blob(test["answer_sha"])
                     verdict, result = self.run_solution(name, inp, ans)
@@ -265,16 +254,12 @@ class Pipeline:
                     verdicts.append(verdict)
                     rows.append({"testset": set_name, "index": test["index"], "verdict": verdict, "cpu_ms": result["cpu_ms"], "wall_ms": result["wall_ms"], "memory_kb": result["memory_kb"], "comment": comment[:2048], "score": checked.get("score", 0) if verdict in {"AC", "PARTIAL", "WA", "PE"} else 0, "group": test["group"], "max_score": test["points"],
                                  "input_sha": test["input_sha"], "answer_sha": test["answer_sha"], "actual_sha": self.blob(result["output"])})
-            tag_matches = self.expected_matches(source["tag"], verdicts)
-            for set_name, expected_tag in source.get("extra_tags", {}).items():
-                scoped = [r["verdict"] for r in rows if r["testset"] == set_name or next((t["group"] for t in self.result["testsets"].get(r["testset"], []) if t["index"] == r["index"]), "") == set_name]
-                if scoped:
-                    tag_matches = tag_matches and self.expected_matches(expected_tag, scoped)
+            expectations = evaluate_expectations(self.doc, source, self.result["testsets"], rows)
             score_scope = {name: expanded_tests(self.doc["testsets"][name]) for name in self.result["testsets"]}
-            self.result["solutions"].append({"name": name, "tag": source["tag"], "matched": tag_matches, "cases": rows, "skipped": False, **score_results(self.doc, score_scope, rows)})
+            self.result["solutions"].append({"name": name, "tag": source["tag"], **expectations, "cases": rows, "skipped": False, **score_results(self.doc, score_scope, rows)})
             self.publish(copy.deepcopy(self.result))
         mismatches = [s["name"] for s in self.result["solutions"] if not s["matched"]]
-        self.result["verified"] = not mismatches
+        self.result["verified"] = not mismatches and all(s.get("expectations_complete", True) for s in self.result["solutions"])
         self.result["mismatches"] = mismatches
         self.event("풀이 기대 판정 확인 완료" if not mismatches else "기대 판정과 다른 풀이가 있습니다.")
 
