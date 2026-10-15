@@ -80,3 +80,12 @@ def test_legacy_document_hash_shape_and_exported_scopes_are_preserved():
     del old["group_tags"]
     from app.schema import Solution
     assert "group_tags" not in Solution.model_validate(old).model_dump()
+
+
+def test_readiness_recognizes_scoped_wrong_verdicts_and_ignores_nr_solutions():
+    from app.domain import cautions
+    doc, source, _, _ = fixture()
+    source['tag']='OK'
+    assert 'NO_WRONG_SOLUTIONS' not in {c['code'] for c in cautions(doc)}
+    source['tag']='NR'
+    assert 'NO_WRONG_SOLUTIONS' in {c['code'] for c in cautions(doc)}

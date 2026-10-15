@@ -130,7 +130,12 @@ def cautions(doc):
         add("NO_MAIN", "기대 출력을 생성할 Main 풀이를 지정하세요.", "solutions", True)
     if not any(ts["tests"] or ts["script"].strip() for ts in doc["testsets"].values()):
         add("NO_TESTS", "직접 입력이나 생성 스크립트로 테스트를 추가하세요.", "tests", True)
-    if not any(s["tag"] in {"WA", "TL", "ML", "RE", "RJ"} for s in doc["solutions"].values()):
+    wrong_tags = {"WA", "TL", "ML", "RE", "RJ", "PE", "TM"}
+    def has_wrong_tag(source):
+        tags = [source["tag"], *source.get("extra_tags", {}).values()]
+        tags.extend(tag for groups in source.get("group_tags", {}).values() for tag in groups.values())
+        return source["tag"] != "NR" and bool(wrong_tags.intersection(tags))
+    if not any(has_wrong_tag(source) for source in doc["solutions"].values()):
         add("NO_WRONG_SOLUTIONS", "의도한 오답 풀이를 추가해 테스트의 검출력을 확인하세요.", "solutions")
     if doc["info"]["interactive"] and not doc["interactor"]:
         add("NO_INTERACTOR", "인터랙티브 문제의 interactor를 선택하세요.", "interactor", True)

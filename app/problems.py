@@ -83,6 +83,15 @@ class SaveWorking(Strict):
     document: Document
 
 
+@router.get("/{problem_id}/review-report")
+def get_review_report(problem_id: str, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
+    problem, access = authorize(db, problem_id, user)
+    wc = workspace(db, problem, user)
+    doc = wc.document if access.role in {"OWNER", "WRITE"} or access.translator else problem.document
+    from .review_report import report
+    return report(db, problem_id, doc)
+
+
 def save_working(db, wc, doc, version):
     if document_hash(doc) == document_hash(wc.document):
         if wc.version != version:

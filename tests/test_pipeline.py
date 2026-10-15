@@ -173,6 +173,10 @@ def test_real_generation_auto_apply_and_role_package_roundtrip(owner, problem):
     state = owner.get(f"/api/problems/{problem}").json()
     state["document"]["files"]["validator.cpp"]["roles"] = ["validator"]
     state["document"]["files"]["gen.cpp"]["roles"] = ["generator"]
+    state["document"]["common_statement"] = "공통 문제 설명 $a+b$"
+    state["document"]["common_tutorial"] = "공통 비공개 해설"
+    state["document"]["testsets"]["tests"]["script"] = "repeat seed in 10..12\n gen {seed} > $\nend"
+    state["document"]["solutions"]["wrong.py"]["extra_tags"] = {"tests": "WA"}
     saved = owner.put(f"/api/problems/{problem}/working-copy", json={"version": state["version"], "document": state["document"]})
     assert saved.status_code == 200, saved.text
     prepared = owner.post(f"/api/problems/{problem}/jobs", json={"kind": "prepare", "version": saved.json()["version"], "options": {"auto_apply": True}})
@@ -197,6 +201,10 @@ def test_real_generation_auto_apply_and_role_package_roundtrip(owner, problem):
     assert doc['files']['validator.cpp']['roles'] == ['validator']
     assert doc['files']['gen.cpp']['roles'] == ['generator']
     assert doc['solutions']['main.cpp']['tag'] == 'MA'
+    assert doc['common_statement'] == '공통 문제 설명 $a+b$'
+    assert doc['common_tutorial'] == '공통 비공개 해설'
+    assert doc['solutions']['wrong.py']['extra_tags'] == {'tests': 'WA'}
+    assert [t['command'] for t in doc['testsets']['tests']['tests'].values() if t['command']] == ['gen 10', 'gen 11', 'gen 12']
 
 
 def test_real_stress_shares_inputs_and_collects_multiple_solution_failures(owner, problem):
