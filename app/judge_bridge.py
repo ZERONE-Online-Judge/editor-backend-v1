@@ -1,5 +1,5 @@
 """Final solution verification and preparation on authorized judge agents."""
-import copy
+import base64
 import hashlib
 import json
 import tempfile
@@ -9,7 +9,6 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from types import SimpleNamespace
-from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException
 from .auth import current_user
@@ -115,6 +114,7 @@ def archive(pipeline, name, set_name, tests, attempt):
         cases.append({"index": t["index"], "input_sha": t["input_sha"], "answer_sha": t["answer_sha"]})
     operation = hashlib.sha256(json.dumps([pipeline.job.id, name, set_name, [t["index"] for t in tests], attempt], separators=(",", ":")).encode()).hexdigest()[:32]
     manifest = {"format": "zoj-editor-judge-v1", "operation_id": operation,
+                "collect_all_results": True,
                 "project_id": pipeline.job.problem_id, "context_hash": pipeline.job.document_hash,
                 "source": {"name": name, "language": LANGUAGES[source["language"]], "sha256": source["sha256"]},
                 "time_limit_ms": pipeline.doc["info"]["time_limit_ms"], "memory_limit_mb": pipeline.doc["info"]["memory_limit_mb"],
@@ -138,12 +138,9 @@ def archive(pipeline, name, set_name, tests, attempt):
     return path, digest.hexdigest()
 
 
-def run_batch(pipeline, user, name, set_name, tests, attempt, cancellation, previous=None):
-    path, digest = (None, None) if previous else archive(pipeline, name, set_name, tests, attempt)
+def run_batch(pipeline, user, name, set_name, tests, attempt, cancellation):
+    path, digest = archive(pipeline, name, set_name, tests, attempt)
     endpoint = "/api/editor/judge/runs"
-    if previous:
-        operation = hashlib.sha256(json.dumps([pipeline.job.id, name, set_name, [t["index"] for t in tests], attempt], separators=(",", ":")).encode()).hexdigest()[:32]
-        endpoint += "/" + previous["id"] + "/remaining?" + urlencode({"operation_id": operation})
     run_id = None
     done = False
     try:
@@ -168,15 +165,18 @@ def run_batch(pipeline, user, name, set_name, tests, attempt, cancellation, prev
             if progress != last_progress:
                 pipeline.event(f"ZOJ 채점 · {name} / {set_name} · {run['progress_current']}/{run['progress_total']}", node=run.get("node_name"), judge_run_id=run_id)
                 last_progress = progress
+            if getattr(pipeline, "verification", None):
+                pipeline.verification.batch(name, set_name, observed_cases(pipeline, user, set_name, tests, run))
             time.sleep(1)
             run = remote("GET", "/api/editor/judge/runs/" + run_id, user, timeout=15)
         pipeline.sandbox.check_cancelled()
         if run["status"] not in VERDICTS or not run.get("result"):
             raise SandboxError("ZOJ 채점기가 최종 판정을 반환하지 않았습니다.")
         done = True
+        rows = observed_cases(pipeline, user, set_name, tests, run)
         return {"id": run_id, "testset": set_name, "status": run["status"], "node_name": run.get("node_name"),
                 "agent_version": run.get("agent_version"), "runtime_revision": run["runtime_revision"],
-                "testcase_count": len(tests), **run["result"]}
+                "testcase_count": len(tests), **run["result"], "cases": rows}
     finally:
         if path:
             path.unlink(missing_ok=True)
@@ -185,6 +185,42 @@ def run_batch(pipeline, user, name, set_name, tests, attempt, cancellation, prev
                 remote("DELETE", "/api/editor/judge/runs/" + run_id, user, timeout=15)
             except Exception:
                 pass
+
+
+def observed_cases(pipeline, user, set_name, tests, run):
+    lookup = {test["index"]: test for test in tests}
+    result = []
+    seen = set()
+    cache = getattr(pipeline, "judge_outputs", None)
+    if cache is None:
+        cache = pipeline.judge_outputs = {}
+    for record in (run.get("result") or {}).get("testcase_results", []):
+        index = record["index"]
+        if index not in lookup or index in seen or record["final_status"] not in VERDICTS:
+            raise SandboxError("ZOJ 채점기의 개별 테스트 결과가 요청 범위와 다릅니다.")
+        seen.add(index)
+        test = lookup[index]
+        actual_sha = None
+        output_error = None
+        if record.get("output_available"):
+            key = (run["id"], index, record["output_sha256"])
+            if key not in cache:
+                try:
+                    output = remote("GET", f"/api/editor/judge/runs/{run['id']}/testcases/{index}/output", user, timeout=15)
+                    content = base64.b64decode(output["base64"], validate=True)
+                    if len(content) != record["output_size"] or hashlib.sha256(content).hexdigest() != record["output_sha256"]:
+                        raise ValueError("Output checksum mismatch")
+                    cache[key] = pipeline.blob(content)
+                except (HTTPException, ValueError, KeyError):
+                    output_error = "실제 출력 파일을 가져오지 못했습니다. 원본 채점 기록은 유지됩니다."
+            actual_sha = cache.get(key)
+        result.append({"testset": set_name, "index": index, "verdict": VERDICTS[record["final_status"]],
+                       "cpu_ms": record.get("runtime_ms"), "wall_ms": None, "memory_kb": record.get("memory_kb"),
+                       "comment": record.get("judge_message", ""), "group": test.get("group", ""),
+                       "input_sha": test["input_sha"], "answer_sha": test["answer_sha"], "actual_sha": actual_sha,
+                       "output_truncated": record.get("output_truncated", False), "output_size": record.get("output_size"),
+                       "output_total_bytes": record.get("output_total_bytes"), "output_error": output_error})
+    return sorted(result, key=lambda case: case["index"])
 
 
 def verify_solution(pipeline, user, name, cancellation):
@@ -198,39 +234,23 @@ def verify_solution(pipeline, user, name, cancellation):
         if pipeline.job.kind != "package" and set_name != pipeline.job.options["testset"]:
             continue
         remaining = [t for t in tests if (pipeline.job.kind == "package" or not pipeline.job.options["test_indices"] or t["index"] in pipeline.job.options["test_indices"]) and expected_tag(source, set_name, t.get("group", ""), pipeline.doc["testsets"])[0] != "NR"]
-        attempt = 0
-        previous = None
-        while remaining:
-            record = run_batch(pipeline, user, name, set_name, remaining, attempt, cancellation, previous)
-            records.append(record)
+        if remaining:
+            record = run_batch(pipeline, user, name, set_name, remaining, 0, cancellation)
+            records.append({key: value for key, value in record.items() if key not in {"cases", "testcase_results"}})
             verdict = VERDICTS[record["status"]]
-            failed = record.get("failed_testcase_order")
-            observed = remaining if verdict == "AC" else [t for t in remaining if t["index"] == failed]
-            if verdict != "AC" and not observed:
-                complete = False
-                # Compile/environment failures have no individual testcase.
+            observed = record.get("cases", [])
+            set_complete = bool(record.get("full_suite_complete")) and {case["index"] for case in observed} == {test["index"] for test in remaining}
+            complete = complete and set_complete
+            cases.extend(observed)
+            if not set_complete and verdict in {"CE", "JUDGE_ERROR"}:
                 cases.append({"testset": set_name, "index": 0, "verdict": verdict,
                               "cpu_ms": None, "wall_ms": None, "memory_kb": None,
                               "comment": record.get("compile_message") or record.get("judge_message") or "",
                               "input_sha": "", "answer_sha": "", "actual_sha": None})
-                break
-            for test in observed:
-                cases.append({"testset": set_name, "index": test["index"], "verdict": verdict,
-                              "group": test.get("group", ""),
-                              # A batch maximum is not a per-test measurement.
-                              "cpu_ms": None, "wall_ms": None, "memory_kb": record.get("memory_kb") if len(remaining) == 1 else None,
-                              "comment": record.get("judge_message") or "",
-                              "input_sha": test["input_sha"], "answer_sha": test["answer_sha"], "actual_sha": None})
-            if verdict == "AC":
-                break
-            remaining = [t for t in remaining if t["index"] != failed]
-            attempt += 1
-            previous = record
-            # The agent stops at its first failure. Re-run the other tests so
-            # Polygon tags such as TO/TM retain their full-suite meaning.
-            if (source["tag"] in {"MA", "OK"} and not source.get("group_tags") and not source.get("extra_tags")) or verdict in {"CE", "JUDGE_ERROR"}:
-                complete = not remaining
-                break
+            elif not set_complete:
+                raise SandboxError("ZOJ 채점기가 전체 테스트의 개별 결과를 반환하지 않았습니다. 전체 검증 지원 채점기와 서버 버전을 확인하세요.")
+            if getattr(pipeline, "verification", None):
+                pipeline.verification.batch(name, set_name, observed, records[-1])
     verdicts = [c["verdict"] for c in cases]
     expectations = evaluate(pipeline.doc, source, pipeline.result["testsets"], cases)
     return {"name": name, "tag": source["tag"], **expectations, "matched": complete and expectations["matched"],
@@ -247,7 +267,10 @@ def verify(pipeline):
             raise SandboxError("검증 요청 계정을 찾을 수 없습니다.")
         user = SimpleNamespace(email=account.email)
     cancellation = threading.Event()
+    pipeline.judge_outputs = {}
     def limited(name):
+        if getattr(pipeline, "verification", None):
+            pipeline.verification.started(name)
         with execution_budget(get_settings().execution_concurrency, pipeline.sandbox.check_cancelled):
             return verify_solution(pipeline, user, name, cancellation)
     with ThreadPoolExecutor(max_workers=get_settings().judge_concurrency) as pool:
@@ -256,8 +279,7 @@ def verify(pipeline):
             for future in as_completed(futures):
                 result = future.result()
                 with pipeline.result_lock:
-                    pipeline.result["solutions"].append(result)
-                    pipeline.publish(copy.deepcopy(pipeline.result))
+                    pipeline.verification.finish_solution(result)
         except Exception:
             cancellation.set()
             for future in futures:
@@ -266,4 +288,5 @@ def verify(pipeline):
     mismatches = [s["name"] for s in pipeline.result["solutions"] if not s["matched"]]
     pipeline.result["verified"] = not mismatches and all(s.get("expectations_complete", True) for s in pipeline.result["solutions"])
     pipeline.result["mismatches"] = mismatches
+    pipeline.verification.finish()
     pipeline.event("ZOJ 채점기 검증 완료" if not mismatches else "ZOJ 판정이 기대와 다르거나 전체 검증을 완료하지 못한 풀이가 있습니다.")

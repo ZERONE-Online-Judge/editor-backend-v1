@@ -27,11 +27,16 @@ def fixture_data(problem, tmp_path, tag="MA"):
         expected_matches=__import__('app.pipeline', fromlist=['Pipeline']).Pipeline.expected_matches)
 
 
-def record(status="accepted", failure=None, run_id="run"):
+def record(status="accepted", failure=None, run_id="run", statuses=None):
+    outcomes = statuses or ['accepted' if index != failure else status for index in [1, 2, 3]]
     return {"id": run_id, "status": status, "progress_current": 3, "progress_total": 3,
             "node_name": "judge-agent-3", "agent_version": "0.2.21", "runtime_revision": "real-judge-v1",
             "result": {"final_status": status, "compile_message": None, "judge_message": None,
-                       "failed_testcase_order": failure, "runtime_ms": 41, "memory_kb": 2048}}
+                       "failed_testcase_order": failure, "runtime_ms": 41, "memory_kb": 2048,
+                       "full_suite_complete": status not in bridge.ACTIVE,
+                       "testcase_results": [] if status in bridge.ACTIVE else [
+                           {"index": index, "final_status": verdict, "runtime_ms": index, "memory_kb": index * 1024, "judge_message": ""}
+                           for index, verdict in enumerate(outcomes, 1)]}}
 
 
 def test_snapshot_is_immutable_deterministic_and_has_verified_hashes(problem, tmp_path):
@@ -43,6 +48,7 @@ def test_snapshot_is_immutable_deterministic_and_has_verified_hashes(problem, tm
     with zipfile.ZipFile(path) as z:
         manifest = json.loads(z.read('manifest.json'))
         assert manifest['source']['language'] == 'cpp17'
+        assert manifest['collect_all_results'] is True
         assert manifest['project_id'] == problem
         assert len(manifest['testcases']) == 3
         assert sum(r['role'] == 'checker' for r in manifest['resources']) == 1
@@ -63,34 +69,33 @@ def test_full_acceptance_records_real_node_and_does_not_fabricate_case_time(prob
     result = bridge.verify_solution(p, SimpleNamespace(email='author@example.com'), 'main.cpp', threading.Event())
     assert result['matched'] and result['complete']
     assert len(result['cases']) == 3 and all(c['verdict'] == 'AC' for c in result['cases'])
-    assert all(c['cpu_ms'] is None and c['actual_sha'] is None for c in result['cases'])
+    assert [c['cpu_ms'] for c in result['cases']] == [1, 2, 3]
+    assert all(c['actual_sha'] is None for c in result['cases'])
     assert result['judge_runs'][0]['runtime_ms'] == 41
     assert result['judge_runs'][0]['node_name'] == 'judge-agent-3'
     assert len(calls) == 1
 
 
-def test_first_failure_is_not_full_suite_and_remaining_uses_stored_snapshot(problem, tmp_path, monkeypatch):
+def test_wrong_answer_still_returns_the_full_suite_in_one_request(problem, tmp_path, monkeypatch):
     p = fixture_data(problem, tmp_path, tag='WA')
     first_index = p.result['testsets']['tests'][0]['index']
     calls = []
     def remote(method, path, user, package=None, digest=None, **kwargs):
         calls.append((method, path, package is not None))
-        return record('wrong_answer', first_index, 'first') if len(calls) == 1 else record(run_id='second')
+        return record('wrong_answer', first_index, 'first')
     monkeypatch.setattr(bridge, 'remote', remote)
     result = bridge.verify_solution(p, SimpleNamespace(email='author@example.com'), 'main.cpp', threading.Event())
     assert result['matched'] and result['complete']
     assert len(result['cases']) == 3
     assert [c['verdict'] for c in result['cases']].count('WA') == 1
-    assert calls[0][2] and not calls[1][2]
-    assert '/first/remaining?operation_id=' in calls[1][1]
-    assert len(result['judge_runs']) == 2
+    assert calls == [('POST', '/api/editor/judge/runs', True)]
+    assert len(result['judge_runs']) == 1
 
 
 def test_to_tag_detects_wrong_answer_after_timeout(problem, tmp_path, monkeypatch):
     p = fixture_data(problem, tmp_path, tag='TO')
     indices = [t['index'] for t in p.result['testsets']['tests']]
-    replies = iter([record('time_limit_exceeded', indices[0], 'timeout'), record('wrong_answer', indices[1], 'wrong'), record(run_id='accepted')])
-    monkeypatch.setattr(bridge, 'remote', lambda *a, **kw: next(replies))
+    monkeypatch.setattr(bridge, 'remote', lambda *a, **kw: record('time_limit_exceeded', indices[0], 'timeout', ['time_limit_exceeded', 'wrong_answer', 'accepted']))
     result = bridge.verify_solution(p, SimpleNamespace(email='author@example.com'), 'main.cpp', threading.Event())
     assert result['complete'] and not result['matched']
     assert {c['verdict'] for c in result['cases']} == {'AC', 'TLE', 'WA'}
@@ -151,8 +156,7 @@ def test_group_expected_tags_are_supported_without_partial_score_semantic_change
         test['group']='large' if test['index']==3 else 'small'
     p.doc['solutions']['main.cpp']['group_tags']={'tests':{'small':'OK','large':'TL'}}
     bridge.compatible(p.doc,p.job.options,'verify')
-    records=[{'id':'first','status':'time_limit_exceeded','testcase_count':3,'failed_testcase_order':3,'runtime_revision':'r','testset':'tests'}, {'id':'rest','status':'accepted','testcase_count':2,'runtime_revision':'r','testset':'tests'}]
-    monkeypatch.setattr(bridge,'run_batch',lambda *args,**kwargs: records.pop(0))
+    monkeypatch.setattr(bridge,'remote',lambda *args,**kwargs: record('time_limit_exceeded', 3))
     result=bridge.verify_solution(p,object(),'main.cpp',threading.Event())
     assert result['matched'] and result['expectations_complete']
     assert [case['verdict'] for case in result['cases']]==['AC','AC','TLE']

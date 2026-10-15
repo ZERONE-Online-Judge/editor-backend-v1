@@ -255,19 +255,32 @@ class Pipeline:
         return matches(tag, verdicts)
 
     def verify(self):
+        from .verification_progress import VerificationProgress
+        selected = list(self.doc["solutions"]) if self.job.kind == "package" else self.job.options["solutions"] or list(self.doc["solutions"])
+        self.verification = VerificationProgress(self, selected)
         self.prepare()
+        self.verification.begin()
         if self.remote_judging:
             from .judge_bridge import verify
             verify(self)
             return
-        selected = list(self.doc["solutions"]) if self.job.kind == "package" else self.job.options["solutions"] or list(self.doc["solutions"])
         tasks = [(name, set_name, test) for name in selected if self.doc["solutions"][name]["tag"] != "NR"
                  for set_name, tests in self.result["testsets"].items()
                  if self.job.kind == "package" or set_name == self.job.options["testset"]
                  for test in tests if (self.job.kind == "package" or not self.job.options["test_indices"] or test["index"] in self.job.options["test_indices"])
                  and expected_tag(self.doc["solutions"][name], set_name, test["group"], self.doc["testsets"])[0] != "NR"]
+        score_scope = {name: expanded_tests(self.doc["testsets"][name]) for name in self.result["testsets"]}
+        def finish_solution(name):
+            with self.verification.lock:
+                source, rows = self.doc["solutions"][name], self.verification.rows[name]["cases"]
+                if source["tag"] == "NR":
+                    self.verification.finish_solution({"name": name, "tag": "NR", "matched": True, "cases": [], "skipped": True})
+                else:
+                    expectations = evaluate_expectations(self.doc, source, self.result["testsets"], rows)
+                    self.verification.finish_solution({"name": name, "tag": source["tag"], **expectations, "cases": rows, "skipped": False, **score_results(self.doc, score_scope, rows)})
         def verify_case(task):
             name, set_name, test = task
+            self.verification.started(name)
             self.event(f"실제 실행 · {name} / {set_name} #{test['index']}")
             inp, ans = read_blob(test["input_sha"]), read_blob(test["answer_sha"])
             verdict, result = self.run_solution(name, inp, ans)
@@ -276,28 +289,23 @@ class Pipeline:
             if verdict == "AC":
                 verdict, checked = self.checker(inp, result["output"], ans, test["points"])
                 comment = checked["stderr"]
-            return name, {"testset": set_name, "index": test["index"], "verdict": verdict,
+            row = {"testset": set_name, "index": test["index"], "verdict": verdict,
                 "cpu_ms": result["cpu_ms"], "wall_ms": result["wall_ms"], "memory_kb": result["memory_kb"],
                 "comment": comment[:2048], "score": checked.get("score", 0) if verdict in {"AC", "PARTIAL", "WA", "PE"} else 0,
                 "group": test["group"], "max_score": test["points"], "input_sha": test["input_sha"],
-                "answer_sha": test["answer_sha"]}, result["output"]
-        cases = {name: [] for name in selected}
+                "answer_sha": test["answer_sha"], "actual_sha": self.blob(result["output"])}
+            if self.verification.case(name, row):
+                finish_solution(name)
         with self.work(verify_case, tasks) as results:
-            for name, row, output in results:
-                row["actual_sha"] = self.blob(output)
-                cases[name].append(row)
+            for _ in results:
+                pass
         for name in selected:
-            source, rows = self.doc["solutions"][name], cases[name]
-            if source["tag"] == "NR":
-                self.result["solutions"].append({"name": name, "tag": "NR", "matched": True, "cases": [], "skipped": True})
-                continue
-            expectations = evaluate_expectations(self.doc, source, self.result["testsets"], rows)
-            score_scope = {name: expanded_tests(self.doc["testsets"][name]) for name in self.result["testsets"]}
-            self.result["solutions"].append({"name": name, "tag": source["tag"], **expectations, "cases": rows, "skipped": False, **score_results(self.doc, score_scope, rows)})
-            self.publish(copy.deepcopy(self.result))
+            if self.verification.rows[name]["state"] != "completed":
+                finish_solution(name)
         mismatches = [s["name"] for s in self.result["solutions"] if not s["matched"]]
         self.result["verified"] = not mismatches and all(s.get("expectations_complete", True) for s in self.result["solutions"])
         self.result["mismatches"] = mismatches
+        self.verification.finish()
         self.event("풀이 기대 판정 확인 완료" if not mismatches else "기대 판정과 다른 풀이가 있습니다.")
 
     def unit_tests(self, kind):
