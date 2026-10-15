@@ -80,7 +80,7 @@ class JobOptions(Strict):
     counterexample_verdicts: list[Literal["WA", "TLE", "MLE", "RE", "PE", "OLE", "IDLENESS_LIMIT", "PARTIAL"]] = Field(default_factory=lambda: ["WA", "TLE", "MLE", "RE", "PE", "OLE", "IDLENESS_LIMIT", "PARTIAL"], min_length=1, max_length=8)
     verify: bool = True
     package_type: Literal["linux", "sources"] = "linux"
-    export_format: Literal["editor", "zoj"] = "editor"
+    export_format: Literal["editor", "zoj", "linux"] = "editor"
     statement_language: str = Field(default="korean", min_length=1, max_length=100)
 
     @field_validator("name")
@@ -228,6 +228,10 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
         if options["minimize"] and doc["info"]["interactive"]:
             fail("invalid_stress_minimize", "자동 축소는 비인터랙티브 입력에서 사용할 수 있습니다.")
         options["stress_configuration"] = stress_configuration(doc, options)
+    if values.kind == "package" and options["export_format"] == "linux":
+        if options["execution_backend"] not in {None, "editor"}:
+            fail("invalid_replay_backend", "Linux 재현 패키지는 Editor 격리 실행을 선택하세요. ZOJ 대회 채점기의 언어별 보정을 재현했다고 표시하지 않습니다.")
+        options["execution_backend"] = "editor"
     options["execution_backend"] = options["execution_backend"] or get_settings().judge_backend
     if values.kind not in {"verify", "package"} or (values.kind == "package" and not options["verify"]):
         options["execution_backend"] = "editor"

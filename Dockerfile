@@ -4,6 +4,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt && groupadd -g 1000 editor && useradd -m -u 1000 -g editor editor
 COPY app ./app
+COPY replay ./replay
+COPY runner ./runner
 COPY vendor ./vendor
 COPY migrations ./migrations
 COPY alembic.ini .

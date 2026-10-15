@@ -307,7 +307,14 @@ class Pipeline:
                             if not self.result["verified"]:
                                 raise SandboxError("구성요소 자체 테스트가 실패했습니다.")
                     self.result["verified"] = overall_verified
-                    self.result["package"] = build_package(self.job, self.result["testsets"])
+                    if self.job.options.get("export_format") == "linux":
+                        from .linux_package import environment
+                        self.event("재현용 Linux 실행 환경 확인")
+                        self.result["replay_environment"] = environment(self.sandbox)
+                        if self.result.get("solutions"):
+                            from .test_matrix import analyze
+                            self.result["test_matrix"] = analyze(self.doc, self.result)
+                    self.result["package"] = build_package(self.job, self.result["testsets"], self.result)
                     self.event("패키지 생성 완료")
             elif self.job.kind in {"validator-tests", "checker-tests"}:
                 self.unit_tests(self.job.kind)
@@ -321,7 +328,7 @@ class Pipeline:
             return self.result
         finally:
             try:
-                if self.result.get("solutions"):
+                if self.result.get("solutions") and "test_matrix" not in self.result:
                     from .test_matrix import analyze
                     self.result["test_matrix"] = analyze(self.doc, self.result)
             finally:

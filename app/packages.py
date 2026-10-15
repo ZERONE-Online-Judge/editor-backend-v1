@@ -115,7 +115,7 @@ def descriptor(job, testsets):
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
 
-def build_package(job, testsets):
+def build_package(job, testsets, report=None):
     if job.options.get("export_format") == "zoj":
         from .zoj_package import build_zoj_package
         return build_zoj_package(job, testsets)
@@ -172,7 +172,11 @@ def build_package(job, testsets):
                 if path.is_file():
                     archive.write(path, "assets/katex/" + str(path.relative_to(katex)))
         archive.writestr("README.txt", "ZOJ Editor problem package\nSources and generated tests; no compiled binaries.\nCompile source files with their declared language.\nAll platform testlib sources retain the upstream MIT license.\n")
-    return {"filename": job.problem_id[:8] + f"-r{job.revision}.zip", "format": "editor", "size": destination.stat().st_size, "verified": bool(job.options["verify"]), "sha256": hashlib.sha256(destination.read_bytes()).hexdigest()}
+        if job.options.get("export_format") == "linux":
+            from .linux_package import add
+            add(archive, job, report)
+    kind = "linux" if job.options.get("export_format") == "linux" else "editor"
+    return {"filename": job.problem_id[:8] + f"-r{job.revision}" + ("-linux" if kind == "linux" else "") + ".zip", "format": kind, "size": destination.stat().st_size, "verified": bool(job.options["verify"]), "sha256": hashlib.sha256(destination.read_bytes()).hexdigest()}
 
 
 def checked_archive(content):
