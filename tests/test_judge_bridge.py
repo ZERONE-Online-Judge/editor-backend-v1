@@ -141,3 +141,18 @@ def test_unsupported_features_require_explicit_editor_backend(problem, tmp_path)
         bridge.compatible(p.doc, p.job.options, 'verify')
     assert error.value.detail['code'] == 'judge_incompatible'
     assert '자동으로 바꾸지 않습니다' in error.value.detail['message']
+
+
+def test_group_expected_tags_are_supported_without_partial_score_semantic_changes(problem,tmp_path,monkeypatch):
+    p=fixture_data(problem,tmp_path,tag='TL')
+    p.doc['testsets']['tests']['groups_enabled']=True
+    p.doc['testsets']['tests']['groups']={name:{'points_policy':'COMPLETE_GROUP','feedback_policy':'COMPLETE','dependencies':[]} for name in ['small','large']}
+    for test in p.result['testsets']['tests']:
+        test['group']='large' if test['index']==3 else 'small'
+    p.doc['solutions']['main.cpp']['group_tags']={'tests':{'small':'OK','large':'TL'}}
+    bridge.compatible(p.doc,p.job.options,'verify')
+    records=[{'id':'first','status':'time_limit_exceeded','testcase_count':3,'failed_testcase_order':3,'runtime_revision':'r','testset':'tests'}, {'id':'rest','status':'accepted','testcase_count':2,'runtime_revision':'r','testset':'tests'}]
+    monkeypatch.setattr(bridge,'run_batch',lambda *args,**kwargs: records.pop(0))
+    result=bridge.verify_solution(p,object(),'main.cpp',threading.Event())
+    assert result['matched'] and result['expectations_complete']
+    assert [case['verdict'] for case in result['cases']]==['AC','AC','TLE']

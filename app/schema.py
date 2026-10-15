@@ -66,11 +66,19 @@ class Statement(Strict):
         return Info.single_line(value)
 
 
+class ResourcePolicy(Strict):
+    languages: list[Literal["cpp17", "cpp20", "c17", "c99", "python3", "java17", "java8"]] = Field(min_length=1, max_length=7)
+    targets: list[Literal["SOLUTION"]] = Field(default_factory=lambda:["SOLUTION"], min_length=1, max_length=1)
+    stages: list[Literal["COMPILE"]] = Field(default_factory=lambda:["COMPILE"], min_length=1, max_length=1)
+
+
 class SourceFile(Strict):
     name: str
     kind: Literal["source", "resource", "aux", "statement"] = "source"
     language: Literal["cpp17", "cpp20", "c17", "c99", "python3", "java17", "java8", "text"] = "cpp17"
     compile_with_solution: bool = False
+    resource_policy: ResourcePolicy | None = None
+    attach_to_build: bool | None = None
     entry_class: str = Field(default="", pattern=r"^(?:[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)?$")
     sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     size: int = Field(ge=0, le=16777216)
@@ -82,10 +90,14 @@ class SourceFile(Strict):
         # Preserve hashes of legacy documents that have no role metadata.
         if not self.roles:
             value.pop("roles", None)
+        for key in ("resource_policy", "attach_to_build"):
+            if value[key] is None: value.pop(key)
         return value
 
     @model_validator(mode="after")
     def executable_roles(self):
+        if self.resource_policy and self.kind != "resource":
+            raise ValueError("Resource policies require Resource files")
         if self.roles and (self.kind != "source" or self.language == "text"):
             raise ValueError("Program roles require executable source files")
         if len(self.roles) != len(set(self.roles)):

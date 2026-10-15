@@ -38,6 +38,8 @@ def check_compatibility(doc, options):
         issues.append("ZOJ 제한 범위는 시간 100~10,000ms, 메모리 16~1,024MiB입니다.")
     if doc["extra_validators"] or any(f.get("compile_with_solution") for f in doc["files"].values()):
         issues.append("추가 validator와 풀이 결합 파일은 ZOJ 채점에서 동일하게 실행되지 않습니다.")
+    if any(f.get("resource_policy") for f in doc["files"].values()):
+        issues.append("언어·대상별 리소스 정책은 Editor 또는 재현용 패키지로 내보내세요. ZOJ 문제 ZIP은 이 컴파일 정책을 지원하지 않습니다.")
     checker = doc["files"].get(doc["checker"])
     if checker and checker["language"] not in {"cpp17", "c17", "c99", "python3"}:
         issues.append("ZOJ checker는 C++17·C·Python 소스만 지원합니다. 해당 언어로 검증하세요.")

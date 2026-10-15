@@ -167,6 +167,8 @@ class Sandbox:
         return result
 
     def compile(self, source, resources, is_solution=False):
+        from .resources import compile_resources
+        resources = compile_resources(resources, source["language"], is_solution)
         cache_key = (source["name"], source["sha256"], source["language"], is_solution)
         if cache_key in self.programs:
             return self.programs[cache_key]
@@ -180,7 +182,7 @@ class Sandbox:
         if language in {"cpp17", "cpp20", "c17", "c99"}:
             std = {"cpp17": "c++17", "cpp20": "c++20", "c17": "c17", "c99": "c99"}[language]
             compiler = "gcc" if language in {"c17", "c99"} else "g++"
-            units = [r["name"] for r in resources if is_solution and r.get("compile_with_solution") and r["name"] != name and r["language"] in ({"c17", "c99"} if language in {"c17", "c99"} else {"cpp17", "cpp20"})]
+            units = [r["name"] for r in resources if is_solution and r.get("compile_with_solution") and r["name"] != name and (r["language"] in ({"c17", "c99"} if language in {"c17", "c99"} else {"cpp17", "cpp20"}) or r["name"].endswith((".a", ".o")))]
             argv = [compiler, f"-std={std}", "-O2", "-pipe", name, *units, "-o", "program"]
             cmd = ["./program"]
         elif language in {"java17", "java8"}:
@@ -208,6 +210,10 @@ class Sandbox:
         for filename in [".output", ".stderr", ".editor-job.json", ".input"]:
             (folder / filename).unlink(missing_ok=True)
         artifacts = folder / "run"
+        for resource in resources:
+            if resource.get("resource_policy") and resource["name"] != name:
+                (folder / resource["name"]).unlink(missing_ok=True)
+                (artifacts / resource["name"]).unlink(missing_ok=True)
         for file in folder.iterdir():
             if file.name != "run" and not file.name.startswith(".") and file.is_file():
                 shutil.copy2(file, artifacts / file.name)

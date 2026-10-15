@@ -83,7 +83,10 @@ def descriptor(job, testsets):
         category = ET.SubElement(files, {"source": "sources", "resource": "resources", "aux": "aux", "statement": "statement-resources"}[kind])
         for name, source in doc["files"].items():
             if source["kind"] == kind:
-                ET.SubElement(category, "file", {"path": f"files/{name}", "type": SOURCE_TYPES[source["language"]]})
+                node = ET.SubElement(category, "file", {"path": f"files/{name}", "type": SOURCE_TYPES[source["language"]]})
+                metadata = {k:source[k] for k in ("compile_with_solution", "entry_class", "roles", "resource_policy", "attach_to_build") if k in source and source[k] is not None}
+                if metadata:
+                    ET.SubElement(node, "{https://editor.zoj.kr/schema/v1}metadata").text = json.dumps(metadata)
     assets = ET.SubElement(root, "assets")
     for role in ["checker", "validator", "interactor"]:
         name = doc[role]
@@ -255,6 +258,12 @@ def polygon_document(archive, db, problem_id, name):
         for node in root.findall(f"files/{category}/file"):
             item = file(node.get("path"), kind, node.get("type", ""))
             if item:
+                metadata = node.findtext("{https://editor.zoj.kr/schema/v1}metadata")
+                if metadata:
+                    value = json.loads(metadata)
+                    if not isinstance(value,dict) or set(value) - {"compile_with_solution", "entry_class", "roles", "resource_policy", "attach_to_build"}:
+                        raise ValueError("Unsupported file metadata")
+                    item.update(value)
                 doc["files"][item["name"]] = item
     doc["solutions"] = {}
     reverse_tags = {value: key for key, value in TAG_NAMES.items()}
@@ -283,7 +292,7 @@ def polygon_document(archive, db, problem_id, name):
         source = asset.find("source")
         if source is not None:
             item = file(source.get("path"), "source", source.get("type", ""))
-            doc["files"][item["name"]] = item
+            doc["files"][item["name"]] = {**doc["files"].get(item["name"],{}),**item}
             doc[role] = item["name"]
         tests = asset.find("testset")
         if tests is not None and role in {"checker", "validator"}:

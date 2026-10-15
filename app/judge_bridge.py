@@ -60,12 +60,14 @@ def compatible(doc, options, kind):
     if info["interactive"] or info["input_file"] != "stdin" or info["output_file"] != "stdout":
         issues.append("현재 ZOJ 채점기는 표준 입출력의 비대화형 문제를 지원합니다.")
     testsets = doc["testsets"].values() if kind == "package" else [doc["testsets"][options["testset"]]]
-    if info["points_enabled"] or any(t["groups_enabled"] for t in testsets):
-        issues.append("그룹·부분 점수는 Editor 격리 실행을 선택해 검증하세요.")
+    if info["points_enabled"]:
+        issues.append("부분 점수는 Editor 격리 실행을 선택해 검증하세요.")
     if not 100 <= info["time_limit_ms"] <= 10000 or not 16 <= info["memory_limit_mb"] <= 1024:
         issues.append("ZOJ 문제 제한 범위는 100~10,000ms, 16~1,024MiB입니다.")
     if any(f.get("compile_with_solution") for f in doc["files"].values()):
         issues.append("grader와 결합하는 풀이는 Editor 격리 실행으로 검증하세요.")
+    if any(f.get("resource_policy") for f in doc["files"].values()):
+        issues.append("언어·대상별 리소스 정책은 Editor 격리 실행으로 검증하세요. 에이전트 전송 모드에서는 같은 채점 노드가 격리 실행을 처리합니다.")
     selected = list(doc["solutions"]) if kind == "package" else options["solutions"] or list(doc["solutions"])
     for name in selected:
         s = doc["solutions"][name]
@@ -73,8 +75,8 @@ def compatible(doc, options, kind):
             continue
         if s["language"] not in LANGUAGES:
             issues.append(f"{name}: ZOJ 지원 언어는 C++17·C99·Python 3.13·Java 8입니다. 언어 표준을 자동으로 바꾸지 않습니다.")
-        if s["tag"] == "PE" or s.get("extra_tags"):
-            issues.append(f"{name}: PE·테스트셋별 추가 태그는 Editor 격리 실행을 선택해 검증하세요.")
+        if s["tag"] == "PE" or "PE" in s.get("extra_tags", {}).values() or any("PE" in tags.values() for tags in s.get("group_tags", {}).values()):
+            issues.append(f"{name}: PE 기대 판정은 Editor 격리 실행을 선택해 검증하세요.")
     checker = doc["files"].get(doc["checker"])
     if checker and checker["language"] not in {"cpp17", "c99", "python3"}:
         issues.append("ZOJ checker는 C++17·C99·Python 소스로 검증하세요.")
@@ -103,7 +105,7 @@ def archive(pipeline, name, set_name, tests, attempt):
         resource(checker, read_blob(pipeline.doc["files"][checker]["sha256"]), "checker")
     resource("testlib.h", (VENDOR / "testlib.h").read_bytes(), "package-resource")
     for filename, f in pipeline.doc["files"].items():
-        if f["kind"] in {"resource", "aux"} and filename not in resource_names:
+        if (f["kind"] == "resource" or f["kind"] == "aux" and f.get("attach_to_build") is not False) and filename not in resource_names:
             resource(filename, read_blob(f["sha256"]), "package-resource")
     cases = []
     for t in tests:
