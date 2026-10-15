@@ -12,7 +12,8 @@ _settings = None
 
 def configure(image):
     global _settings
-    _settings = SimpleNamespace(execution_transport='local', runner_image=image, render_image=image,
+    _settings = SimpleNamespace(execution_transport='local', execution_concurrency=1,
+                                runner_image=image, render_image=image,
                                 work_dir=Path(tempfile.mkdtemp(prefix='zoj-editor-replay-')))
 
 

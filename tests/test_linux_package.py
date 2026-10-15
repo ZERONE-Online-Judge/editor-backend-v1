@@ -25,23 +25,45 @@ def package(problem):
                            options={'export_format':'linux','verify':False}),{'tests':list(doc['testsets']['tests']['tests'].values())}
 
 
-def test_linux_package_freezes_engine_sources_tests_and_environment_without_python_dependencies(problem):
+def test_linux_package_freezes_engine_sources_tests_and_environment_without_python_dependencies(problem,tmp_path):
     job,sets=package(problem)
     artifact=build_package(job,sets,{'runtime':{'image_id':'sha256:'+'a'*64},'verified':False})
     assert artifact['format']=='linux' and artifact['filename'].endswith('-linux.zip')
     with zipfile.ZipFile(get_settings().data_dir/'packages'/(job.id+'.zip')) as archive:
         assert 'replay/runtime/launch.c' in archive.namelist()
         assert 'replay/engine/support.py' in archive.namelist()
+        assert 'replay/engine/parallel.py' in archive.namelist()
         assert b'from .config' not in archive.read('replay/engine/sandbox.py')
         assert b'from .support import get_settings' in archive.read('replay/engine/sandbox.py')
         assert b'from .domain' not in archive.read('replay/engine/expectations.py')
-        for name in ['replay/engine/sandbox.py','replay/replay.py','replay/engine/expectations.py']:
+        for name in ['replay/engine/sandbox.py','replay/replay.py','replay/engine/expectations.py','replay/engine/parallel.py']:
             compile(archive.read(name),name,'exec')
         hashes=archive.read('SHA256SUMS').decode().splitlines()
         for line in hashes:
             digest,name=line.split('  ',1)
             assert hashlib.sha256(archive.read(name)).hexdigest()==digest
         assert json.loads(archive.read('replay/environment.json'))['verified_at_export'] is False
+        archive.extractall(tmp_path)
+    # -S excludes site packages: exported replay must work without the API's
+    # installed dependencies, and without source files from this checkout.
+    script = '''import sys,shutil
+sys.path.insert(0,sys.argv[1])
+from engine import support
+from engine.sandbox import Sandbox
+from engine.parallel import execution_budget
+support.configure('offline-test-image')
+sandbox=Sandbox()
+try:
+ assert sandbox.settings.execution_concurrency==1
+ with execution_budget(sandbox.settings.execution_concurrency,sandbox.check_cancelled):
+  sandbox.check_cancelled()
+finally:
+ sandbox.close()
+ shutil.rmtree(support.get_settings().work_dir)
+'''
+    run=subprocess.run([sys.executable,'-I','-S','-c',script,str(tmp_path/'replay')],
+                       cwd=tmp_path,capture_output=True,text=True,timeout=10)
+    assert run.returncode==0,run.stdout+run.stderr
 
 
 @pytest.mark.sandbox

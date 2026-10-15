@@ -44,6 +44,7 @@ def add(archive, job, report):
         assert original in sandbox
         sandbox=sandbox.replace(original,'from .support import ')
     archive.writestr('replay/engine/sandbox.py',sandbox)
+    archive.write(ROOT/'app/parallel.py','replay/engine/parallel.py')
     archive.write(ROOT/'app/resources.py','replay/engine/resources.py')
     expectations=(ROOT/'app/expectations.py').read_text().replace('from .domain import expanded_tests','from .support import expanded_tests')
     archive.writestr('replay/engine/expectations.py',expectations)
