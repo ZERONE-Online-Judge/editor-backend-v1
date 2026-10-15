@@ -209,8 +209,17 @@ class Material(Strict):
     testsets: list[str] = Field(default_factory=list)
 
 
+class TranslationReview(Strict):
+    source_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    target_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
 class Document(Strict):
     info: Info
+    common_statement: str = Field(default="", max_length=262144)
+    common_tutorial: str = Field(default="", max_length=262144)
+    translation_source: str | None = None
+    translation_reviews: dict[str,TranslationReview] = Field(default_factory=dict,max_length=20)
     statements: dict[str, Statement] = Field(default_factory=dict)
     files: dict[str, SourceFile] = Field(default_factory=dict)
     solutions: dict[str, Solution] = Field(default_factory=dict)
@@ -223,8 +232,19 @@ class Document(Strict):
     checker_tests: dict[str, UnitTest] = Field(default_factory=dict)
     materials: dict[str, Material] = Field(default_factory=dict)
 
+    @model_serializer(mode="wrap")
+    def serialize(self, handler):
+        value=handler(self)
+        for key in ("common_statement","common_tutorial","translation_source","translation_reviews"):
+            if not value[key]: value.pop(key)
+        return value
+
     @model_validator(mode="after")
     def validate_references(self):
+        if self.translation_source and self.translation_source not in self.statements:
+            raise ValueError("The source statement language must exist")
+        if set(self.translation_reviews)-set(self.statements):
+            raise ValueError("Translation reviews must refer to existing languages and content hashes")
         if len(self.validator_tests) > 1000 or len(self.checker_tests) > 1000 or len(self.materials) > 100:
             raise ValueError("Too many component tests or materials")
         for unit in self.validator_tests.values():

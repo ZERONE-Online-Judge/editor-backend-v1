@@ -147,7 +147,9 @@ def build_zoj_package(job, testsets):
         # public statement attachment, even when some statements are published.
         asset("editor-project.json", encoded_snapshot, "package-files/package-resource")
         default_language = job.options["statement_language"]
-        statement = doc["statements"][default_language]
+        from .statements import effective
+        effective_statements={name:effective(doc,name) for name in doc["statements"]}
+        statement = effective_statements[default_language]
         def rewrite(text):
             # Match full Markdown resource targets, never arbitrary occurrences.
             return re.sub(r"(?<=\]\()(?:\.\/)?([^\s)]+)(?=\))", lambda m: images.get(m[1], m[0]), text)
@@ -164,9 +166,9 @@ def build_zoj_package(job, testsets):
         if len(doc["statements"]) > 1 or language_codes[default_language] != "ko":
             manifest["problem"].update(default_statement_language=language_codes[default_language],
                 statement_translations={language_codes[name]: {"title": item["name"] or doc["info"]["name"], "statement": statement_text(item)}
-                    for name, item in doc["statements"].items() if name != default_language and item["legend"].strip()},
+                    for name, item in effective_statements.items() if name != default_language and item["legend"].strip()},
                 editorial_translations={language_codes[name]: rewrite(item["tutorial"])
-                    for name, item in doc["statements"].items() if name != default_language and item["tutorial"].strip()})
+                    for name, item in effective_statements.items() if name != default_language and item["tutorial"].strip()})
         encoded = json.dumps(manifest, ensure_ascii=False).encode()
         if len(encoded) > 8 * 1048576 or total + len(encoded) > 2 * 1024**3:
             raise ValueError("ZOJ 문제 메타데이터의 크기 한도를 초과했습니다.")

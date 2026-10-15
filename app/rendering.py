@@ -13,7 +13,8 @@ def tex_escape(text):
 
 
 def statement_tex(doc, language):
-    statement = doc["statements"][language]
+    from .statements import effective
+    statement = effective(doc,language)
     title = tex_escape(statement["name"] or doc["info"]["name"])
     result = [r"\documentclass[11pt]{article}", r"\usepackage[a4paper,margin=22mm]{geometry}", r"\usepackage{fontspec,xeCJK,amsmath,amssymb,graphicx,enumitem,hyperref}", r"\setCJKmainfont{Noto Sans CJK KR}", r"\setmainfont{DejaVu Sans}", r"\newcommand{\InputFile}{\section*{입력}}", r"\newcommand{\OutputFile}{\section*{출력}}", r"\newcommand{\Note}{\section*{노트}}", r"\newcommand{\Scoring}{\section*{부분 점수}}", r"\newcommand{\Interaction}{\section*{인터랙션}}", r"\begin{document}", r"\begin{center}{\Large\bfseries " + title + r"}\end{center}", f"시간 제한: {doc['info']['time_limit_ms']}ms\\quad 메모리 제한: {doc['info']['memory_limit_mb']}MiB\n\n"]
     for label, key in [("문제", "legend"), ("입력", "input"), ("출력", "output"), ("부분 점수", "scoring"), ("인터랙션", "interaction"), ("노트", "notes"), ("해설", "tutorial")]:

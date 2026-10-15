@@ -114,7 +114,7 @@ def cautions(doc):
     warnings = []
     def add(code, label, section, blocking=False):
         warnings.append({"code": code, "message": label, "section": section, "blocking": blocking})
-    if not any(s.get("legend", "").strip() for s in doc["statements"].values()):
+    if not doc["statements"] or not (doc.get("common_statement", "").strip() or any(s.get("legend", "").strip() for s in doc["statements"].values())):
         add("NO_STATEMENT", "문제 지문을 작성하세요.", "statements", True)
     if not doc["checker"]:
         add("NO_CHECKER", "checker를 선택하세요.", "checker", True)

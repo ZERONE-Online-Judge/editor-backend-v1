@@ -103,10 +103,18 @@ def save_document(problem_id: str, values: SaveWorking, user: User = Depends(cur
         fail("forbidden", "쓰기 권한이 필요합니다.", 403)
     wc = workspace(db, problem, user)
     doc = validate_document(db, problem.id, values.document.model_dump())
+    from .statements import fingerprint, statement_fingerprint
+    current = fingerprint(doc)
+    for language, stamp in doc.get("translation_reviews",{}).items():
+        if stamp != wc.document.get("translation_reviews",{}).get(language) and (not current or stamp['source_hash'] != current or stamp['target_hash'] != statement_fingerprint(doc,language) or language == doc.get("translation_source")):
+            fail("translation_review_stale", "현재 원문 내용을 기준으로 번역을 검토한 뒤 표시하세요.")
     if access.role == "READ" and access.translator:
-        for key in doc:
-            if key not in {"statements"} and doc[key] != wc.document[key]:
+        for key in set(doc) | set(wc.document):
+            if key not in {"statements", "translation_reviews"} and doc.get(key) != wc.document.get(key):
                 fail("translator_scope", "번역자는 지문만 수정할 수 있습니다.", 403)
+        basis=wc.document.get("translation_source")
+        if basis and doc['statements'].get(basis)!=wc.document['statements'].get(basis):
+            fail("translator_scope", "기준 원문은 작성 권한이 있는 협업자가 수정할 수 있습니다.", 403)
     save_working(db, wc, doc, values.version)
     return {"version": wc.version, "document_hash": document_hash(doc), "modified": doc != wc.base_document,
             "cautions": cautions(doc), "pending_preparations": pending_preparations(db, problem_id, user.id, document_hash(doc))}
@@ -135,9 +143,12 @@ def preview_commit(problem_id: str, values: CommitPreview, user: User = Depends(
     if wc.version != values.version:
         fail("workspace_changed", "최신 작업 사본을 불러오세요.", 409)
     doc = validate_document(db, problem.id, values.document.model_dump())
-    if access.role == "READ" and any(doc[k] != wc.base_document[k] for k in doc if k != "statements"):
+    if access.role == "READ" and any(doc.get(k) != wc.base_document.get(k) for k in set(doc)|set(wc.base_document) if k not in {"statements", "translation_reviews"}):
         fail("translator_scope", "번역자는 지문 변경만 커밋할 수 있습니다.", 403)
     proposed, conflicts = three_way_merge(wc.base_document, doc, problem.document)
+    basis=problem.document.get("translation_source")
+    if access.role == "READ" and basis and proposed['statements'].get(basis)!=problem.document['statements'].get(basis):
+        fail("translator_scope", "번역자는 기준 원문을 변경할 수 없습니다.", 403)
     return {"revision": problem.revision, "before": problem.document, "after": proposed,
             "conflicts": conflicts}
 
@@ -152,12 +163,15 @@ def commit(problem_id: str, values: Commit, user: User = Depends(current_user), 
         fail("preview_changed", "공유 리비전이 변경되었습니다. 변경사항을 다시 확인한 뒤 커밋하세요.", 409)
     if wc.version != values.version:
         fail("workspace_changed", "최신 작업 사본을 불러오세요.", 409)
-    if access.role == "READ" and any(wc.document[k] != wc.base_document[k] for k in wc.document if k != "statements"):
+    if access.role == "READ" and any(wc.document.get(k) != wc.base_document.get(k) for k in set(wc.document)|set(wc.base_document) if k not in {"statements", "translation_reviews"}):
         fail("translator_scope", "번역자는 지문 변경만 커밋할 수 있습니다.", 403)
     doc, conflicts = three_way_merge(wc.base_document, wc.document, problem.document)
     if conflicts:
         fail("revision_conflict", "동료의 변경과 충돌했습니다. 충돌 항목을 확인해 주세요.", 409, conflicts=conflicts)
     doc = validate_document(db, problem.id, doc)
+    basis=problem.document.get("translation_source")
+    if access.role == "READ" and basis and doc['statements'].get(basis)!=problem.document['statements'].get(basis):
+        fail("translator_scope", "번역자는 기준 원문을 변경할 수 없습니다.", 403)
     if doc == problem.document:
         save_working(db, wc, doc, values.version)
         wc.base_revision = problem.revision

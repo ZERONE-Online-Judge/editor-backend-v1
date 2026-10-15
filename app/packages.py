@@ -27,7 +27,8 @@ TAG_NAMES = {"MA": "main", "OK": "accepted", "WA": "wrong-answer", "TL": "time-l
 
 
 def statement_html(doc, language, assets_prefix="../../assets"):
-    statement = doc["statements"][language]
+    from .statements import effective
+    statement = effective(doc,language)
     title = html.escape(statement["name"] or doc["info"]["name"])
     sections = [("문제", "legend"), ("입력", "input"), ("출력", "output"), ("부분 점수", "scoring"), ("인터랙션", "interaction"), ("노트", "notes"), ("해설", "tutorial")]
     body = "".join(f"<section><h2>{label}</h2><div class='copy'>{html.escape(statement[key])}</div></section>" for label, key in sections if statement[key])
