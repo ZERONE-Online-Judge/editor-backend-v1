@@ -40,12 +40,13 @@ class StressSearch:
 
     def check(self):
         self.outer_check()
-        self.stats["elapsed_seconds"] = round(time.monotonic() - self.started, 2)
         if self.deadline is not None and time.monotonic() >= self.deadline:
             raise StressDurationReached()
-        if time.monotonic() - self.p.last_publish >= 1:
-            self.p.publish(copy.deepcopy(self.p.result))
-            self.p.last_publish = time.monotonic()
+        with self.p.result_lock:
+            self.stats["elapsed_seconds"] = round(time.monotonic() - self.started, 2)
+            if time.monotonic() - self.p.last_publish >= 1:
+                self.p.publish(copy.deepcopy(self.p.result))
+                self.p.last_publish = time.monotonic()
 
     def reserve(self, count):
         if self.stats["evidence_bytes"] + count > MAX_STRESS_EVIDENCE_BYTES:
@@ -61,9 +62,41 @@ class StressSearch:
             raise SandboxError("checker 또는 격리 실행 환경의 오류입니다.\n" + checked["stderr"])
         return verdict, actual, checked
 
+    def record(self, candidate, verdict, wrong, checked, content, correct, example, iteration, seed, command, index, pattern, draws, pattern_stats):
+        digest = hashlib.sha256(content).hexdigest()
+        summary = self.summaries[candidate]
+        summary["tested"] += 1
+        summary["verdicts"][verdict] = summary["verdicts"].get(verdict, 0) + 1
+        if verdict not in set(self.options.get("counterexample_verdicts") or DEFAULT_VERDICTS):
+            return example
+        self.reserve(len(wrong["output"]) + (len(content) + len(correct["output"]) if example is None else 0))
+        if example is None:
+            example = {"id": digest[:32], "iteration": iteration, "seed": seed, "command": command,
+                       "pattern_index": index, "pattern_name": pattern["name"], "range_values": draws,
+                       "input_bytes": len(content), "input_sha": self.p.blob(content), "answer_sha": self.p.blob(correct["output"]), "findings": []}
+            self.p.result["counterexamples"].append(example)
+            self.stats["counterexample_count"] += 1
+            pattern_stats["counterexample_inputs"] += 1
+        finding = {"solution": candidate, "tag": summary["tag"], "verdict": verdict,
+                   "actual_sha": self.p.blob(wrong["output"]), "comment": checked["stderr"],
+                   "cpu_ms": wrong.get("cpu_ms"), "memory_kb": wrong.get("memory_kb")}
+        example["findings"].append(finding)
+        summary["counterexamples"] += 1
+        pattern_stats["findings"] += 1
+        pattern_stats["solution_findings"][candidate] = pattern_stats["solution_findings"].get(candidate, 0) + 1
+        if summary["first_counterexample_id"] is None:
+            summary["first_counterexample_id"] = example["id"]
+        if self.p.result["counterexample"] is None:
+            self.p.result["counterexample"] = {**example, **finding}
+        self.p.event(f"유효한 반례 발견 · {candidate} · {verdict}")
+        self.p.publish(copy.deepcopy(self.p.result))
+        return example
+
     def collect(self):
+        if getattr(self.p, "parallelism", 1) > 1:
+            from .stress_parallel import collect
+            return collect(self)
         seen = set()
-        verdicts = set(self.options.get("counterexample_verdicts") or DEFAULT_VERDICTS)
         for iteration in range(1, self.options["iterations"] + 1):
             self.check()
             candidates = [name for name in self.candidates if not self.focus or not self.summaries[name]["counterexamples"]]
@@ -103,32 +136,7 @@ class StressSearch:
                 if not compared:
                     pattern_stats["compared_inputs"] += 1
                     compared = True
-                summary = self.summaries[candidate]
-                summary["tested"] += 1
-                summary["verdicts"][verdict] = summary["verdicts"].get(verdict, 0) + 1
-                if verdict not in verdicts:
-                    continue
-                self.reserve(len(wrong["output"]) + (len(content) + len(correct["output"]) if example is None else 0))
-                if example is None:
-                    example = {"id": digest[:32], "iteration": iteration, "seed": seed, "command": command,
-                               "pattern_index": index, "pattern_name": pattern["name"], "range_values": draws,
-                               "input_bytes": len(content), "input_sha": self.p.blob(content), "answer_sha": self.p.blob(correct["output"]), "findings": []}
-                    self.p.result["counterexamples"].append(example)
-                    self.stats["counterexample_count"] += 1
-                    pattern_stats["counterexample_inputs"] += 1
-                finding = {"solution": candidate, "tag": summary["tag"], "verdict": verdict,
-                           "actual_sha": self.p.blob(wrong["output"]), "comment": checked["stderr"],
-                           "cpu_ms": wrong.get("cpu_ms"), "memory_kb": wrong.get("memory_kb")}
-                example["findings"].append(finding)
-                summary["counterexamples"] += 1
-                pattern_stats["findings"] += 1
-                pattern_stats["solution_findings"][candidate] = pattern_stats["solution_findings"].get(candidate, 0) + 1
-                if summary["first_counterexample_id"] is None:
-                    summary["first_counterexample_id"] = example["id"]
-                if self.p.result["counterexample"] is None:
-                    self.p.result["counterexample"] = {**example, **finding}
-                self.p.event(f"유효한 반례 발견 · {candidate} · {verdict}")
-                self.p.publish(copy.deepcopy(self.p.result))
+                example = self.record(candidate, verdict, wrong, checked, content, correct, example, iteration, seed, command, index, pattern, draws, pattern_stats)
             self.stats["iterations_completed"] = iteration
             if self.focus and all(row["counterexamples"] for row in self.summaries.values()):
                 self.stats["stop_reason"] = "all_candidates_covered"

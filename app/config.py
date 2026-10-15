@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     render_image: str = "zoj-editor-renderer:v1"
     execution_transport: Literal["local", "agent"] | None = None
     worker_concurrency: int = Field(default=2, ge=1, le=32)
+    test_parallelism: int = Field(default=4, ge=1, le=16)
+    execution_concurrency: int = Field(default=4, ge=1, le=16)
     job_timeout_seconds: int = Field(default=1800, ge=1, le=86400)
     stress_max_seconds: int = Field(default=1800, ge=1, le=86400)
     runtime_revision: str = "editor-runtime-0.1.2"

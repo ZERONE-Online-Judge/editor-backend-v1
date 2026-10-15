@@ -19,6 +19,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from .execution_limits import public_limits
 from .domain import fail
+from .parallel import execution_budget
 from .sandbox import SandboxError, VENDOR
 from .storage import read_blob
 from .zoj import remote
@@ -246,8 +247,11 @@ def verify(pipeline):
             raise SandboxError("검증 요청 계정을 찾을 수 없습니다.")
         user = SimpleNamespace(email=account.email)
     cancellation = threading.Event()
+    def limited(name):
+        with execution_budget(get_settings().execution_concurrency, pipeline.sandbox.check_cancelled):
+            return verify_solution(pipeline, user, name, cancellation)
     with ThreadPoolExecutor(max_workers=get_settings().judge_concurrency) as pool:
-        futures = {pool.submit(verify_solution, pipeline, user, name, cancellation): name for name in selected}
+        futures = {pool.submit(limited, name): name for name in selected}
         try:
             for future in as_completed(futures):
                 result = future.result()

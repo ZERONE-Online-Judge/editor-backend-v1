@@ -7,6 +7,9 @@ import subprocess
 import tempfile
 import stat
 import time
+import threading
+from functools import wraps
+from .parallel import execution_budget, check_stopped
 from dataclasses import dataclass
 from pathlib import Path
 from .config import get_settings
@@ -41,12 +44,25 @@ class Program:
     command: list[str]
 
 
+def compile_once(function):
+    @wraps(function)
+    def wrapped(self, *args, **kwargs):
+        with self.compile_lock:
+            self.check_cancelled()
+            return function(self, *args, **kwargs)
+    return wrapped
+
+
 class Sandbox:
     def __init__(self, check_cancelled=lambda: None, remote_context=None):
         self.settings = get_settings()
         self.settings.work_dir.mkdir(parents=True, exist_ok=True)
         self.root = Path(tempfile.mkdtemp(prefix="editor-", dir=self.settings.work_dir)).resolve()
-        self.check_cancelled = check_cancelled
+        def check():
+            check_stopped()
+            check_cancelled()
+        self.check_cancelled = check
+        self.compile_lock = threading.RLock()
         self.programs = {}
         self.images = {}
         self.agent_transport = None
@@ -76,7 +92,11 @@ class Sandbox:
         path.chmod(0o777)
         return path
 
-    def execute(self, folder, command, stdin=b"", cpu_ms=1000, memory_mb=256, output_bytes=1048576, wall_seconds=None, interactive=None, output_file="stdout", image=None, compile_language=None, export_files=None):
+    def execute(self, *args, **kwargs):
+        with execution_budget(self.settings.execution_concurrency, self.check_cancelled):
+            return self._execute(*args, **kwargs)
+
+    def _execute(self, folder, command, stdin=b"", cpu_ms=1000, memory_mb=256, output_bytes=1048576, wall_seconds=None, interactive=None, output_file="stdout", image=None, compile_language=None, export_files=None):
         self.check_cancelled()
         config = {"command": command, "cpu_ms": cpu_ms, "memory_mb": memory_mb, "output_bytes": output_bytes,
                   "wall_seconds": wall_seconds or cpu_ms / 1000 * 5 + 3, "output_file": output_file, "compile_language": compile_language, "export_files": export_files or []}
@@ -166,6 +186,7 @@ class Sandbox:
         self.check_cancelled()
         return result
 
+    @compile_once
     def compile(self, source, resources, is_solution=False):
         from .resources import compile_resources
         resources = compile_resources(resources, source["language"], is_solution)

@@ -2,6 +2,7 @@
 import hashlib
 import json
 import time
+import threading
 from types import SimpleNamespace
 from uuid import uuid4
 from fastapi import HTTPException
@@ -14,6 +15,7 @@ class AgentTransport:
     def __init__(self, sandbox, context):
         self.sandbox, self.context = sandbox, context
         self.user = SimpleNamespace(email=context["email"])
+        self.records_lock = threading.Lock()
         self.records = []
         self.on_result = lambda record: None
 
@@ -54,8 +56,9 @@ class AgentTransport:
             record = {"task_id": task_id, "runtime": runtime, "node_name": task.get("node_name"),
                       "agent_version": task.get("agent_version"), "execution_revision": task.get("execution_revision"),
                       "status": result["status"], "cpu_ms": result.get("cpu_ms"), "wall_ms": result.get("wall_ms"), "memory_kb": result.get("memory_kb")}
-            self.records.append(record)
-            self.records = self.records[-2000:]
+            with self.records_lock:
+                self.records.append(record)
+                self.records = self.records[-2000:]
             self.on_result(record)
             return result
         finally:

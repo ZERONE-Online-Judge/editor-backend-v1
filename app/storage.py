@@ -2,9 +2,9 @@ import hashlib
 import os
 import tempfile
 from pathlib import Path
-from sqlalchemy import select, func
+from sqlalchemy import select, func, update
 from .config import get_settings
-from .db import Blob
+from .db import Blob, Problem
 from .domain import fail
 
 
@@ -19,6 +19,14 @@ def put_blob(db, problem_id, content: bytes):
         fail("too_large", "파일은 16MiB 이하로 올려 주세요.", 413)
     sha = hashlib.sha256(content).hexdigest()
     if not db.get(Blob, (problem_id, sha)):
+        # Parallel jobs may produce the same content. Serialize quota checks
+        # and metadata insertion across processes, not only within one job.
+        if db.get_bind().dialect.name == "sqlite":
+            db.execute(update(Problem).where(Problem.id == problem_id).values(updated_at=Problem.updated_at))
+        else:
+            db.scalar(select(Problem.id).where(Problem.id == problem_id).with_for_update())
+        if db.get(Blob, (problem_id, sha)):
+            return {"sha256": sha, "size": len(content)}
         used = db.scalar(select(func.coalesce(func.sum(Blob.size), 0)).where(Blob.problem_id == problem_id))
         if used + len(content) > get_settings().max_project_bytes:
             fail("project_quota", "문제 자료의 저장 한도에 도달했습니다.", 413)

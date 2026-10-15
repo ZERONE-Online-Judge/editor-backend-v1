@@ -7,6 +7,7 @@ import time
 import threading
 from pathlib import Path
 from .db import SessionLocal, User
+from .parallel import ordered_work
 from .domain import expanded_tests
 from .sandbox import Sandbox, SandboxError, VENDOR
 from .storage import put_blob, read_blob
@@ -29,10 +30,14 @@ class Pipeline:
                 if not user:
                     raise SandboxError("실행 요청 계정을 찾을 수 없습니다.")
                 context = {"email": user.email, "job_kind": job.kind, "runtime_revision": job.options.get("execution_revision", "editor-agent-v1")}
+        self.parallelism = min(get_settings().test_parallelism, get_settings().execution_concurrency)
+        self.program_lock = threading.RLock()
+        self.blob_lock = threading.Lock()
         self.sandbox = Sandbox(check_cancelled, remote_context=context)
         self.result = {"summary": "자료를 준비하고 있습니다.", "progress": 0, "events": [], "testsets": {}, "solutions": [], "unit_tests": []}
         if job.options.get("scope"):
             self.result["scope"] = copy.deepcopy(job.options["scope"])
+        self.result["parallelism"] = self.parallelism
         self.programs = {}
         self.counter = 0
         self.last_publish = 0
@@ -66,12 +71,19 @@ class Pipeline:
                 self.last_publish = time.monotonic()
 
     def blob(self, content):
-        with SessionLocal() as db:
+        with self.blob_lock, SessionLocal() as db:
             value = put_blob(db, self.job.problem_id, content)
             db.commit()
             return value["sha256"]
 
+    def work(self, function, items):
+        return ordered_work(function, items, getattr(self, "parallelism", 1), self.sandbox.check_cancelled)
+
     def program(self, name, solution=False):
+        with self.program_lock:
+            return self._program(name, solution)
+
+    def _program(self, name, solution=False):
         key = (name, solution)
         if key in self.programs:
             return self.programs[key]
@@ -184,9 +196,7 @@ class Pipeline:
             prepared = []
             indices = self.job.options.get("test_indices") if self.job.kind in {"verify", "prepare"} else []
             seen = {test["input_sha"] for test in saved if self.job.kind == "prepare" and mode in {"full", "inputs"} and indices and test["index"] not in indices and test["input_sha"]}
-            for test in sorted(saved, key=lambda t: t["index"]):
-                if self.job.kind in {"verify", "prepare"} and self.job.options.get("test_indices") and test["index"] not in self.job.options["test_indices"]:
-                    continue
+            def prepare_case(test):
                 self.sandbox.check_cancelled()
                 index = test["index"]
                 self.event(f"테스트 준비 · {set_name} #{index}")
@@ -196,9 +206,6 @@ class Pipeline:
                     raise SandboxError(f"{set_name} #{index}: 저장된 입력이 없습니다. 먼저 입력을 생성하세요.")
                 input_bytes = read_blob(test["input_sha"]) if frozen or mode in {"validate", "answers"} or not test["command"] else self.generator(test["command"])
                 sha = hashlib.sha256(input_bytes).hexdigest()
-                if sha in seen and not self.doc["info"]["skip_duplicate_validation"]:
-                    raise SandboxError(f"{set_name} #{index}: 중복된 입력입니다.")
-                seen.add(sha)
                 if self.doc["info"]["well_formed"] and (b"\r" in input_bytes or b"\x00" in input_bytes or (input_bytes and not input_bytes.endswith(b"\n"))):
                     raise SandboxError(f"{set_name} #{index}: LF 줄바꿈과 마지막 개행을 확인하세요.")
                 valid, validator = self.validator(input_bytes, set_name, test["group"])
@@ -206,9 +213,8 @@ class Pipeline:
                     raise SandboxError(f"{set_name} #{index}: 입력 조건 위반\n{validator['stderr']}")
                 if mode in {"inputs", "validate"}:
                     answer_sha = test["answer_sha"] if mode == "validate" or sha == test["input_sha"] else None
-                    prepared.append({**test, "input_sha": test["input_sha"] if mode == "validate" else self.blob(input_bytes),
-                                     "answer_sha": answer_sha, "validator": "VALID", "main_cpu_ms": None, "main_memory_kb": None, "main_wall_ms": None})
-                    continue
+                    return ({**test, "input_sha": test["input_sha"] if mode == "validate" else None,
+                                     "answer_sha": answer_sha, "validator": "VALID", "main_cpu_ms": None, "main_memory_kb": None, "main_wall_ms": None}, sha, input_bytes if mode == "inputs" else None, None)
                 if frozen:
                     answer = read_blob(test["answer_sha"])
                     result = {"cpu_ms": None, "memory_kb": None, "wall_ms": None}
@@ -222,13 +228,24 @@ class Pipeline:
                 check, checked = self.checker(input_bytes, answer, answer, test["points"])
                 if check != "AC":
                     raise SandboxError(f"checker가 Main 출력을 거부했습니다.\n{checked['stderr']}")
-                row = {**test, "input_sha": test["input_sha"] if frozen else self.blob(input_bytes), "answer_sha": test["answer_sha"] if frozen else self.blob(answer), "validator": "VALID", "main_cpu_ms": result["cpu_ms"], "main_memory_kb": result["memory_kb"], "main_wall_ms": result["wall_ms"]}
+                row = {**test, "input_sha": test["input_sha"] if frozen else None, "answer_sha": test["answer_sha"] if frozen else None, "validator": "VALID", "main_cpu_ms": result["cpu_ms"], "main_memory_kb": result["memory_kb"], "main_wall_ms": result["wall_ms"]}
                 from .statement_samples import validate as validate_sample
                 sample_status = validate_sample(self, test, set_name, input_bytes, answer, main)
                 if sample_status:
                     row["statement_io_validation"] = sample_status
                     self.event(f"지문 표시용 예제 · {set_name} #{index} · {'검증 통과' if sample_status == 'VALID' else '자동 검증 해제'}")
-                prepared.append(row)
+                return row, sha, None if frozen else input_bytes, None if frozen else answer
+            chosen = [test for test in sorted(saved, key=lambda t:t["index"]) if not indices or test["index"] in indices]
+            with self.work(prepare_case, chosen) as results:
+                for row, sha, input_bytes, answer in results:
+                    if sha in seen and not self.doc["info"]["skip_duplicate_validation"]:
+                        raise SandboxError(f"{set_name} #{row['index']}: 중복된 입력입니다.")
+                    seen.add(sha)
+                    if input_bytes is not None:
+                        row["input_sha"] = self.blob(input_bytes)
+                    if answer is not None:
+                        row["answer_sha"] = self.blob(answer)
+                    prepared.append(row)
             self.result["testsets"][set_name] = prepared
         label = {'inputs':'입력 재생성과 Validator 검사 완료','validate':'저장된 입력 Validator 검사 완료','answers':'저장된 입력의 Main 정답 재생성 완료'}.get(mode, '커밋된 입력·기대 출력 확인 완료' if frozen else '입력 검증과 Main 기대 출력 생성 완료')
         self.event(f"{label} · {', '.join(selected)}")
@@ -244,32 +261,36 @@ class Pipeline:
             verify(self)
             return
         selected = list(self.doc["solutions"]) if self.job.kind == "package" else self.job.options["solutions"] or list(self.doc["solutions"])
+        tasks = [(name, set_name, test) for name in selected if self.doc["solutions"][name]["tag"] != "NR"
+                 for set_name, tests in self.result["testsets"].items()
+                 if self.job.kind == "package" or set_name == self.job.options["testset"]
+                 for test in tests if (self.job.kind == "package" or not self.job.options["test_indices"] or test["index"] in self.job.options["test_indices"])
+                 and expected_tag(self.doc["solutions"][name], set_name, test["group"], self.doc["testsets"])[0] != "NR"]
+        def verify_case(task):
+            name, set_name, test = task
+            self.event(f"실제 실행 · {name} / {set_name} #{test['index']}")
+            inp, ans = read_blob(test["input_sha"]), read_blob(test["answer_sha"])
+            verdict, result = self.run_solution(name, inp, ans)
+            checked = {"score": 0}
+            comment = result.get("stderr", "")
+            if verdict == "AC":
+                verdict, checked = self.checker(inp, result["output"], ans, test["points"])
+                comment = checked["stderr"]
+            return name, {"testset": set_name, "index": test["index"], "verdict": verdict,
+                "cpu_ms": result["cpu_ms"], "wall_ms": result["wall_ms"], "memory_kb": result["memory_kb"],
+                "comment": comment[:2048], "score": checked.get("score", 0) if verdict in {"AC", "PARTIAL", "WA", "PE"} else 0,
+                "group": test["group"], "max_score": test["points"], "input_sha": test["input_sha"],
+                "answer_sha": test["answer_sha"]}, result["output"]
+        cases = {name: [] for name in selected}
+        with self.work(verify_case, tasks) as results:
+            for name, row, output in results:
+                row["actual_sha"] = self.blob(output)
+                cases[name].append(row)
         for name in selected:
-            source = self.doc["solutions"][name]
-            rows = []
-            verdicts = []
+            source, rows = self.doc["solutions"][name], cases[name]
             if source["tag"] == "NR":
                 self.result["solutions"].append({"name": name, "tag": "NR", "matched": True, "cases": [], "skipped": True})
                 continue
-            for set_name, tests in self.result["testsets"].items():
-                if self.job.kind != "package" and set_name != self.job.options["testset"]:
-                    continue
-                for test in tests:
-                    if self.job.kind != "package" and self.job.options["test_indices"] and test["index"] not in self.job.options["test_indices"]:
-                        continue
-                    if expected_tag(source, set_name, test["group"], self.doc["testsets"])[0] == "NR":
-                        continue
-                    self.event(f"실제 실행 · {name} / {set_name} #{test['index']}")
-                    inp, ans = read_blob(test["input_sha"]), read_blob(test["answer_sha"])
-                    verdict, result = self.run_solution(name, inp, ans)
-                    checked = {"score": 0}
-                    comment = result.get("stderr", "")
-                    if verdict == "AC":
-                        verdict, checked = self.checker(inp, result["output"], ans, test["points"])
-                        comment = checked["stderr"]
-                    verdicts.append(verdict)
-                    rows.append({"testset": set_name, "index": test["index"], "verdict": verdict, "cpu_ms": result["cpu_ms"], "wall_ms": result["wall_ms"], "memory_kb": result["memory_kb"], "comment": comment[:2048], "score": checked.get("score", 0) if verdict in {"AC", "PARTIAL", "WA", "PE"} else 0, "group": test["group"], "max_score": test["points"],
-                                 "input_sha": test["input_sha"], "answer_sha": test["answer_sha"], "actual_sha": self.blob(result["output"])})
             expectations = evaluate_expectations(self.doc, source, self.result["testsets"], rows)
             score_scope = {name: expanded_tests(self.doc["testsets"][name]) for name in self.result["testsets"]}
             self.result["solutions"].append({"name": name, "tag": source["tag"], **expectations, "cases": rows, "skipped": False, **score_results(self.doc, score_scope, rows)})
@@ -281,7 +302,8 @@ class Pipeline:
 
     def unit_tests(self, kind):
         tests = self.doc["validator_tests" if kind == "validator-tests" else "checker_tests"]
-        for key, test in tests.items():
+        def component_case(item):
+            key, test = item
             self.event(f"구성요소 테스트 · #{key}")
             inp = read_blob(test["input_sha"])
             if kind == "validator-tests":
@@ -290,7 +312,9 @@ class Pipeline:
             else:
                 verdict, result = self.checker(inp, read_blob(test["output_sha"]), read_blob(test["answer_sha"]))
                 verdict = {"AC": "OK", "WA": "WRONG_ANSWER", "PE": "PRESENTATION_ERROR", "JUDGE_ERROR": "CRASHED", "PARTIAL": "WRONG_ANSWER"}[verdict]
-            self.result["unit_tests"].append({"id": key, "expected": test["expected"], "actual": verdict, "matched": verdict == test["expected"], "comment": result["stderr"]})
+            return {"id": key, "expected": test["expected"], "actual": verdict, "matched": verdict == test["expected"], "comment": result["stderr"]}
+        with self.work(component_case, tests.items()) as results:
+            self.result["unit_tests"].extend(results)
         self.result["verified"] = bool(tests) and all(t["matched"] for t in self.result["unit_tests"])
         self.event("구성요소 자체 테스트 완료")
 
