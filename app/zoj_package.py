@@ -60,7 +60,7 @@ def build_zoj_package(job, testsets):
     doc = copy.deepcopy(job.document)
     for name, tests in testsets.items():
         doc["testsets"][name]["script"] = ""
-        doc["testsets"][name]["tests"] = {str(t["index"]): {k: v for k, v in t.items() if k in {"index", "input_sha", "answer_sha", "command", "group", "points", "description", "sample"}} for t in tests}
+        doc["testsets"][name]["tests"] = {str(t["index"]): {k: v for k, v in t.items() if k in {"index", "input_sha", "answer_sha", "command", "group", "points", "description", "sample", "statement_input", "statement_output", "verify_statement_io"}} for t in tests}
     destination = get_settings().data_dir / "packages" / (job.id + ".zip")
     destination.parent.mkdir(parents=True, exist_ok=True)
     manifest = {"format": "zoj-problem", "version": 1, "problem": {}, "assets": [], "testcase_sets": [], "files": []}
@@ -129,7 +129,8 @@ def build_zoj_package(job, testsets):
                 cases.append({"display_order": test["index"], "input": file(path + ".in", inp), "output": file(path + ".out", out),
                     "time_limit_ms_override": None, "memory_limit_mb_override": None})
                 if active and test["sample"]:
-                    examples.append({"input": inp.decode("utf-8"), "output": out.decode("utf-8"), "note": test["description"]})
+                    from .statement_samples import display
+                    examples.append({"input": display(test, "input"), "output": display(test, "output"), "note": test["description"]})
             manifest["testcase_sets"].append({"version": version, "is_active": active, "testcases": cases})
         for sha in references(doc) | references(job.document):
             if sha not in mappings:

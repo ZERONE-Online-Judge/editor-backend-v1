@@ -4,6 +4,7 @@ from pathlib import Path
 from .config import get_settings
 from .sandbox import SandboxError, safe_output
 from .storage import read_blob
+from .statement_samples import display
 
 
 def tex_escape(text):
@@ -21,8 +22,8 @@ def statement_tex(doc, language):
             result += [r"\section*{" + label + "}", text]
     for testset in doc["testsets"].values():
         for test in sorted(testset["tests"].values(), key=lambda t: t["index"]):
-            if test["sample"] and test["input_sha"] and test["answer_sha"]:
-                result += [r"\subsection*{예제 입력}", r"\begin{verbatim}", read_blob(test["input_sha"]).decode("utf-8", "replace").replace(r"\end{verbatim}", "[verbatim-end]"), r"\end{verbatim}", r"\subsection*{예제 출력}", r"\begin{verbatim}", read_blob(test["answer_sha"]).decode("utf-8", "replace").replace(r"\end{verbatim}", "[verbatim-end]"), r"\end{verbatim}"]
+            if test["sample"] and (test.get("input_sha") or test.get("statement_input") is not None) and (test.get("answer_sha") or test.get("statement_output") is not None):
+                result += [r"\subsection*{예제 입력}", r"\begin{verbatim}", display(test, "input").replace(r"\end{verbatim}", "[verbatim-end]"), r"\end{verbatim}", r"\subsection*{예제 출력}", r"\begin{verbatim}", display(test, "output").replace(r"\end{verbatim}", "[verbatim-end]"), r"\end{verbatim}"]
     result.append(r"\end{document}")
     return "\n".join(result)
 

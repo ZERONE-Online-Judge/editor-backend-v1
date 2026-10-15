@@ -20,6 +20,27 @@ def prepare_problem(problem):
         db.commit()
 
 
+def test_real_display_samples_are_checked_without_replacing_judge_data(owner, problem):
+    with SessionLocal() as db:
+        row=db.get(Problem,problem)
+        doc=populate(db,row)
+        original=copy.deepcopy(doc['testsets']['tests']['tests']['1'])
+        doc['testsets']['tests']['tests']['1'].update(statement_input='2 3\n',statement_output='5 \n\n',verify_statement_io=True)
+        row.document=doc
+        db.get(Revision,(problem,0)).document=copy.deepcopy(doc)
+        db.commit()
+    state=owner.get(f'/api/problems/{problem}').json()
+    request=owner.post(f'/api/problems/{problem}/jobs',json={'kind':'prepare','version':state['version']})
+    assert request.status_code==202,request.text
+    process_job(claim_job())
+    job=owner.get(f'/api/problems/{problem}/jobs/{request.json()["id"]}').json()
+    assert job['status']=='completed',job
+    sample=job['result']['testsets']['tests'][0]
+    assert sample['statement_io_validation']=='VALID'
+    assert sample['input_sha']==original['input_sha'] and sample['answer_sha']==original['answer_sha']
+    assert sample['statement_output']=='5 \n\n'
+
+
 def test_real_solution_expected_tle_only_in_large_group(owner, problem):
     with SessionLocal() as db:
         row = db.get(Problem, problem)

@@ -31,6 +31,11 @@ def statement_html(doc, language, assets_prefix="../../assets"):
     title = html.escape(statement["name"] or doc["info"]["name"])
     sections = [("문제", "legend"), ("입력", "input"), ("출력", "output"), ("부분 점수", "scoring"), ("인터랙션", "interaction"), ("노트", "notes"), ("해설", "tutorial")]
     body = "".join(f"<section><h2>{label}</h2><div class='copy'>{html.escape(statement[key])}</div></section>" for label, key in sections if statement[key])
+    from .statement_samples import display
+    for testset in doc["testsets"].values():
+        for test in sorted(testset["tests"].values(), key=lambda row: row["index"]):
+            if test["sample"]:
+                body += "<section><h2>예제 입력</h2><pre>" + html.escape(display(test, "input")) + "</pre><h2>예제 출력</h2><pre>" + html.escape(display(test, "output")) + "</pre></section>"
     return f"<!doctype html><html lang='ko'><head><meta charset='utf-8'><title>{title}</title><link rel='stylesheet' href='{assets_prefix}/katex/katex.min.css'><style>body{{font:16px/1.8 sans-serif;max-width:900px;margin:40px auto;padding:0 24px;color:#0f172a}}h1{{text-align:center}}h2{{font-size:18px}}.copy{{white-space:pre-wrap}}pre{{padding:16px;background:#f7f8fd}}</style></head><body><h1>{title}</h1><p>시간 제한 {doc['info']['time_limit_ms']}ms · 메모리 {doc['info']['memory_limit_mb']}MiB</p>{body}<script src='{assets_prefix}/katex/katex.min.js'></script><script src='{assets_prefix}/katex/auto-render.min.js'></script><script>renderMathInElement(document.body,{{delimiters:[{{left:'$$',right:'$$',display:true}},{{left:'$',right:'$',display:false}},{{left:'\\\\[',right:'\\\\]',display:true}},{{left:'\\\\(',right:'\\\\)',display:false}}],throwOnError:false}})</script></body></html>"
 
 
@@ -113,7 +118,7 @@ def build_package(job, testsets):
         return build_zoj_package(job, testsets)
     doc = copy.deepcopy(job.document)
     for name, tests in testsets.items():
-        doc["testsets"][name]["tests"] = {str(t["index"]): {key: value for key, value in t.items() if key in {"index", "input_sha", "answer_sha", "command", "group", "points", "description", "sample"}} for t in tests}
+        doc["testsets"][name]["tests"] = {str(t["index"]): {key: value for key, value in t.items() if key in {"index", "input_sha", "answer_sha", "command", "group", "points", "description", "sample", "statement_input", "statement_output", "verify_statement_io"}} for t in tests}
         doc["testsets"][name]["script"] = ""
     destination = get_settings().data_dir / "packages" / (job.id + ".zip")
     destination.parent.mkdir(parents=True, exist_ok=True)

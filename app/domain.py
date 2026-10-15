@@ -102,8 +102,11 @@ def expanded_tests(testset):
         generated = parse_script(testset["script"], [test["index"] for test in saved])
         if any(t.get("group") and (not testset["groups_enabled"] or t["group"] not in testset["groups"]) for t in generated):
             fail("invalid_script_group", "생성 스크립트의 그룹이 현재 테스트 세트에 없습니다.")
+        previous = {(t["index"], t["command"]): t for t in testset["tests"].values() if t["command"]}
+        fields = {"points", "description", "sample", "statement_input", "statement_output", "verify_statement_io"}
         saved += [{"input_sha": None, "answer_sha": None, "group": "", "points": 0,
-                   "description": "", "sample": False, **test} for test in generated]
+                   "description": "", "sample": False,
+                   **{k:v for k,v in previous.get((test["index"],test["command"]),{}).items() if k in fields}, **test} for test in generated]
     return sorted(saved, key=lambda test: test["index"])
 
 

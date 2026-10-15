@@ -213,6 +213,11 @@ class Pipeline:
                 if check != "AC":
                     raise SandboxError(f"checker가 Main 출력을 거부했습니다.\n{checked['stderr']}")
                 row = {**test, "input_sha": test["input_sha"] if frozen else self.blob(input_bytes), "answer_sha": test["answer_sha"] if frozen else self.blob(answer), "validator": "VALID", "main_cpu_ms": result["cpu_ms"], "main_memory_kb": result["memory_kb"], "main_wall_ms": result["wall_ms"]}
+                from .statement_samples import validate as validate_sample
+                sample_status = validate_sample(self, test, set_name, input_bytes, answer, main)
+                if sample_status:
+                    row["statement_io_validation"] = sample_status
+                    self.event(f"지문 표시용 예제 · {set_name} #{index} · {'검증 통과' if sample_status == 'VALID' else '자동 검증 해제'}")
                 prepared.append(row)
             self.result["testsets"][set_name] = prepared
         self.event(f"{'커밋된 입력·기대 출력 확인 완료' if frozen else '입력 검증과 Main 기대 출력 생성 완료'} · {', '.join(selected)}")

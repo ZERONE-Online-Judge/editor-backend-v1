@@ -124,6 +124,18 @@ class Test(Strict):
     points: float = Field(default=0, ge=0, le=1e9)
     description: str = Field(default="", max_length=200)
     sample: bool = False
+    statement_input: str | None = Field(default=None, max_length=65536)
+    statement_output: str | None = Field(default=None, max_length=65536)
+    verify_statement_io: bool = True
+
+    @model_serializer(mode="wrap")
+    def serialize(self, handler):
+        value = handler(self)
+        for key in ("statement_input", "statement_output"):
+            if value[key] is None: value.pop(key)
+        if self.verify_statement_io and self.statement_input is None and self.statement_output is None:
+            value.pop("verify_statement_io", None)
+        return value
     @model_validator(mode="after")
     def valid_test(self):
         if not self.input_sha and not self.command:

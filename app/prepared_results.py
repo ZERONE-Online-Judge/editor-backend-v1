@@ -40,7 +40,7 @@ def apply_prepared_results(db, job, user, version):
             key = next((key for key, saved in doc["testsets"][name]["tests"].items()
                         if saved["index"] == test["index"]), str(test["index"]))
             doc["testsets"][name]["tests"][key] = {k: v for k, v in test.items()
-                if k in {"index", "input_sha", "answer_sha", "command", "group", "points", "description", "sample"}}
+                if k in {"index", "input_sha", "answer_sha", "command", "group", "points", "description", "sample", "statement_input", "statement_output", "verify_statement_io"}}
         doc["testsets"][name]["script"] = ""
     doc = validate_document(db, problem.id, doc)
     changed = document_hash(doc) != document_hash(wc.document)
