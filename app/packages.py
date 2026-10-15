@@ -3,7 +3,6 @@ import hashlib
 import html
 import io
 import json
-import re
 import stat
 import xml.etree.ElementTree as ET
 import zipfile
@@ -228,128 +227,9 @@ def pattern_path(pattern, index):
         raise ValueError("Unsupported test path pattern")
 
 
-def polygon_document(archive, db, problem_id, name):
-    descriptor_path = next((n for n in archive.namelist() if PurePosixPath(n).name == "problem.xml"), None)
-    if not descriptor_path:
-        raise ValueError("editor.json or problem.xml is required")
-    prefix = str(PurePosixPath(descriptor_path).parent)
-    prefix = "" if prefix == "." else prefix + "/"
-    xml_bytes = archive.read(descriptor_path)
-    if len(xml_bytes) > 1048576 or re.search(br"<!\s*(DOCTYPE|ENTITY)", xml_bytes, re.I):
-        raise ValueError("Unsafe XML descriptor")
-    root = ET.fromstring(xml_bytes)
-    doc = empty_document(name)
-    judging = root.find("judging")
-    if judging is None:
-        raise ValueError("No judging descriptor")
-    doc["info"]["input_file"] = judging.get("input-file", "stdin") or "stdin"
-    doc["info"]["output_file"] = judging.get("output-file", "stdout") or "stdout"
-    doc["info"]["interactive"] = root.find("assets/interactor") is not None
-    doc["info"]["well_formed"] = False
-    def read(path):
-        target = prefix + path
-        if target not in archive.namelist():
-            raise ValueError(f"Missing package file: {path}")
-        return archive.read(target)
-    def file(path, kind="source", source_type=""):
-        fname = safe_name(PurePosixPath(path).name)
-        if fname == "testlib.h":
-            return None
-        content = read(path)
-        blob = put_blob(db, problem_id, content)
-        return {"name": fname, "kind": kind, "language": guess_language(fname, source_type), **blob}
-    doc["files"] = {}
-    for category, kind in [("sources", "source"), ("resources", "resource"), ("aux", "aux"), ("statement-resources", "statement")]:
-        for node in root.findall(f"files/{category}/file"):
-            item = file(node.get("path"), kind, node.get("type", ""))
-            if item:
-                metadata = node.findtext("{https://editor.zoj.kr/schema/v1}metadata")
-                if metadata:
-                    value = json.loads(metadata)
-                    if not isinstance(value,dict) or set(value) - {"compile_with_solution", "entry_class", "roles", "resource_policy", "attach_to_build"}:
-                        raise ValueError("Unsupported file metadata")
-                    item.update(value)
-                doc["files"][item["name"]] = item
-    doc["solutions"] = {}
-    reverse_tags = {value: key for key, value in TAG_NAMES.items()}
-    for node in root.findall("solutions/solution"):
-        src = node.find("source")
-        if src is None:
-            continue
-        item = file(src.get("path"), "source", src.get("type", ""))
-        item.update(tag=reverse_tags.get(node.get("tag"), node.get("tag", "OK")), extra_tags={})
-        for scope in node.findall("{https://editor.zoj.kr/schema/v1}expectations/{https://editor.zoj.kr/schema/v1}scope"):
-            set_name, group, tag = scope.get("testset"), scope.get("group"), scope.get("tag")
-            if group:
-                item.setdefault("group_tags", {}).setdefault(set_name, {})[group] = tag
-            else:
-                item["extra_tags"][set_name] = tag
-        doc["solutions"][item["name"]] = item
-    for role in ["checker", "validator", "interactor"]:
-        asset = root.find("assets/" + role)
-        if asset is None:
-            doc[role] = ""
-            continue
-        standard = asset.get("name", "")
-        if role == "checker" and standard.startswith("std::"):
-            doc[role] = standard.removesuffix(".cpp")
-            continue
-        source = asset.find("source")
-        if source is not None:
-            item = file(source.get("path"), "source", source.get("type", ""))
-            doc["files"][item["name"]] = {**doc["files"].get(item["name"],{}),**item}
-            doc[role] = item["name"]
-        tests = asset.find("testset")
-        if tests is not None and role in {"checker", "validator"}:
-            for index, node in enumerate(tests.findall("tests/test"), 1):
-                unit = {"input_sha": put_blob(db, problem_id, read(pattern_path(tests.findtext("input-path-pattern"), index)))["sha256"], "output_sha": None, "answer_sha": None, "expected": node.get("verdict").upper().replace("-", "_")}
-                for field, xml_key in [("output_sha", "output-path-pattern"), ("answer_sha", "answer-path-pattern")]:
-                    pattern = tests.findtext(xml_key)
-                    if pattern:
-                        unit[field] = put_blob(db, problem_id, read(pattern_path(pattern, index)))["sha256"]
-                doc[role + "_tests"][str(index)] = unit
-    doc["testsets"] = {}
-    for testset in judging.findall("testset"):
-        set_name = safe_name(testset.get("name", "tests"))
-        doc["info"]["time_limit_ms"] = int(testset.findtext("time-limit", "1000"))
-        doc["info"]["memory_limit_mb"] = int(testset.findtext("memory-limit", "268435456")) // 1048576
-        tests, groups = {}, {}
-        for index, test in enumerate(testset.findall("tests/test"), 1):
-            inp = put_blob(db, problem_id, read(pattern_path(testset.findtext("input-path-pattern"), index)))["sha256"]
-            answer_pattern = testset.findtext("answer-path-pattern")
-            answer_path = pattern_path(answer_pattern, index) if answer_pattern else None
-            answer = put_blob(db, problem_id, read(answer_path))["sha256"] if answer_path and prefix + answer_path in archive.namelist() else None
-            if float(test.get("points", "0")) > 0:
-                doc["info"]["points_enabled"] = True
-            group = test.get("group", "")
-            if group:
-                groups[group] = {"points_policy": "COMPLETE_GROUP", "feedback_policy": "COMPLETE", "dependencies": []}
-            tests[str(index)] = {"index": index, "input_sha": inp, "answer_sha": answer, "command": "", "group": group, "points": float(test.get("points", "0")), "description": "", "sample": test.get("sample") == "true"}
-        for group in testset.findall("groups/group"):
-            groups[group.get("name")] = {"points_policy": group.get("points-policy", "complete-group").upper().replace("-", "_"), "feedback_policy": group.get("feedback-policy", "complete").upper(), "dependencies": [d for d in group.get("dependencies", "").split(",") if d]}
-        doc["testsets"][set_name] = {"script": "", "tests": tests, "groups_enabled": bool(groups), "groups": groups}
-    doc["statements"] = {}
-    for lang_node in root.findall("names/name"):
-        language = safe_name(lang_node.get("language", "english"))
-        props_name = prefix + f"statements/{language}/properties.json"
-        if props_name in archive.namelist():
-            doc["statements"][language] = json.loads(archive.read(props_name))
-        else:
-            nodes = [s for s in root.findall("statements/statement") if s.get("language") == language]
-            tex_node = next((s for s in nodes if s.get("type") == "application/x-tex"), None)
-            text = read(tex_node.get("path")).decode("utf-8") if tex_node is not None else ""
-            statement = {key: "" for key in ["legend", "input", "output", "scoring", "interaction", "notes", "tutorial"]}
-            statement.update(name=lang_node.get("value", name), show_in_review=True)
-            text = re.sub(r"\\(?:begin|end)\{document\}", "", text)
-            # The complete source is retained; section bodies are split only on Polygon's section commands.
-            markers = list(re.finditer(r"\\(InputFile|OutputFile|Scoring|Interaction|Note|Notes|Examples)\b", text))
-            statement["legend"] = text[:markers[0].start()] if markers else text
-            keys = {"InputFile": "input", "OutputFile": "output", "Scoring": "scoring", "Interaction": "interaction", "Note": "notes", "Notes": "notes"}
-            for i, marker in enumerate(markers):
-                if marker.group(1) in keys:
-                    statement[keys[marker.group(1)]] = text[marker.end():markers[i + 1].start() if i + 1 < len(markers) else len(text)]
-            doc["statements"][language] = statement
-    return doc
+def polygon_document(archive, db, problem_id, name, report=None):
+    from .polygon_import import restore
+    return restore(archive, db, problem_id, name, report)
 
 
 class ImportInfo(Strict):
@@ -372,6 +252,7 @@ async def import_package(request: Request, name: str, slug: str, folder_id: str 
     problem = Problem(owner_id=user.id, slug=values.slug, document=empty_document(values.name))
     db.add(problem)
     db.flush()
+    report = {"format": "editor", "warnings": [], "preserved_files": []}
     try:
         manifest_path = next((n for n in archive.namelist() if PurePosixPath(n).name == "editor.json"), None)
         if manifest_path:
@@ -388,21 +269,26 @@ async def import_package(request: Request, name: str, slug: str, folder_id: str 
                 if stored["sha256"] != sha:
                     raise ValueError("Blob checksum mismatch")
         elif "manifest.json" in archive.namelist():
+            report["format"] = "zoj"
             from .zoj_package import restore_editor_snapshot
             doc = restore_editor_snapshot(archive, db, problem.id)
         else:
-            doc = polygon_document(archive, db, problem.id, values.name)
+            report["format"] = "polygon"
+            doc = polygon_document(archive, db, problem.id, values.name, report)
         problem.document = validate_document(db, problem.id, doc)
         db.add(Access(problem_id=problem.id, user_id=user.id, role="OWNER"))
         place(db, user, problem.id, folder_id)
-        db.add(Revision(problem_id=problem.id, number=0, author_id=user.id, message="문제 패키지 가져오기", document=copy.deepcopy(doc)))
+        db.add(Revision(problem_id=problem.id, number=0, author_id=user.id, message="문제 패키지 가져오기", document=copy.deepcopy(problem.document)))
         db.commit()
     except (ValueError, KeyError, TypeError, AttributeError, ET.ParseError, zipfile.BadZipFile) as error:
         db.rollback()
         fail("invalid_package", f"가져오기 실패: {error}")
     finally:
         archive.close()
-    return {"id": problem.id, "name": problem.document["info"]["name"]}
+    report.update(files=len(problem.document["files"]), solutions=len(problem.document["solutions"]),
+                  tests=sum(len(ts["tests"]) for ts in problem.document["testsets"].values()),
+                  statement_languages=list(problem.document["statements"]))
+    return {"id": problem.id, "name": problem.document["info"]["name"], "import_report": report}
 
 
 @router.get("/problems/{problem_id}/packages/{job_id}")

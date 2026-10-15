@@ -26,6 +26,28 @@
 선택 범위 실행과 검수자 권한, 반례 수집·반영 및 서버 실행 한도는
 [Invocation 안내](docs/invocations.md)를 확인하세요.
 
+## Polygon Linux 패키지 가져오기
+
+공식 `assets/solutions`, `files/executables`, `assets/validators` 구조와 기존
+Editor XML 구조를 읽습니다. 지문은 `properties.json` 또는 Polygon의
+`problem-properties.json`, 개별 `statement-sections`, 전체 TeX 순서로
+복원하며 전체 문서의 제목·제한·예제 환경을 본문에 섞지 않습니다.
+지문 표시용 예제는 실제 테스트 입출력과 분리하여 보관합니다. 생성기
+명령·설명·기대 판정·태그·Validator 연결도 복원합니다.
+
+`testlib.h`·표준 Checker는 서비스의 공용 파일을 사용합니다. 원래 소스,
+스트레스 설정, 렌더링 파일 등 문서 모델에 직접 대응하지 않는 원본은
+실행에 첨부하지 않는 `polygon-…` 보조 파일로 보관합니다. 원본 스트레스
+설정은 새 실행 기록으로 간주하지 않습니다. 지원하지 않는 C++23 등은
+C++20으로 변환한 사실을 결과에 알리며, 가져온 뒤 다시 검증해야 합니다.
+같은 이름으로 덮어쓰게 되는 소스는 가져오기를 중단합니다.
+
+`POST /api/imports`의 `import_report`에는 복원한 자료 수, 변환 경고와
+원본 경로/보조 파일명 대응표가 포함됩니다. 기존에 불완전하게 가져온
+문제를 자동으로 덮어쓰지 않으므로 수정 후 원본 패키지를 다시 가져오세요.
+비공개 패키지 검증은 `EDITOR_REAL_POLYGON_PACKAGE`를 지정한 로컬 테스트로
+수행하며 원본 패키지를 저장소에 추가하지 않습니다.
+
 ## 새 공유 리비전 감지
 
 `GET /api/problems/{id}/revision-status?after=12&wait_seconds=25`는 최대
