@@ -163,3 +163,50 @@ def test_real_stress_duration_stops_an_active_program(owner, problem):
     assert job["status"] == "completed", job
     assert job["result"]["stress"]["stop_reason"] == "duration"
     assert elapsed < 8, elapsed
+
+
+def test_real_range_patterns_reduce_and_register_validator_approved_array_counterexamples(owner, problem):
+    from app.storage import read_blob
+    with SessionLocal() as db:
+        row = db.get(Problem, problem)
+        doc = populate(db, row)
+        sources = {
+            'gen.cpp': '#include "testlib.h"\n#include <iostream>\nint main(int argc,char** argv){registerGen(argc,argv,1);int n=opt<int>(1);std::cout<<n<<"\\n";for(int i=0;i<n;i++)std::cout<<rnd.next(-100,-1)<<(i+1==n?"\\n":" ");}\n',
+            'validator.cpp': '#include "testlib.h"\nint main(int argc,char** argv){registerValidation(argc,argv);int n=inf.readInt(1,100,"n");inf.readEoln();for(int i=0;i<n;i++){inf.readInt(-100,-1,"value");if(i+1<n)inf.readSpace();}inf.readEoln();inf.readEof();}\n',
+            'main.cpp': '#include <iostream>\n#include <algorithm>\nint main(){int n,x,answer=-1000;std::cin>>n;while(n--){std::cin>>x;answer=std::max(answer,x);}std::cout<<answer<<"\\n";}\n',
+            'wrong.py': 'n=int(input())\na=list(map(int,input().split()))\nprint(max(0,max(a)))\n',
+        }
+        for name, content in sources.items():
+            source = doc['solutions' if name in doc['solutions'] else 'files'][name]
+            source.update(put_blob(db, problem, content.encode()))
+        doc['testsets']['tests'].update(tests={}, script='', groups_enabled=True, groups={'small': {'points_policy': 'COMPLETE_GROUP', 'feedback_policy': 'COMPLETE', 'dependencies': []}})
+        row.document = copy.deepcopy(doc)
+        db.get(Revision, (problem, 0)).document = copy.deepcopy(doc)
+        db.commit()
+    state = owner.get(f'/api/problems/{problem}').json()
+    requested = owner.post(f'/api/problems/{problem}/jobs', json={'kind': 'stress', 'version': state['version'], 'options': {
+        'patterns': [{'name': 'short', 'command': 'gen [4..8] {seed}'}, {'name': 'long', 'command': 'gen [9..12] {seed}'}],
+        'candidates': ['wrong.py'], 'iterations': 2, 'stop_on_first': False, 'counterexample_limit': 5,
+        'group': 'small', 'minimize': True, 'minimize_seconds': 20,
+    }})
+    assert requested.status_code == 202, requested.text
+    process_job(claim_job())
+    job = owner.get(f'/api/problems/{problem}/jobs/{requested.json()["id"]}').json()
+    assert job['status'] == 'completed', job
+    examples = job['result']['counterexamples']
+    assert len(examples) == 2 and [row['attempts'] for row in job['result']['pattern_summaries']] == [1, 1]
+    assert all(example['minimized']['input_sha'] != example['input_sha'] for example in examples)
+    for example in examples:
+        reduced = example['minimized']
+        values = list(map(int, read_blob(reduced['input_sha']).split()))
+        assert 1 <= values[0] == len(values) - 1 and all(-100 <= value <= -1 for value in values[1:])
+        assert read_blob(reduced['answer_sha']).strip() == str(max(values[1:])).encode()
+        assert reduced['findings'][0]['verdict'] == 'WA' and read_blob(reduced['findings'][0]['actual_sha']).strip() == b'0'
+        assert example['range_values'] and '[' not in example['command']
+    assert len(job['result']['coverage']['example_ids']) == 1
+    added = owner.post(f'/api/problems/{problem}/jobs/{job["id"]}/counterexamples/apply', json={
+        'version': state['version'], 'testset': 'tests', 'group': 'small', 'use_minimized': True, 'counterexample_ids': job['result']['coverage']['example_ids'],
+    })
+    assert added.status_code == 200, added.text
+    test = next(iter(owner.get(f'/api/problems/{problem}').json()['document']['testsets']['tests']['tests'].values()))
+    assert test['group'] == 'small' and test['command'] == ''

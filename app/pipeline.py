@@ -12,11 +12,7 @@ from .sandbox import Sandbox, SandboxError, VENDOR
 from .storage import put_blob, read_blob
 from .scoring import score_results
 from .execution_limits import MAX_GENERATOR_ARGUMENTS, GENERATOR_CPU_MS, GENERATOR_MEMORY_MB, GENERATOR_OUTPUT_BYTES
-from .stress import DEFAULT_VERDICTS, generator_command, stress_configuration
-
-
-class StressDurationReached(RuntimeError):
-    pass
+from .stress_search import StressSearch
 
 
 class Pipeline:
@@ -298,100 +294,7 @@ class Pipeline:
         self.event("구성요소 자체 테스트 완료")
 
     def stress(self):
-        options = self.job.options
-        reference = options["reference"] or self.main()
-        candidates = list(dict.fromkeys(options.get("candidates") or ([options.get("candidate")] if options.get("candidate") else [])))
-        if not candidates or not options["generator"].strip():
-            raise SandboxError("생성기 명령과 비교할 풀이를 선택하세요.")
-        started = time.monotonic()
-        duration = options.get("duration_seconds")
-        deadline = started + duration if duration else None
-        original_check = self.sandbox.check_cancelled
-        stats = {"iterations_started": 0, "iterations_completed": 0, "elapsed_seconds": 0,
-                 "duplicates_skipped": 0, "counterexample_count": 0, "stop_reason": None,
-                 "last_seed": None, "last_command": None}
-        summaries = {name: {"name": name, "tag": self.doc["solutions"][name]["tag"], "tested": 0,
-                            "verdicts": {}, "first_counterexample_id": None} for name in candidates}
-        self.result.update(counterexample=None, counterexamples=[], stress=stats, candidate_summaries=list(summaries.values()),
-                           stress_configuration=stress_configuration(self.doc, options))
-        seen = set()
-        collected_verdicts = set(options.get("counterexample_verdicts") or DEFAULT_VERDICTS)
-        def check():
-            original_check()
-            stats["elapsed_seconds"] = round(time.monotonic() - started, 2)
-            if deadline is not None and time.monotonic() >= deadline:
-                raise StressDurationReached()
-            if time.monotonic() - self.last_publish >= 1:
-                self.publish(copy.deepcopy(self.result))
-                self.last_publish = time.monotonic()
-        self.sandbox.check_cancelled = check
-        try:
-            for i in range(1, options["iterations"] + 1):
-                check()
-                stats["iterations_started"] = i
-                command = generator_command(options["generator"], i)
-                stats.update(last_seed=i, last_command=command)
-                self.event(f"스트레스 테스트 · {i} / {options['iterations']} · 시드 {i} · 비교 풀이 {len(candidates)}개",
-                           seed=i)
-                inp = self.generator(command)
-                input_sha = hashlib.sha256(inp).hexdigest()
-                if input_sha in seen:
-                    stats["duplicates_skipped"] += 1
-                    stats["iterations_completed"] = i
-                    continue
-                valid, validation = self.validator(inp, options["testset"])
-                if not valid:
-                    raise SandboxError("생성한 반례 입력이 유효하지 않습니다.\n" + validation["stderr"])
-                seen.add(input_sha)
-                verdict, correct = self.run_solution(reference, inp)
-                if verdict != "AC":
-                    raise SandboxError(f"기준 풀이가 {verdict}입니다.")
-                example = None
-                for candidate in candidates:
-                    check()
-                    self.event(f"비교 풀이 실행 · {candidate} / 반복 {i}")
-                    verdict, wrong = self.run_solution(candidate, inp, correct["output"])
-                    checked = {"stderr": wrong["stderr"]}
-                    if verdict == "AC":
-                        verdict, checked = self.checker(inp, wrong["output"], correct["output"])
-                    if verdict == "JUDGE_ERROR":
-                        raise SandboxError("checker 또는 격리 실행 환경의 오류입니다.\n" + checked["stderr"])
-                    summary = summaries[candidate]
-                    summary["tested"] += 1
-                    summary["verdicts"][verdict] = summary["verdicts"].get(verdict, 0) + 1
-                    if verdict in collected_verdicts:
-                        if example is None:
-                            example = {"id": input_sha[:32], "iteration": i, "seed": i, "command": command,
-                                       "input_sha": self.blob(inp), "answer_sha": self.blob(correct["output"]), "findings": []}
-                            self.result["counterexamples"].append(example)
-                            stats["counterexample_count"] += 1
-                        finding = {"solution": candidate, "tag": summary["tag"], "verdict": verdict,
-                                   "actual_sha": self.blob(wrong["output"]), "comment": checked["stderr"],
-                                   "cpu_ms": wrong.get("cpu_ms"), "memory_kb": wrong.get("memory_kb")}
-                        example["findings"].append(finding)
-                        if summary["first_counterexample_id"] is None:
-                            summary["first_counterexample_id"] = example["id"]
-                        if self.result["counterexample"] is None:
-                            self.result["counterexample"] = {**example, **finding}
-                        self.event(f"유효한 반례 발견 · {candidate} · {verdict}")
-                        self.publish(copy.deepcopy(self.result))
-                stats["iterations_completed"] = i
-                if example and options.get("stop_on_first", True):
-                    stats["stop_reason"] = "first_counterexample"
-                    break
-                if stats["counterexample_count"] >= options.get("counterexample_limit", 1):
-                    stats["stop_reason"] = "counterexample_target"
-                    break
-            else:
-                stats["stop_reason"] = "iterations"
-        except StressDurationReached:
-            stats["stop_reason"] = "duration"
-        finally:
-            self.sandbox.check_cancelled = original_check
-            stats["elapsed_seconds"] = round(time.monotonic() - started, 2)
-            self.result["iterations"] = stats["iterations_completed"]
-        reason = {"duration": "실행 시간 한도", "iterations": "반복 횟수 한도", "first_counterexample": "첫 반례 발견", "counterexample_target": "목표 반례 수"}.get(stats["stop_reason"], "실행 종료")
-        self.event(f"스트레스 테스트 완료 · {reason} · {stats['iterations_completed']}회 · 유효한 반례 {stats['counterexample_count']}개")
+        StressSearch(self).run()
 
     def run(self):
         try:

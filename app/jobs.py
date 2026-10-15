@@ -12,7 +12,7 @@ from .db import Job, JobApplication, JobComment, Revision, User, WorkingCopy, no
 from .domain import authorize, cautions, document_hash, expanded_tests, fail, parse_script, validate_document, workspace
 from .schema import Strict, SourceFile, Info
 from .storage import put_blob
-from .execution_limits import MAX_TESTS_PER_SET, MAX_STRESS_ITERATIONS, MAX_ACTIVE_JOBS_PER_USER
+from .execution_limits import MAX_TESTS_PER_SET, MAX_STRESS_ITERATIONS, MAX_ACTIVE_JOBS_PER_USER, MAX_STRESS_PATTERNS, MAX_STRESS_COUNTEREXAMPLES, MAX_MINIMIZE_ATTEMPTS, MAX_MINIMIZE_SECONDS
 from .prepared_results import application_json, apply_prepared_results, pending_preparations
 
 router = APIRouter(prefix="/api/problems", tags=["execution"])
@@ -39,6 +39,16 @@ class TemporarySolution(Strict):
         return SourceFile.check_name(value)
 
 
+class StressPattern(Strict):
+    name: str = Field(default="", max_length=80)
+    command: str = Field(min_length=1, max_length=4096)
+
+    @field_validator("name")
+    @classmethod
+    def pattern_name(cls, value):
+        return Info.single_line(value).strip()
+
+
 class JobOptions(Strict):
     name: str = Field(default="", max_length=120)
     note: str = Field(default="", max_length=8000)
@@ -51,12 +61,21 @@ class JobOptions(Strict):
     solutions: list[str] = Field(default_factory=list, max_length=200)
     test_indices: list[Annotated[int, Field(strict=True, ge=1, le=MAX_TESTS_PER_SET)]] = Field(default_factory=list, max_length=MAX_TESTS_PER_SET)
     generator: str = Field(default="", max_length=4096)
+    patterns: list[StressPattern] = Field(default_factory=list, max_length=MAX_STRESS_PATTERNS)
+    seed_start: int = Field(default=1, ge=0, le=9007199254740991, strict=True)
+    seed_step: int = Field(default=1, ge=1, le=9007199254740991, strict=True)
+    group: str = Field(default="", max_length=64)
     reference: str = ""
     candidate: str = ""
     candidates: list[str] = Field(default_factory=list, max_length=200)
     iterations: int = Field(default=50, ge=1, le=MAX_STRESS_ITERATIONS)
     duration_seconds: int | None = Field(default=None, ge=1, le=86400)
     stop_on_first: bool = True
+    stop_mode: Literal["first", "target", "all_candidates"] | None = None
+    focus_uncovered: bool = False
+    minimize: bool = False
+    minimize_attempts: int = Field(default=40, ge=1, le=MAX_MINIMIZE_ATTEMPTS, strict=True)
+    minimize_seconds: int = Field(default=10, ge=1, le=MAX_MINIMIZE_SECONDS, strict=True)
     counterexample_limit: Literal[1, 5, 10] = 1
     counterexample_verdicts: list[Literal["WA", "TLE", "MLE", "RE", "PE", "OLE", "IDLENESS_LIMIT", "PARTIAL"]] = Field(default_factory=lambda: ["WA", "TLE", "MLE", "RE", "PE", "OLE", "IDLENESS_LIMIT", "PARTIAL"], min_length=1, max_length=8)
     verify: bool = True
@@ -79,12 +98,16 @@ class JobRequest(Strict):
 
 
 def job_json(job, include_result=True, application=None):
+    result = job.result if include_result else {"summary": job.result.get("summary", ""), "progress": job.result.get("progress", 0)}
+    if include_result and job.kind == "stress" and job.status not in {"queued", "running"} and result.get("counterexamples") and "coverage" not in result:
+        from .stress import minimum_cover
+        result = {**result, "coverage": minimum_cover(result["counterexamples"])}
     return {"id": job.id, "problem_id": job.problem_id, "kind": job.kind, "status": job.status,
             "document_hash": job.document_hash, "workspace_version": job.workspace_version,
             "revision": job.revision, "options": job.options, "created_at": job.created_at, "requested_by": job.user_id,
             "started_at": job.started_at, "finished_at": job.finished_at,
             "application": application_json(application),
-            "result": job.result if include_result else {"summary": job.result.get("summary", ""), "progress": job.result.get("progress", 0)}}
+            "result": result}
 
 
 @router.post("/{problem_id}/jobs", status_code=202)
@@ -173,14 +196,34 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
                             "test_count": len(options["test_indices"]) if options["test_indices"] else len(tests)}
     if values.kind == "stress":
         options["candidates"] = list(dict.fromkeys(options["candidates"] or ([options["candidate"]] if options["candidate"] else [])))
-        if not options["candidates"] or not options["generator"].strip():
+        if not options["candidates"] or not (options["generator"].strip() or options["patterns"]):
             fail("invalid_stress", "생성기 명령과 비교할 풀이를 선택하세요.")
         main = next((name for name, source in doc["solutions"].items() if source["tag"] == "MA"), "")
         if (options["reference"] or main) in options["candidates"]:
             fail("invalid_stress", "기준 풀이와 비교할 풀이는 서로 달라야 합니다.")
         if options["duration_seconds"] and options["duration_seconds"] > min(get_settings().stress_max_seconds, get_settings().job_timeout_seconds):
             fail("invalid_stress_duration", "실행 시간이 서버의 작업 한도를 넘습니다.")
-        from .stress import stress_configuration
+        from .stress import stress_configuration, validate_patterns, stop_mode
+        try:
+            options["patterns"] = validate_patterns(doc, options)
+        except ValueError as error:
+            fail("invalid_stress_pattern", str(error))
+        options["patterns"] = [{**pattern, "name": pattern["name"] or f"패턴 {index + 1}"} for index, pattern in enumerate(options["patterns"])]
+        options["generator"] = options["patterns"][0]["command"]
+        options["stop_mode"] = stop_mode(options)
+        options["stop_on_first"] = options["stop_mode"] == "first"
+        if options["stop_mode"] == "all_candidates":
+            options["focus_uncovered"] = True
+        if options["seed_start"] + (options["iterations"] - 1) * options["seed_step"] > 9007199254740991:
+            fail("invalid_stress_seed", "마지막 시드가 안전한 정수 범위를 넘습니다.")
+        if any(doc["solutions"][name]["tag"] == "NR" for name in [*options["candidates"], options["reference"] or main] if name):
+            fail("invalid_stress", "NR 풀이를 스트레스 테스트 대상으로 실행할 수 없습니다.")
+        if not (options["reference"] or main):
+            fail("invalid_stress", "기준 풀이 또는 Main 풀이를 지정하세요.")
+        if options["group"] and (not doc["testsets"][options["testset"]]["groups_enabled"] or options["group"] not in doc["testsets"][options["testset"]]["groups"]):
+            fail("invalid_stress_group", "선택한 테스트 세트에서 사용 중인 그룹을 지정하세요.")
+        if options["minimize"] and doc["info"]["interactive"]:
+            fail("invalid_stress_minimize", "자동 축소는 비인터랙티브 입력에서 사용할 수 있습니다.")
         options["stress_configuration"] = stress_configuration(doc, options)
     options["execution_backend"] = options["execution_backend"] or get_settings().judge_backend
     if values.kind not in {"verify", "package"} or (values.kind == "package" and not options["verify"]):
@@ -287,7 +330,9 @@ class ApplyResults(Strict):
 
 class ApplyCounterexamples(ApplyResults):
     testset: str
-    counterexample_ids: list[str] = Field(min_length=1, max_length=10)
+    group: str | None = Field(default=None, max_length=64)
+    use_minimized: bool = False
+    counterexample_ids: list[str] = Field(min_length=1, max_length=MAX_STRESS_COUNTEREXAMPLES)
 
     @field_validator("counterexample_ids")
     @classmethod
@@ -321,12 +366,22 @@ def apply_counterexamples(problem_id: str, job_id: str, values: ApplyCounterexam
         fail("invalid_counterexample", "이 실행에서 검증한 반례를 선택하세요.")
     doc = copy.deepcopy(wc.document)
     testset = doc["testsets"][values.testset]
+    group = values.group if values.group is not None else (job.options.get("group", "") if values.testset == job.options.get("testset") else "")
+    if group and (not testset["groups_enabled"] or group not in testset["groups"]):
+        fail("invalid_test_group", "추가할 테스트 세트에 존재하는 그룹을 선택하세요.")
     occupied = {test["index"] for test in testset["tests"].values()}
     occupied.update(test["index"] for test in parse_script(testset["script"], occupied))
     existing = {test["input_sha"] for test in testset["tests"].values() if test["input_sha"]}
     chosen, duplicates = [], 0
     for identifier in values.counterexample_ids:
         example = by_id[identifier]
+        if values.use_minimized and example.get("minimized"):
+            reduced = example["minimized"]
+            original_pairs = {(item["solution"], item["verdict"]) for item in example.get("findings", [])}
+            reduced_pairs = {(item["solution"], item["verdict"]) for item in reduced.get("findings", [])}
+            if not original_pairs or not original_pairs <= reduced_pairs or not reduced.get("input_sha") or not reduced.get("answer_sha"):
+                fail("invalid_minimized_counterexample", "모든 원래 판정이 재검증된 축소 반례만 추가할 수 있습니다.")
+            example = {**example, **reduced}
         if example["input_sha"] in existing:
             duplicates += 1
             continue
@@ -341,8 +396,8 @@ def apply_counterexamples(problem_id: str, job_id: str, values: ApplyCounterexam
         while key in testset["tests"]:
             key = "stress-" + key
         testset["tests"][key] = {"index": index, "input_sha": example["input_sha"], "answer_sha": example["answer_sha"],
-                               "command": "", "group": "", "points": 0, "sample": False,
-                               "description": f"스트레스 반례 · 반복 {example['iteration']}"}
+                               "command": "", "group": group, "points": 0, "sample": False,
+                               "description": (f"스트레스 반례 · 시드 {example.get('seed', example['iteration'])} · " + ", ".join(sorted({finding['solution'] + ':' + finding['verdict'] for finding in example.get('findings', [])})))[:200]}
     doc = validate_document(db, problem_id, doc)
     version = values.version + bool(chosen)
     updated = db.execute(update(WorkingCopy).where(WorkingCopy.problem_id == problem_id, WorkingCopy.user_id == user.id,
@@ -355,7 +410,8 @@ def apply_counterexamples(problem_id: str, job_id: str, values: ApplyCounterexam
     else:
         db.add(JobApplication(job_id=job.id, user_id=user.id, workspace_version=version, document_hash=document_hash(doc)))
     db.commit()
-    return {"version": version, "added_count": len(chosen), "duplicate_count": duplicates, "indices": indices}
+    return {"version": version, "added_count": len(chosen), "duplicate_count": duplicates, "indices": indices,
+            "group": group, "needs_context_validation": values.testset != job.options.get("testset", "tests") or group != job.options.get("group", "")}
 
 
 @router.post("/{problem_id}/jobs/{job_id}/apply")
