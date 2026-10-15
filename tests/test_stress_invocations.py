@@ -7,13 +7,16 @@ from app.pipeline import Pipeline
 from app.db import Job, Problem, SessionLocal
 from app.domain import document_hash
 from app.storage import put_blob
+from app.schema import empty_document
+from app.sandbox import SandboxError
 
 
 def stress_pipeline(monkeypatch, **options):
     clock = {"now": 0.0}
     monkeypatch.setattr("app.pipeline.time.monotonic", lambda: clock["now"])
     pipeline = Pipeline.__new__(Pipeline)
-    pipeline.doc = {"solutions": {"main": {"tag": "MA"}, "wrong": {"tag": "WA"}, "slow": {"tag": "TL"}}}
+    pipeline.doc = empty_document("Stress snapshot")
+    pipeline.doc["solutions"] = {"main": {"tag": "MA"}, "wrong": {"tag": "WA"}, "slow": {"tag": "TL"}}
     pipeline.job = SimpleNamespace(options={"reference": "main", "candidate": "wrong", "generator": "gen {seed}", "testset": "tests", "iterations": 3, "stop_on_first": False, "counterexample_limit": 5, **options})
     pipeline.result = {"events": []}
     pipeline.last_publish = 0
@@ -85,6 +88,7 @@ def test_duration_can_interrupt_an_active_iteration_without_claiming_tle(monkeyp
     stats = pipeline.result["stress"]
     assert stats["stop_reason"] == "duration"
     assert stats["iterations_completed"] == 2 and stats["iterations_started"] == 3
+    assert stats["last_seed"] == 3 and stats["last_command"] == "gen 3"
     assert stats["elapsed_seconds"] == round(clock["now"], 2)
     assert len(calls["wrong"]) == 2
     assert pipeline.sandbox.check_cancelled is original
@@ -96,6 +100,77 @@ def test_collection_can_filter_verdict_kinds(monkeypatch):
     pipeline.stress()
     assert all([f["verdict"] for f in ce["findings"]] == ["TLE"] for ce in pipeline.result["counterexamples"])
     assert pipeline.result["candidate_summaries"][0]["first_counterexample_id"] is None
+
+
+@pytest.mark.parametrize("template,expected", [
+    ('gen --size 100 "{seed}" {seed}', ['gen --size 100 "1" 1', 'gen --size 100 "2" 2', 'gen --size 100 "3" 3']),
+    ('gen --mode "small cases"', ['gen --mode "small cases" 1', 'gen --mode "small cases" 2', 'gen --mode "small cases" 3']),
+])
+def test_stress_keeps_effective_commands_and_seeds_for_reproduction(monkeypatch, template, expected):
+    pipeline, calls, _ = stress_pipeline(monkeypatch, generator=template, reference="", candidates=["wrong", "slow"])
+    pipeline.stress()
+    assert calls["generator"] == expected
+    config = pipeline.result["stress_configuration"]
+    assert config["generator"] == template and config["reference"] == "main"
+    assert config["seed_mode"] == ("placeholder" if "{seed}" in template else "append")
+    assert [(ce["seed"], ce["command"]) for ce in pipeline.result["counterexamples"]] == list(enumerate(expected, 1))
+    assert [event["seed"] for event in pipeline.result["events"] if "seed" in event] == [1, 2, 3]
+    assert pipeline.result["stress"]["last_seed"] == 3
+    assert pipeline.result["stress"]["last_command"] == expected[-1]
+
+
+def test_stress_without_a_collected_failure_still_records_conditions_and_seed_range(monkeypatch):
+    pipeline, _, _ = stress_pipeline(monkeypatch, counterexample_verdicts=["MLE"])
+    pipeline.stress()
+    assert pipeline.result["counterexamples"] == []
+    assert pipeline.result["stress_configuration"]["counterexample_verdicts"] == ["MLE"]
+    assert pipeline.result["stress"]["last_seed"] == pipeline.result["stress"]["iterations_completed"] == 3
+
+
+def test_failed_generation_keeps_attempted_seed_separate_from_completed_comparisons(monkeypatch):
+    pipeline, _, _ = stress_pipeline(monkeypatch)
+    generate = pipeline.generator
+    def fail_second(command):
+        if command == "gen 2":
+            raise SandboxError("generator failed")
+        return generate(command)
+    pipeline.generator = fail_second
+    with pytest.raises(SandboxError, match="generator failed"):
+        pipeline.stress()
+    stats = pipeline.result["stress"]
+    assert stats["last_seed"] == stats["iterations_started"] == 2
+    assert stats["last_command"] == "gen 2" and stats["iterations_completed"] == 1
+    assert pipeline.result["counterexamples"][0]["seed"] == 1
+
+
+def test_stress_request_conditions_survive_later_workspace_edits(owner, problem):
+    from app.demo import populate
+    from app.db import Revision
+    with SessionLocal() as db:
+        row = db.get(Problem, problem)
+        row.document = populate(db, row)
+        db.get(Revision, (problem, 0)).document = copy.deepcopy(row.document)
+        db.commit()
+    state = owner.get(f"/api/problems/{problem}").json()
+    response = owner.post(f"/api/problems/{problem}/jobs", json={"kind": "stress", "version": state["version"], "options": {
+        "generator": "gen --size 100 {seed}", "candidates": ["wrong.py"], "iterations": 100,
+        "duration_seconds": 30, "stop_on_first": False, "counterexample_limit": 5, "counterexample_verdicts": ["WA", "TLE"],
+    }})
+    assert response.status_code == 202, response.text
+    requested = response.json()
+    config = requested["options"]["stress_configuration"]
+    assert config["reference"] == "main.cpp" and config["candidates"] == [{"name": "wrong.py", "tag": "WA"}]
+    assert config["time_limit_ms"] == 1000 and config["memory_limit_mb"] == 256
+    assert config["validator"] == "validator.cpp" and config["checker"] == "std::wcmp"
+    state["document"]["info"].update(time_limit_ms=2500, memory_limit_mb=512)
+    state["document"]["solutions"]["wrong.py"]["tag"] = "OK"
+    assert owner.put(f"/api/problems/{problem}/working-copy", json={"version": state["version"], "document": state["document"]}).status_code == 200
+    for saved in [owner.get(f"/api/problems/{problem}/jobs/{requested['id']}").json(), owner.get(f"/api/problems/{problem}/jobs").json()[0]]:
+        assert saved["options"]["stress_configuration"] == config
+    with SessionLocal() as db:
+        row = db.get(Job, requested["id"])
+        assert row.document["info"]["time_limit_ms"] == config["time_limit_ms"]
+        assert row.options["stress_configuration"]["counterexample_verdicts"] == ["WA", "TLE"]
 
 
 def counterexample_job(owner, problem):

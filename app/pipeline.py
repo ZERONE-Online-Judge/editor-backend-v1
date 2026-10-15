@@ -12,6 +12,7 @@ from .sandbox import Sandbox, SandboxError, VENDOR
 from .storage import put_blob, read_blob
 from .scoring import score_results
 from .execution_limits import MAX_GENERATOR_ARGUMENTS, GENERATOR_CPU_MS, GENERATOR_MEMORY_MB, GENERATOR_OUTPUT_BYTES
+from .stress import DEFAULT_VERDICTS, generator_command, stress_configuration
 
 
 class StressDurationReached(RuntimeError):
@@ -307,12 +308,14 @@ class Pipeline:
         deadline = started + duration if duration else None
         original_check = self.sandbox.check_cancelled
         stats = {"iterations_started": 0, "iterations_completed": 0, "elapsed_seconds": 0,
-                 "duplicates_skipped": 0, "counterexample_count": 0, "stop_reason": None}
+                 "duplicates_skipped": 0, "counterexample_count": 0, "stop_reason": None,
+                 "last_seed": None, "last_command": None}
         summaries = {name: {"name": name, "tag": self.doc["solutions"][name]["tag"], "tested": 0,
                             "verdicts": {}, "first_counterexample_id": None} for name in candidates}
-        self.result.update(counterexample=None, counterexamples=[], stress=stats, candidate_summaries=list(summaries.values()))
+        self.result.update(counterexample=None, counterexamples=[], stress=stats, candidate_summaries=list(summaries.values()),
+                           stress_configuration=stress_configuration(self.doc, options))
         seen = set()
-        collected_verdicts = set(options.get("counterexample_verdicts") or ["WA", "TLE", "MLE", "RE", "PE", "OLE", "IDLENESS_LIMIT", "PARTIAL"])
+        collected_verdicts = set(options.get("counterexample_verdicts") or DEFAULT_VERDICTS)
         def check():
             original_check()
             stats["elapsed_seconds"] = round(time.monotonic() - started, 2)
@@ -326,10 +329,10 @@ class Pipeline:
             for i in range(1, options["iterations"] + 1):
                 check()
                 stats["iterations_started"] = i
-                self.event(f"스트레스 테스트 · {i} / {options['iterations']} · 비교 풀이 {len(candidates)}개")
-                command = options["generator"].replace("{seed}", str(i))
-                if "{seed}" not in options["generator"]:
-                    command += " " + str(i)
+                command = generator_command(options["generator"], i)
+                stats.update(last_seed=i, last_command=command)
+                self.event(f"스트레스 테스트 · {i} / {options['iterations']} · 시드 {i} · 비교 풀이 {len(candidates)}개",
+                           seed=i)
                 inp = self.generator(command)
                 input_sha = hashlib.sha256(inp).hexdigest()
                 if input_sha in seen:
@@ -358,7 +361,7 @@ class Pipeline:
                     summary["verdicts"][verdict] = summary["verdicts"].get(verdict, 0) + 1
                     if verdict in collected_verdicts:
                         if example is None:
-                            example = {"id": input_sha[:32], "iteration": i, "command": command,
+                            example = {"id": input_sha[:32], "iteration": i, "seed": i, "command": command,
                                        "input_sha": self.blob(inp), "answer_sha": self.blob(correct["output"]), "findings": []}
                             self.result["counterexamples"].append(example)
                             stats["counterexample_count"] += 1

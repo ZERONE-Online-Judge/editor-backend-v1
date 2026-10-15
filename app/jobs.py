@@ -180,6 +180,8 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
             fail("invalid_stress", "기준 풀이와 비교할 풀이는 서로 달라야 합니다.")
         if options["duration_seconds"] and options["duration_seconds"] > min(get_settings().stress_max_seconds, get_settings().job_timeout_seconds):
             fail("invalid_stress_duration", "실행 시간이 서버의 작업 한도를 넘습니다.")
+        from .stress import stress_configuration
+        options["stress_configuration"] = stress_configuration(doc, options)
     options["execution_backend"] = options["execution_backend"] or get_settings().judge_backend
     if values.kind not in {"verify", "package"} or (values.kind == "package" and not options["verify"]):
         options["execution_backend"] = "editor"
