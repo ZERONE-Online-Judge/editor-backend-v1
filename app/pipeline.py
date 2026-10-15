@@ -315,4 +315,9 @@ class Pipeline:
             self.result["progress"] = 100
             return self.result
         finally:
-            self.sandbox.close()
+            try:
+                if self.result.get("solutions"):
+                    from .test_matrix import analyze
+                    self.result["test_matrix"] = analyze(self.doc, self.result)
+            finally:
+                self.sandbox.close()

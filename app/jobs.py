@@ -99,6 +99,9 @@ class JobRequest(Strict):
 
 def job_json(job, include_result=True, application=None):
     result = job.result if include_result else {"summary": job.result.get("summary", ""), "progress": job.result.get("progress", 0)}
+    if include_result and job.status not in {"queued", "running"} and result.get("solutions") and "test_matrix" not in result:
+        from .test_matrix import analyze
+        result = {**result, "test_matrix": analyze(job.document, result)}
     if include_result and job.kind == "stress" and job.status not in {"queued", "running"} and result.get("counterexamples") and "coverage" not in result:
         from .stress import minimum_cover
         result = {**result, "coverage": minimum_cover(result["counterexamples"])}
