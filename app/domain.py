@@ -88,26 +88,11 @@ def validate_document(db, problem_id, document):
 
 
 def parse_script(source: str, occupied=()):
-    used = set(occupied)
-    result = []
-    for line_number, line in enumerate(source.splitlines(), 1):
-        if not line.strip() or line.lstrip().startswith("#"):
-            continue
-        try:
-            tokens = shlex.split(line, comments=True)
-            if tokens.count(">") != 1 or len(tokens) < 3 or tokens[-2] != ">":
-                raise ValueError("Use generator arguments > test-number or > $")
-            command, destination = tokens[:-2], tokens[-1]
-            if not command or any(x in {"|", ";", "&&", "||", "<", ">>"} for x in command):
-                raise ValueError("Shell operators are not supported")
-            index = next((i for i in range(1, MAX_TESTS_PER_SET + 1) if i not in used), MAX_TESTS_PER_SET + 1) if destination == "$" else int(destination)
-            if index < 1 or index > MAX_TESTS_PER_SET or index in used:
-                raise ValueError("Duplicate or out-of-range test number")
-        except ValueError as error:
-            fail("invalid_script", f"생성 스크립트 {line_number}행: {error}")
-        used.add(index)
-        result.append({"index": index, "command": shlex.join(command)})
-    return result
+    from .generation_script import parse
+    try:
+        return parse(source, occupied)
+    except ValueError as error:
+        fail("invalid_script", f"생성 스크립트: {error}")
 
 
 def expanded_tests(testset):
@@ -115,6 +100,8 @@ def expanded_tests(testset):
     if testset["script"].strip():
         saved = [test for test in saved if not test["command"]]
         generated = parse_script(testset["script"], [test["index"] for test in saved])
+        if any(t.get("group") and (not testset["groups_enabled"] or t["group"] not in testset["groups"]) for t in generated):
+            fail("invalid_script_group", "생성 스크립트의 그룹이 현재 테스트 세트에 없습니다.")
         saved += [{"input_sha": None, "answer_sha": None, "group": "", "points": 0,
                    "description": "", "sample": False, **test} for test in generated]
     return sorted(saved, key=lambda test: test["index"])
