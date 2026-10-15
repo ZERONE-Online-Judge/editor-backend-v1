@@ -12,7 +12,7 @@ from .db import Access, Blob, Job, Problem, Revision, SessionLocal, User, Workin
 from .demo import populate
 from .jobs import JobRequest, _create_job
 from .schema import Document
-from .storage import blob_path, put_blob
+from .storage import blob_path, put_blob, read_blob
 
 
 def main():
@@ -78,11 +78,23 @@ def main():
                 raise RuntimeError('Unexpected physical judge result: ' + name + ' / ' + json.dumps(records, ensure_ascii=False))
             if solution['matched'] != (name != 'broken.cpp'):
                 raise RuntimeError('Expected-tag matching was incorrect: ' + name)
+            cases = solution['cases']
+            if name != 'broken.cpp':
+                if not solution['complete'] or len(records) != 1 or len(cases) != 3:
+                    raise RuntimeError('Full-suite verification reran or skipped tests: ' + name)
+                if any(case['cpu_ms'] is None or case['memory_kb'] is None or not case.get('actual_sha') for case in cases):
+                    raise RuntimeError('Individual metrics or actual stdout are missing: ' + name)
+                for case in cases:
+                    if len(read_blob(case['actual_sha'])) != case['output_size']:
+                        raise RuntimeError('Stored stdout size differs from captured bytes: ' + name)
             seen.add(name)
             print(json.dumps({'source': name, 'verdict': expected[name], 'complete': solution['complete'],
                               'runs': [{k: r.get(k) for k in ('node_name', 'agent_version', 'testcase_count', 'runtime_ms', 'memory_kb')} for r in records]}, ensure_ascii=False), flush=True)
-        if seen != set(expected) or result.get('mismatches') != ['broken.cpp'] or result['runtime']['backend'] != 'zoj' or result['preparation_runtime']['backend'] != 'editor':
+        if seen != set(expected) or result.get('mismatches') != ['broken.cpp'] or result['runtime']['backend'] != 'zoj' or result['preparation_runtime']['backend'] not in {'editor', 'agent'}:
             raise RuntimeError('The complete mixed-language verification result was inconsistent.')
+        progress = result.get('verification_progress', {})
+        if progress.get('current') != 21 or progress.get('total') != 24 or progress.get('percent') != 87 or progress.get('completed_solutions') != 8:
+            raise RuntimeError('Confirmed progress must exclude the unexecuted compile-error tests.')
         print('Physical judge integration verified; temporary Editor fixture will be removed.', flush=True)
     finally:
         # Delete only this randomly identified fixture. Never seed accounts,
