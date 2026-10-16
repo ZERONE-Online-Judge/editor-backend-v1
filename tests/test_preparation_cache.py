@@ -74,6 +74,25 @@ def test_repeat_skips_all_preparation_but_rejudges_every_case(document, make_pip
     assert first.result['testsets']['tests'][2]['input_sha'] == second.result['testsets']['tests'][2]['input_sha']
 
 
+def test_all_sets_reuses_each_preparation_scope_but_rejudges_every_case(document, make_pipeline):
+    document['testsets']['samples'] = copy.deepcopy(document['testsets']['tests'])
+    single, _ = make_pipeline(document)
+    single.verify()
+    expanded, calls = make_pipeline(document, options={'all_testsets': True})
+    expanded.verify()
+    assert calls['judge'] == 6 and calls['validator'] == 3
+    assert expanded.result['preparation_cache']['reused']['validator'] == 3
+    repeated, calls = make_pipeline(document, options={'all_testsets': True})
+    repeated.verify()
+    assert calls == {'judge': 6, 'checker': 6}
+    assert not any(repeated.result['preparation_cache']['executed'].values())
+    assert repeated.result['preparation_cache']['reused']['validator'] == 6
+    assert repeated.result['verified']
+    assert repeated.result['verification_progress']['total'] == 6
+    assert {(case['testset'], case['index']) for case in repeated.result['solutions'][0]['cases']} == {
+        (name, index) for name in ['tests', 'samples'] for index in [1, 2, 3]}
+
+
 @pytest.mark.parametrize('change,expected', [
     ('prose', {}), ('wrong_solution', {}), ('validator', {'validator':3}),
     ('main', {'answer':3}), ('checker', {'checker':3}),

@@ -14,6 +14,7 @@ from .scoring import score_results
 from .execution_limits import MAX_GENERATOR_ARGUMENTS, GENERATOR_CPU_MS, GENERATOR_MEMORY_MB, GENERATOR_OUTPUT_BYTES
 from .stress_search import StressSearch
 from .expectations import expected_tag, evaluate as evaluate_expectations, matches
+from .invocation_scope import selected_testsets
 
 
 class Pipeline:
@@ -189,8 +190,7 @@ class Pipeline:
         main = self.main() if mode in {"full", "answers"} else None
         self.result["prepare_mode"] = mode
         frozen = self.job.kind == "verify" and self.job.options.get("snapshot") == "committed"
-        all_sets = self.job.kind == "package" or self.job.options.get("all_testsets", False)
-        selected = list(self.doc["testsets"]) if all_sets else [self.job.options.get("testset", "tests")]
+        selected = selected_testsets(self.doc, self.job.options, self.job.kind)
         self.result["processed_testsets"] = selected
         for set_name in selected:
             testset = self.doc["testsets"][set_name]
@@ -237,7 +237,7 @@ class Pipeline:
             return
         tasks = [(name, set_name, test) for name in selected if self.doc["solutions"][name]["tag"] != "NR"
                  for set_name, tests in self.result["testsets"].items()
-                 if self.job.kind == "package" or set_name == self.job.options["testset"]
+                 if set_name in self.verification.planned
                  for test in tests if (self.job.kind == "package" or not self.job.options["test_indices"] or test["index"] in self.job.options["test_indices"])
                  and expected_tag(self.doc["solutions"][name], set_name, test["group"], self.doc["testsets"])[0] != "NR"]
         score_scope = {name: expanded_tests(self.doc["testsets"][name]) for name in self.result["testsets"]}

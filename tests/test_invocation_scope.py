@@ -44,7 +44,7 @@ def test_selected_set_does_not_execute_other_scripts(problem):
     assert pipeline.doc == before
 
 
-@pytest.mark.parametrize("kind,options", [("prepare", {"all_testsets": True}), ("package", {})])
+@pytest.mark.parametrize("kind,options", [("prepare", {"all_testsets": True}), ("verify", {"all_testsets": True}), ("package", {})])
 def test_explicit_all_sets_and_package_keep_all_sets(problem, kind, options):
     pipeline, seen = scoped_pipeline(problem, kind, **options)
     pipeline.prepare()
@@ -61,9 +61,9 @@ def test_verification_does_not_prepare_tests_outside_selected_indices(problem):
     assert [t["index"] for t in pipeline.result["testsets"]["tests"]] == [2]
 
 
-def test_all_sets_flag_cannot_expand_verification_scope(owner, problem):
+def test_all_sets_flag_cannot_expand_component_test_scope(owner, problem):
     response = owner.post(f"/api/problems/{problem}/jobs", json={
-        "kind": "verify", "version": 0, "options": {"all_testsets": True},
+        "kind": "validator-tests", "version": 0, "options": {"all_testsets": True},
     })
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "invalid_options"

@@ -14,6 +14,7 @@ from .schema import Strict, SourceFile, Info
 from .storage import put_blob
 from .execution_limits import MAX_TESTS_PER_SET, MAX_STRESS_ITERATIONS, MAX_ACTIVE_JOBS_PER_USER, MAX_STRESS_PATTERNS, MAX_STRESS_COUNTEREXAMPLES, MAX_MINIMIZE_ATTEMPTS, MAX_MINIMIZE_SECONDS
 from .prepared_results import application_json, apply_prepared_results, pending_preparations
+from .invocation_scope import selected_testsets
 
 router = APIRouter(prefix="/api/problems", tags=["execution"])
 
@@ -165,8 +166,10 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
         doc["solutions"][source.name] = {**metadata, "tag": source.tag, "extra_tags": {}}
         temporary.append((metadata, content))
     options["temporary_solutions"] = [{**metadata, "tag": doc["solutions"][metadata["name"]]["tag"]} for metadata, _ in temporary]
-    if options["all_testsets"] and values.kind not in {"prepare", "package"}:
-        fail("invalid_options", "전체 세트 생성은 입력·정답 생성에서 선택하세요.")
+    if options["all_testsets"] and values.kind not in {"prepare", "verify", "package"}:
+        fail("invalid_options", "전체 세트는 테스트 준비·풀이 검증·패키지 생성에서 선택하세요.")
+    if options["all_testsets"] and options["test_indices"]:
+        fail("invalid_options", "선택 번호는 한 테스트 세트에서 지정하세요.")
     if options["auto_apply"] and values.kind != "prepare":
         fail("invalid_options", "자동 반영은 입력·정답 생성에서만 사용할 수 있습니다.")
     if options["force_prepare"] and values.kind != "verify":
@@ -179,6 +182,10 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
         if blockers:
             fail("not_ready", "필수 자료를 먼저 준비하세요.", cautions=blockers)
     options["runtime_revision"] = get_settings().runtime_revision
+    if values.kind == "verify" and options["all_testsets"]:
+        if not doc["testsets"]:
+            fail("empty_scope", "실행할 테스트 세트를 추가하세요.")
+        options["testset"] = next(iter(doc["testsets"]))
     if options["testset"] not in doc["testsets"]:
         fail("invalid_testset", "테스트 세트를 찾을 수 없습니다.")
     options["solutions"] = list(dict.fromkeys(options["solutions"]))
@@ -188,8 +195,6 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
     if values.kind != "prepare" and options["prepare_mode"] != "full":
         fail("invalid_options", "부분 생성 모드는 테스트 준비에서만 사용하세요.")
     if values.kind == "prepare":
-        if options["test_indices"] and options["all_testsets"]:
-            fail("invalid_options", "선택 번호는 한 테스트 세트에서 지정하세요.")
         sets = doc["testsets"].values() if options["all_testsets"] else [doc["testsets"][options["testset"]]]
         if (options["test_indices"] or options["prepare_mode"] != "full") and any(config["script"].strip() for config in sets):
             fail("materialize_first", "전체 입력·정답을 생성하고 반영하여 생성 규칙을 등록 테스트로 확정한 뒤 부분 작업을 실행하세요.")
@@ -201,7 +206,9 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
         if name and name not in doc["solutions"]:
             fail("invalid_solution", "풀이 파일을 찾을 수 없습니다.")
     if values.kind == "verify":
-        tests = expanded_tests(doc["testsets"][options["testset"]])
+        set_names = selected_testsets(doc, options, values.kind)
+        test_counts = {name: len(expanded_tests(doc["testsets"][name])) for name in set_names}
+        tests = [test for name in set_names for test in expanded_tests(doc["testsets"][name])]
         available = {test["index"] for test in tests}
         unknown = set(options["test_indices"]) - available
         if unknown:
@@ -213,6 +220,8 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
         options["scope"] = {"testset": options["testset"], "solutions": runnable,
                             "test_indices": options["test_indices"],
                             "test_count": len(options["test_indices"]) if options["test_indices"] else len(tests)}
+        if options["all_testsets"]:
+            options["scope"].update(all_testsets=True, testsets=set_names, testset_counts=test_counts)
     if values.kind == "stress":
         options["candidates"] = list(dict.fromkeys(options["candidates"] or ([options["candidate"]] if options["candidate"] else [])))
         if not options["candidates"] or not (options["generator"].strip() or options["patterns"]):

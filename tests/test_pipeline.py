@@ -20,6 +20,41 @@ def prepare_problem(problem):
         db.commit()
 
 
+def test_real_all_testsets_preserves_scope_and_reuses_preparation(owner, problem):
+    with SessionLocal() as db:
+        row = db.get(Problem, problem)
+        doc = populate(db, row)
+        sample = copy.deepcopy(doc['testsets']['tests'])
+        sample['tests'] = {'1': {**sample['tests']['1'],
+            'input_sha': put_blob(db, problem, b'1 0\n')['sha256'], 'answer_sha': None}}
+        doc['testsets']['samples'] = sample
+        doc['solutions']['wrong.py']['extra_tags'] = {'samples': 'OK'}
+        row.document = doc
+        db.commit()
+    state = owner.get(f'/api/problems/{problem}').json()
+    def execute():
+        request = owner.post(f'/api/problems/{problem}/jobs', json={
+            'kind': 'verify', 'version': state['version'], 'reuse': False,
+            'options': {'execution_backend': 'editor', 'all_testsets': True}})
+        assert request.status_code == 202, request.text
+        process_job(claim_job())
+        job = owner.get(f'/api/problems/{problem}/jobs/{request.json()["id"]}').json()
+        assert job['status'] == 'completed', job
+        assert job['result']['verified'], job
+        return job['result']
+    cold, warm = execute(), execute()
+    assert cold['processed_testsets'] == warm['processed_testsets'] == ['tests', 'samples']
+    assert warm['verification_progress']['current'] == warm['verification_progress']['total'] == 8
+    assert warm['verification_progress']['percent'] == 100
+    assert not any(warm['preparation_cache']['executed'].values())
+    wrong = next(s for s in warm['solutions'] if s['name'] == 'wrong.py')
+    assert [(s['testset'], s['tag'], s['matched']) for s in wrong['expectations']] == [
+        ('tests', 'WA', True), ('samples', 'OK', True)]
+    assert [(c['testset'], c['index'], c['verdict']) for c in wrong['cases']] == [
+        ('samples', 1, 'AC'), ('tests', 1, 'WA'), ('tests', 2, 'WA'), ('tests', 3, 'WA')]
+    assert all(c['cpu_ms'] is not None and c['memory_kb'] is not None for c in wrong['cases'])
+
+
 def test_real_prepared_inputs_are_reused_but_solutions_are_measured_again(owner, problem, monkeypatch):
     import json
     from collections import Counter

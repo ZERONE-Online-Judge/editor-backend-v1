@@ -6,6 +6,7 @@ import time
 
 from .domain import expanded_tests
 from .expectations import expected_tag
+from .invocation_scope import selected_testsets
 
 
 class VerificationProgress:
@@ -14,27 +15,42 @@ class VerificationProgress:
         self.lock = getattr(pipeline, "result_lock", threading.RLock())
         self.last_publish = 0
         self.total = {}
-        sets = list(pipeline.doc["testsets"]) if pipeline.job.kind == "package" else [pipeline.job.options["testset"]]
+        sets = selected_testsets(pipeline.doc, pipeline.job.options, pipeline.job.kind)
         indices = pipeline.job.options.get("test_indices", []) if pipeline.job.kind != "package" else []
         self.planned = {name: [test for test in expanded_tests(pipeline.doc["testsets"][name]) if not indices or test["index"] in indices] for name in sets}
         rows = []
+        set_totals = dict.fromkeys(sets, 0)
         for name in selected:
             source = pipeline.doc["solutions"][name]
-            total = sum(expected_tag(source, set_name, test.get("group", ""), pipeline.doc["testsets"])[0] != "NR" for set_name, tests in self.planned.items() for test in tests)
+            counts = {set_name: sum(expected_tag(source, set_name, test.get("group", ""), pipeline.doc["testsets"])[0] != "NR" for test in tests)
+                      for set_name, tests in self.planned.items()}
+            total = sum(counts.values())
+            for set_name, count in counts.items():
+                set_totals[set_name] += count
             self.total[name] = total
             rows.append({"name": name, "tag": source["tag"], "matched": False, "skipped": source["tag"] == "NR",
                          "cases": [], "judge_runs": [], "state": "queued", "completed_tests": 0, "total_tests": total})
         pipeline.result["solutions"] = rows
         self.rows = {row["name"]: row for row in rows}
-        pipeline.result["verification_progress"] = {"phase": "preparing", "current": 0, "total": sum(self.total.values()), "percent": 0}
+        pipeline.result["verification_progress"] = {"phase": "preparing", "current": 0, "total": sum(self.total.values()), "percent": 0,
+            "testsets": {name: {"current": 0, "total": total, "percent": 0} for name, total in set_totals.items()}}
         self.publish(True)
 
     def publish(self, force=False):
         with self.lock:
             progress = self.pipeline.result["verification_progress"]
-            current = sum(len({(case["testset"], case["index"]) for case in row["cases"] if case["index"] > 0}) for row in self.rows.values())
+            counts = dict.fromkeys(progress["testsets"], 0)
+            current = 0
+            for row in self.rows.values():
+                confirmed = {(case["testset"], case["index"]) for case in row["cases"] if case["index"] > 0}
+                current += len(confirmed)
+                for name, _ in confirmed:
+                    counts[name] += 1
             progress.update(current=current, completed_solutions=sum(row["state"] == "completed" for row in self.rows.values()), total_solutions=len(self.rows))
             progress["percent"] = min(100, math.floor(100 * current / progress["total"])) if progress["total"] else (100 if progress["phase"] == "complete" else 0)
+            for name, scoped in progress["testsets"].items():
+                count = counts[name]
+                scoped.update(current=count, percent=min(100, math.floor(100 * count / scoped["total"])) if scoped["total"] else 0)
             self.pipeline.result["progress"] = progress["percent"]
             if force or time.monotonic() - self.last_publish >= 1:
                 self.pipeline.publish(copy.deepcopy(self.pipeline.result))

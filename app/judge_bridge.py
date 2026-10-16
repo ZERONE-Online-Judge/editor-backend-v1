@@ -21,6 +21,7 @@ from .domain import fail
 from .parallel import execution_budget
 from .sandbox import SandboxError, VENDOR
 from .storage import read_blob
+from .invocation_scope import selected_testsets
 from .zoj import remote
 
 router = APIRouter(prefix="/api", tags=["judge environment"])
@@ -59,7 +60,6 @@ def compatible(doc, options, kind):
     issues = []
     if info["interactive"] or info["input_file"] != "stdin" or info["output_file"] != "stdout":
         issues.append("현재 ZOJ 채점기는 표준 입출력의 비대화형 문제를 지원합니다.")
-    testsets = doc["testsets"].values() if kind == "package" else [doc["testsets"][options["testset"]]]
     if info["points_enabled"]:
         issues.append("부분 점수는 Editor 격리 실행을 선택해 검증하세요.")
     if not 100 <= info["time_limit_ms"] <= 10000 or not 16 <= info["memory_limit_mb"] <= 1024:
@@ -230,8 +230,9 @@ def verify_solution(pipeline, user, name, cancellation):
         return {"name": name, "tag": "NR", "matched": True, "cases": [], "skipped": True, "judge_runs": []}
     cases, records = [], []
     complete = True
+    sets = selected_testsets(pipeline.doc, pipeline.job.options, pipeline.job.kind)
     for set_name, tests in pipeline.result["testsets"].items():
-        if pipeline.job.kind != "package" and set_name != pipeline.job.options["testset"]:
+        if set_name not in sets:
             continue
         remaining = [t for t in tests if (pipeline.job.kind == "package" or not pipeline.job.options["test_indices"] or t["index"] in pipeline.job.options["test_indices"]) and expected_tag(source, set_name, t.get("group", ""), pipeline.doc["testsets"])[0] != "NR"]
         if remaining:
