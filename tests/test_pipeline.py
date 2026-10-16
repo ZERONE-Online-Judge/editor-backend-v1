@@ -305,9 +305,11 @@ def test_real_stress_shares_inputs_and_collects_multiple_solution_failures(owner
     duplicate = copy.deepcopy(state["document"]["solutions"]["wrong.py"])
     duplicate["name"] = "wrong2.py"
     state["document"]["solutions"]["wrong2.py"] = duplicate
+    passing = {**state["document"]["solutions"]["main.cpp"], "name": "passing.cpp", "tag": "OK"}
+    state["document"]["solutions"]["passing.cpp"] = passing
     saved = owner.put(f"/api/problems/{problem}/working-copy", json={"version": state["version"], "document": state["document"]})
     requested = owner.post(f"/api/problems/{problem}/jobs", json={"kind": "stress", "version": saved.json()["version"], "options": {
-        "generator": "gen {seed}", "reference": "main.cpp", "candidates": ["wrong.py", "wrong2.py"],
+        "generator": "gen {seed}", "reference": "main.cpp", "candidates": ["wrong.py", "wrong2.py", "passing.cpp"],
         "iterations": 3, "stop_on_first": False, "counterexample_limit": 5,
     }})
     assert requested.status_code == 202, requested.text
@@ -317,6 +319,15 @@ def test_real_stress_shares_inputs_and_collects_multiple_solution_failures(owner
     assert len(job["result"]["counterexamples"]) > 1
     assert all([finding["verdict"] for finding in ce["findings"]] == ["WA", "WA"] for ce in job["result"]["counterexamples"])
     assert all(row["tested"] == 3 for row in job["result"]["candidate_summaries"])
+    from app.storage import read_blob
+    rows = {row["name"]: row for row in job["result"]["stress_results"]}
+    assert len(rows) == 4 and all(len(row["cases"]) == 3 for row in rows.values())
+    for row in rows.values():
+        assert row["max_cpu_ms"] == max(case["cpu_ms"] for case in row["cases"])
+        assert row["max_memory_kb"] == max(case["memory_kb"] for case in row["cases"])
+        assert all(case["wall_ms"] is not None and case["actual_sha"] for case in row["cases"])
+    assert all(case["verdict"] == "AC" and read_blob(case["actual_sha"]) == read_blob(case["answer_sha"])
+               for case in rows["passing.cpp"]["cases"])
 
 
 def test_real_stress_duration_stops_an_active_program(owner, problem):

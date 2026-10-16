@@ -83,6 +83,11 @@ def process_job(job):
         thread.join(timeout=5)
     with SessionLocal() as db:
         updated = db.execute(update(Job).where(Job.id == job.id, Job.status == "running", Job.lease == job.lease).values(status=status, result=latest, heartbeat_at=now(), finished_at=now()))
+        if not updated.rowcount:
+            # A cancellation request has already changed status. Preserve the
+            # same worker's final evidence without undoing that cancellation.
+            db.execute(update(Job).where(Job.id == job.id, Job.status == "cancelled", Job.lease == job.lease)
+                       .values(result=latest, heartbeat_at=now()))
         db.commit()
         if updated.rowcount and status == "completed" and job.kind == "prepare" and job.options.get("auto_apply"):
             from fastapi import HTTPException

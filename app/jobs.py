@@ -223,6 +223,8 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
         if options["all_testsets"]:
             options["scope"].update(all_testsets=True, testsets=set_names, testset_counts=test_counts)
     if values.kind == "stress":
+        # New requests must not reuse legacy runs that discarded passing I/O.
+        options["stress_results_version"] = 1
         options["candidates"] = list(dict.fromkeys(options["candidates"] or ([options["candidate"]] if options["candidate"] else [])))
         if not options["candidates"] or not (options["generator"].strip() or options["patterns"]):
             fail("invalid_stress", "생성기 명령과 비교할 풀이를 선택하세요.")

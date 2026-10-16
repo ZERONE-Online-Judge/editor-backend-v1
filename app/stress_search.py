@@ -37,6 +37,8 @@ class StressSearch:
                                "compared_inputs": 0, "counterexample_inputs": 0, "findings": 0, "solution_findings": {}} for index, pattern in enumerate(self.patterns)]
         pipeline.result.update(counterexample=None, counterexamples=[], stress=self.stats, candidate_summaries=list(self.summaries.values()),
                                pattern_summaries=self.pattern_stats, stress_configuration=stress_configuration(pipeline.doc, self.options))
+        from .stress_results import StressResults
+        self.results = StressResults(self)
 
     def check(self):
         self.outer_check()
@@ -58,8 +60,6 @@ class StressSearch:
         checked = {"stderr": actual["stderr"]}
         if verdict == "AC":
             verdict, checked = self.p.checker(content, actual["output"], answer)
-        if verdict == "JUDGE_ERROR":
-            raise SandboxError("checker 또는 격리 실행 환경의 오류입니다.\n" + checked["stderr"])
         return verdict, actual, checked
 
     def record(self, candidate, verdict, wrong, checked, content, correct, example, iteration, seed, command, index, pattern, draws, pattern_stats):
@@ -69,17 +69,16 @@ class StressSearch:
         summary["verdicts"][verdict] = summary["verdicts"].get(verdict, 0) + 1
         if verdict not in set(self.options.get("counterexample_verdicts") or DEFAULT_VERDICTS):
             return example
-        self.reserve(len(wrong["output"]) + (len(content) + len(correct["output"]) if example is None else 0))
         if example is None:
             example = {"id": digest[:32], "iteration": iteration, "seed": seed, "command": command,
                        "pattern_index": index, "pattern_name": pattern["name"], "range_values": draws,
-                       "input_bytes": len(content), "input_sha": self.p.blob(content), "answer_sha": self.p.blob(correct["output"]), "findings": []}
+                       "input_bytes": len(content), "input_sha": digest, "answer_sha": hashlib.sha256(correct["output"]).hexdigest(), "findings": []}
             self.p.result["counterexamples"].append(example)
             self.stats["counterexample_count"] += 1
             pattern_stats["counterexample_inputs"] += 1
         finding = {"solution": candidate, "tag": summary["tag"], "verdict": verdict,
-                   "actual_sha": self.p.blob(wrong["output"]), "comment": checked["stderr"],
-                   "cpu_ms": wrong.get("cpu_ms"), "memory_kb": wrong.get("memory_kb")}
+                   "actual_sha": hashlib.sha256(wrong["output"]).hexdigest(), "comment": checked["stderr"][:2048],
+                   "cpu_ms": wrong.get("cpu_ms"), "wall_ms": wrong.get("wall_ms"), "memory_kb": wrong.get("memory_kb")}
         example["findings"].append(finding)
         summary["counterexamples"] += 1
         pattern_stats["findings"] += 1
@@ -125,6 +124,9 @@ class StressSearch:
             seen.add(digest)
             pattern_stats["valid_inputs"] += 1
             verdict, correct = self.p.run_solution(self.reference, content)
+            packet = {"iteration": iteration, "seed": seed, "command": command, "pattern": pattern, "draws": draws}
+            self.results.case(self.reference, verdict, correct, correct.get("stderr", ""), content,
+                              correct["output"] if verdict == "AC" else None, packet)
             if verdict != "AC":
                 raise SandboxError(f"기준 풀이가 {verdict}입니다.")
             example = None
@@ -133,6 +135,9 @@ class StressSearch:
                 self.check()
                 self.p.event(f"비교 풀이 실행 · {candidate} / 반복 {iteration}")
                 verdict, wrong, checked = self.compare(candidate, content, correct["output"])
+                self.results.case(candidate, verdict, wrong, checked["stderr"], content, correct["output"], packet)
+                if verdict == "JUDGE_ERROR":
+                    raise SandboxError("checker 또는 격리 실행 환경의 오류입니다.\n" + checked["stderr"])
                 if not compared:
                     pattern_stats["compared_inputs"] += 1
                     compared = True

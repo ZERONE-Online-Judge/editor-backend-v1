@@ -5,13 +5,12 @@ from threading import Lock
 from .execution_limits import MAX_STRESS_COUNTEREXAMPLES, MAX_STRESS_EVIDENCE_BYTES
 from .parallel import ordered_work
 from .sandbox import SandboxError
-from .stress import DEFAULT_VERDICTS, generator_command
+from .stress import generator_command
 
 
 def collect(search):
     p, stats, options = search.p, search.stats, search.options
     seen, shared, lock = set(), {}, Lock()
-    wanted = set(options.get("counterexample_verdicts") or DEFAULT_VERDICTS)
     stats["iterations_scheduled"] = 0
     stats["parallelism"] = p.parallelism
 
@@ -63,24 +62,31 @@ def collect(search):
                 raise SandboxError("생성한 반례 입력이 유효하지 않습니다.\n" + validation["stderr"])
             result["valid"] = True
             verdict, correct = p.run_solution(search.reference, content)
+            result.update(correct=correct, reference_verdict=verdict)
             if verdict != "AC":
                 raise SandboxError(f"기준 풀이가 {verdict}입니다.")
-            result["correct"] = {"output": correct["output"]}
-            buffered = len(content) + len(correct["output"])
+            outputs = {digest: content, hashlib.sha256(correct["output"]).hexdigest(): correct["output"]}
+            buffered = sum(len(value) for value in outputs.values())
             for candidate in packet["candidates"]:
                 search.check()
                 if search.focus and search.summaries[candidate]["counterexamples"]:
                     continue
                 p.event(f"비교 풀이 실행 · {candidate} / 반복 {packet['iteration']}")
                 verdict, actual, checked = search.compare(candidate, content, correct["output"])
-                output = actual["output"] if verdict in wanted else b""
-                if buffered + len(output) > MAX_STRESS_EVIDENCE_BYTES:
-                    from .stress_search import EvidenceLimitReached
-                    raise EvidenceLimitReached()
-                buffered += len(output)
+                output = actual["output"]
+                output_sha = hashlib.sha256(output).hexdigest()
+                if output_sha not in outputs:
+                    if buffered + len(output) > MAX_STRESS_EVIDENCE_BYTES:
+                        from .stress_search import EvidenceLimitReached
+                        raise EvidenceLimitReached()
+                    outputs[output_sha] = output
+                    buffered += len(output)
+                output = outputs[output_sha]
                 result["comparisons"].append((candidate, verdict,
-                    {"output": output, "cpu_ms": actual.get("cpu_ms"), "memory_kb": actual.get("memory_kb")},
+                    {"output": output, "cpu_ms": actual.get("cpu_ms"), "wall_ms": actual.get("wall_ms"), "memory_kb": actual.get("memory_kb")},
                     {"stderr": checked["stderr"]}))
+                if verdict == "JUDGE_ERROR":
+                    raise SandboxError("checker 또는 격리 실행 환경의 오류입니다.\n" + checked["stderr"])
         except Exception as error:
             result["error"] = error
         finally:
@@ -116,7 +122,16 @@ def collect(search):
             with p.result_lock:
                 if value["valid"]:
                     pattern_stats["valid_inputs"] += 1
+                if "correct" in value:
+                    correct = value["correct"]
+                    search.results.case(search.reference, value["reference_verdict"], correct,
+                        correct.get("stderr", ""), value["content"],
+                        correct["output"] if value["reference_verdict"] == "AC" else None, value)
                 for candidate, verdict, wrong, checked in value["comparisons"]:
+                    search.results.case(candidate, verdict, wrong, checked["stderr"],
+                                        value["content"], value["correct"]["output"], value)
+                    if verdict == "JUDGE_ERROR":
+                        continue
                     if search.focus and search.summaries[candidate]["counterexamples"]:
                         continue
                     if not compared:
