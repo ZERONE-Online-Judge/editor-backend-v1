@@ -23,13 +23,14 @@ from .sandbox import SandboxError, VENDOR
 from .storage import read_blob
 from .invocation_scope import selected_testsets
 from .zoj import remote
+from .judge_requests import request_with_retry
 
 router = APIRouter(prefix="/api", tags=["judge environment"])
 LANGUAGES = {"cpp17": "cpp17", "python3": "python313", "c99": "c99", "java8": "java8"}
 VERDICTS = {"accepted": "AC", "wrong_answer": "WA", "compile_error": "CE", "runtime_error": "RE",
             "time_limit_exceeded": "TLE", "memory_limit_exceeded": "MLE", "output_limit_exceeded": "OLE",
             "system_error": "JUDGE_ERROR", "cancelled": "JUDGE_ERROR"}
-ACTIVE = {"waiting", "preparing", "judging"}
+ACTIVE = {"uploading", "waiting", "preparing", "judging"}
 
 
 def capabilities(user):
@@ -143,24 +144,24 @@ def run_batch(pipeline, user, name, set_name, tests, attempt, cancellation):
     endpoint = "/api/editor/judge/runs"
     run_id = None
     done = False
+    attempted = False
+    def check():
+        pipeline.sandbox.check_cancelled()
+        if cancellation.is_set():
+            raise SandboxError("다른 풀이 검증이 실패하여 함께 실행하던 작업을 중단했습니다.")
+
+    def request(method, endpoint, *args, **kwargs):
+        return request_with_retry(remote, method, endpoint, user, *args, check=check,
+            on_wait=lambda: pipeline.event(f"ZOJ 연결 대기 · {name} / {set_name} · 같은 요청을 재시도합니다."), **kwargs)
+
     try:
-        for retry in range(3):
-            pipeline.sandbox.check_cancelled()
-            if cancellation.is_set():
-                raise SandboxError("다른 풀이 검증이 실패하여 함께 실행하던 작업을 중단했습니다.")
-            try:
-                run = remote("POST", endpoint, user, path, digest)
-                break
-            except HTTPException as e:
-                if retry == 2 or e.status_code not in {429, 502, 503, 504}:
-                    raise
-                time.sleep(1)
+        check()
+        attempted = True
+        run = request("POST", endpoint, path, digest)
         run_id = run["id"]
         last_progress = None
         while run["status"] in ACTIVE:
-            pipeline.sandbox.check_cancelled()
-            if cancellation.is_set():
-                raise SandboxError("다른 풀이 검증이 실패하여 함께 실행하던 작업을 중단했습니다.")
+            check()
             progress = (run["status"], run["progress_current"], run["progress_total"])
             if progress != last_progress:
                 pipeline.event(f"ZOJ 채점 · {name} / {set_name} · {run['progress_current']}/{run['progress_total']}", node=run.get("node_name"), judge_run_id=run_id)
@@ -168,7 +169,7 @@ def run_batch(pipeline, user, name, set_name, tests, attempt, cancellation):
             if getattr(pipeline, "verification", None):
                 pipeline.verification.batch(name, set_name, observed_cases(pipeline, user, set_name, tests, run))
             time.sleep(1)
-            run = remote("GET", "/api/editor/judge/runs/" + run_id, user, timeout=15)
+            run = request("GET", "/api/editor/judge/runs/" + run_id, timeout=15)
         pipeline.sandbox.check_cancelled()
         if run["status"] not in VERDICTS or not run.get("result"):
             raise SandboxError("ZOJ 채점기가 최종 판정을 반환하지 않았습니다.")
@@ -180,9 +181,10 @@ def run_batch(pipeline, user, name, set_name, tests, attempt, cancellation):
     finally:
         if path:
             path.unlink(missing_ok=True)
-        if run_id and not done:
+        if attempted and not done:
             try:
-                remote("DELETE", "/api/editor/judge/runs/" + run_id, user, timeout=15)
+                endpoint = "/api/editor/judge/runs/" + run_id if run_id else "/api/editor/judge/run-operations/" + path.stem
+                remote("DELETE", endpoint, user, timeout=15)
             except Exception:
                 pass
 

@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     runtime_revision: str = "editor-runtime-0.1.2"
     judge_backend: Literal["editor", "zoj"] = "editor"
     judge_concurrency: int = 3
+    judge_request_retry_seconds: float = Field(default=120, ge=1, le=600)
     max_project_bytes: int = 8 * 1024 * 1024 * 1024
     max_uncompressed_archive_bytes: int = 16 * 1024 * 1024 * 1024
     max_upload_bytes: int = 16 * 1024 * 1024

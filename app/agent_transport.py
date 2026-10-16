@@ -1,14 +1,13 @@
 """Editor keeps orchestration and storage; all untrusted execution is queued."""
 import hashlib
 import json
-import time
 import threading
 from types import SimpleNamespace
 from uuid import uuid4
-from fastapi import HTTPException
 from .execution_protocol import FORMAT, pack, validate_result
 from .sandbox import SandboxError
 from .zoj import remote
+from .judge_requests import request_with_retry
 
 
 class AgentTransport:
@@ -29,25 +28,15 @@ class AgentTransport:
         digest = hashlib.sha256(content).hexdigest()
         task_id, done, attempted = None, False, False
         try:
-            while True:
-                sandbox.check_cancelled()
-                try:
-                    attempted = True
-                    task = remote("POST", "/api/editor/judge/tasks", self.user, path, digest)
-                    break
-                except HTTPException as error:
-                    if error.status_code not in {429, 502, 503, 504}:
-                        raise
-                    time.sleep(1)
+            sandbox.check_cancelled()
+            attempted = True
+            task = request_with_retry(remote, "POST", "/api/editor/judge/tasks", self.user, path, digest,
+                                      check=sandbox.check_cancelled)
             task_id = task["id"]
-            while task["status"] in {"waiting", "running"}:
+            while task["status"] in {"uploading", "waiting", "running"}:
                 sandbox.check_cancelled()
-                try:
-                    task = remote("GET", "/api/editor/judge/tasks/" + task_id + "?wait_seconds=2", self.user, timeout=15)
-                except HTTPException as error:
-                    if error.status_code not in {502, 503, 504}:
-                        raise
-                    time.sleep(1)
+                task = request_with_retry(remote, "GET", "/api/editor/judge/tasks/" + task_id + "?wait_seconds=2",
+                                          self.user, timeout=15, check=sandbox.check_cancelled)
             sandbox.check_cancelled()
             if task["status"] != "completed" or not isinstance(task.get("result"), dict):
                 raise SandboxError(task.get("error") or "채점 에이전트가 실행을 완료하지 못했습니다.")

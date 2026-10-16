@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import sys
 from uuid import uuid4
 import pytest
+from fastapi import HTTPException
 from app import agent_transport, judge_bridge
 from app.config import get_settings
 from app.db import Job, Problem, Revision, SessionLocal
@@ -15,6 +16,7 @@ from app.demo import populate
 from app.execution_protocol import unpack
 from app.sandbox import Sandbox, SandboxError
 from app.worker import claim_job, process_job
+from test_judge_requests import clock
 
 
 @pytest.fixture
@@ -43,6 +45,27 @@ def test_remote_transport_restores_outputs_and_never_runs_local_docker(agent_mod
         assert result['output']==b'3\n' and sandbox.agent_transport.records[0]['node_name']=='judge-1'
         assert calls==[('POST','/api/editor/judge/tasks'),('GET','/api/editor/judge/tasks/task?wait_seconds=2')]
     finally:sandbox.close()
+
+
+def test_transport_waits_for_upload_and_retries_busy_status(agent_mode, monkeypatch, clock):
+    calls = []
+    def remote(method, path, *args, **kwargs):
+        calls.append(method)
+        if method == 'POST':
+            return {'id': 'task', 'status': 'uploading'}
+        if calls.count('GET') == 1:
+            raise HTTPException(429)
+        return {'id': 'task', 'status': 'completed', 'result': {'status': 'ok', 'exit_code': 0,
+                'cpu_ms': 17, 'wall_ms': 21, 'memory_kb': 5000, 'stderr': '', 'output_base64': 'Mwo=', 'artifacts': {}}}
+    monkeypatch.setattr(agent_transport, 'remote', remote)
+    sandbox = Sandbox(remote_context={'email': 'author@example.com', 'job_kind': 'prepare', 'runtime_revision': 'runtime'})
+    try:
+        folder = sandbox.new_folder()
+        (folder / 'sum.py').write_text('print(3)')
+        assert sandbox.execute(folder, ['python3', 'sum.py'])['output'] == b'3\n'
+        assert calls == ['POST', 'GET', 'GET']
+    finally:
+        sandbox.close()
 
 
 def test_job_admission_requires_ready_nodes_and_preserves_the_transport_in_cache(owner,problem,agent_mode):
@@ -133,7 +156,7 @@ def test_complete_editor_workflows_execute_on_actual_agent_runtime(owner,problem
 
 
 
-def test_lost_creation_acknowledgement_is_cancelled_by_operation(agent_mode,monkeypatch):
+def test_lost_creation_acknowledgement_is_cancelled_by_operation(agent_mode,monkeypatch,clock):
     from fastapi import HTTPException
     cancelled=False;calls=[]
     def remote(method,path,*args,**kw):
@@ -142,7 +165,6 @@ def test_lost_creation_acknowledgement_is_cancelled_by_operation(agent_mode,monk
         if method=='POST':cancelled=True;raise HTTPException(502,{'message':'lost acknowledgement'})
         return {}
     monkeypatch.setattr(agent_transport,'remote',remote)
-    monkeypatch.setattr(agent_transport.time,'sleep',lambda _:None)
     def check():
         if cancelled:raise RuntimeError('cancelled')
     sandbox=Sandbox(check,{'email':'author@example.com','job_kind':'render','runtime_revision':'runtime'})

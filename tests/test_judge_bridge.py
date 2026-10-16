@@ -11,6 +11,7 @@ from app.config import get_settings
 from app.db import Job, Problem, Revision, SessionLocal
 from app.demo import populate
 from app import judge_bridge as bridge
+from test_judge_requests import clock
 
 
 def fixture_data(problem, tmp_path, tag="MA"):
@@ -114,6 +115,41 @@ def test_cancellation_stops_remote_work(problem, tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match='cancelled'):
         bridge.run_batch(p, SimpleNamespace(email='author@example.com'), 'main.cpp', 'tests', p.result['testsets']['tests'], 0, threading.Event())
     assert calls == ['POST', 'DELETE']
+    assert not list(tmp_path.glob('*.judge.zip'))
+
+
+def test_registration_and_polling_survive_busy_api(problem, tmp_path, monkeypatch, clock):
+    p = fixture_data(problem, tmp_path)
+    calls, snapshots = [], []
+    def remote(method, path, *args, **kwargs):
+        calls.append(method)
+        if method == 'POST':
+            snapshots.append(args[1].read_bytes())
+            if len(snapshots) <= 4:
+                raise HTTPException(503)
+            return record('uploading')
+        if calls.count('GET') <= 2:
+            raise HTTPException(429 if calls.count('GET') == 1 else 503)
+        return record()
+    monkeypatch.setattr(bridge, 'remote', remote)
+    result = bridge.verify_solution(p, object(), 'main.cpp', threading.Event())
+    assert result['complete'] and result['matched'] and len(result['cases']) == 3
+    assert len(snapshots) == 5 and all(value == snapshots[0] for value in snapshots)
+    assert calls.count('GET') == 3 and 'DELETE' not in calls
+
+
+def test_lost_registration_response_cancels_by_operation(problem, tmp_path, monkeypatch, clock):
+    p = fixture_data(problem, tmp_path)
+    calls = []
+    def remote(method, path, *args, **kwargs):
+        calls.append((method, path))
+        if method == 'POST':
+            raise HTTPException(503)
+        return {}
+    monkeypatch.setattr(bridge, 'remote', remote)
+    with pytest.raises(HTTPException):
+        bridge.run_batch(p, object(), 'main.cpp', 'tests', p.result['testsets']['tests'], 0, threading.Event())
+    assert calls[-1][0] == 'DELETE' and '/run-operations/' in calls[-1][1]
     assert not list(tmp_path.glob('*.judge.zip'))
 
 
