@@ -20,6 +20,63 @@ def prepare_problem(problem):
         db.commit()
 
 
+def test_real_prepared_inputs_are_reused_but_solutions_are_measured_again(owner, problem, monkeypatch):
+    import json
+    from collections import Counter
+    from pathlib import Path
+    from app.sandbox import Sandbox
+    with SessionLocal() as db:
+        row = db.get(Problem, problem)
+        row.document = populate(db, row)
+        row.document['testsets']['tests']['tests']['3']['command'] = 'gen 20261016'
+        db.get(Revision, (problem, 0)).document = copy.deepcopy(row.document)
+        db.commit()
+    original = Sandbox.run
+    phase = {'name':'cold'}
+    calls = {'cold':Counter(), 'warm':Counter()}
+    def measured(self, program, *args, **kwargs):
+        calls[phase['name']][program.name] += 1
+        return original(self, program, *args, **kwargs)
+    monkeypatch.setattr(Sandbox, 'run', measured)
+    state = owner.get(f'/api/problems/{problem}').json()
+    def execute(kind):
+        request = owner.post(f'/api/problems/{problem}/jobs', json={
+            'kind':kind, 'version':state['version'], 'reuse':False, 'options':{'execution_backend':'editor'}})
+        assert request.status_code == 202, request.text
+        process_job(claim_job())
+        result = owner.get(f'/api/problems/{problem}/jobs/{request.json()["id"]}').json()
+        assert result['status'] == 'completed', result
+        return result
+    started = time.monotonic()
+    prepared = execute('verify')
+    first_seconds = time.monotonic() - started
+    phase['name'] = 'warm'
+    started = time.monotonic()
+    verified = execute('verify')
+    second_seconds = time.monotonic() - started
+    assert calls['cold']['gen.cpp'] == 1
+    assert calls['cold']['validator.cpp'] == 3
+    assert calls['cold']['main.cpp'] == 6
+    assert calls['warm']['gen.cpp'] == calls['warm']['validator.cpp'] == 0
+    assert calls['warm']['main.cpp'] == calls['warm']['wrong.py'] == 3
+    cache = verified['result']['preparation_cache']
+    assert cache['reused'] == {'input':1, 'validator':3, 'answer':3, 'checker':3, 'sample':0}
+    assert not any(cache['executed'].values())
+    assert verified['result']['verified']
+    for solution in verified['result']['solutions']:
+        assert len(solution['cases']) == 3
+        assert all(case['cpu_ms'] is not None and case['memory_kb'] is not None for case in solution['cases'])
+    for old, new in zip(prepared['result']['testsets']['tests'], verified['result']['testsets']['tests']):
+        assert (old['input_sha'], old['answer_sha']) == (new['input_sha'], new['answer_sha'])
+        assert new['main_cpu_ms'] is None
+    if os.environ.get('EDITOR_CACHE_BENCHMARK_PATH'):
+        Path(os.environ['EDITOR_CACHE_BENCHMARK_PATH']).write_text(json.dumps({
+            'cold_verification_seconds':first_seconds, 'warm_verification_seconds':second_seconds,
+            'sandbox_runs':calls, 'preparation_cache':cache,
+            'solutions':[{key:solution[key] for key in ('name','matched','cases')} for solution in verified['result']['solutions']],
+        }, ensure_ascii=False, indent=2))
+
+
 def test_real_selected_input_and_answer_regeneration_preserves_other_tests(owner,problem):
     with SessionLocal() as db:
         row=db.get(Problem,problem)

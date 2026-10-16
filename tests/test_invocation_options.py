@@ -50,3 +50,12 @@ def test_committed_snapshot_does_not_save_or_require_current_copy_version(owner,
         assert db.get(Job, response.json()["id"]).document["info"]["name"] != "private author changes"
     current = owner.get(f"/api/problems/{problem}").json()
     assert current["version"] == saved.json()["version"] and current["document"]["info"]["name"] == "private author changes"
+
+
+def test_forced_preparation_does_not_return_a_previous_job(owner, problem):
+    state = ready(owner, problem)
+    request = {"kind":"verify", "version":state["version"], "options":{"force_prepare":True}}
+    first = owner.post(f"/api/problems/{problem}/jobs", json=request)
+    second = owner.post(f"/api/problems/{problem}/jobs", json=request)
+    assert first.status_code == second.status_code == 202
+    assert first.json()["id"] != second.json()["id"]

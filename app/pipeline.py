@@ -1,5 +1,4 @@
 import copy
-import hashlib
 import shlex
 import math
 import re
@@ -58,6 +57,9 @@ class Pipeline:
         self.result["runtime"] = {"backend": "zoj", "runtime_revision": job.options.get("judge_revision")} if self.remote_judging else runtime
         if self.remote_judging:
             self.result["preparation_runtime"] = runtime
+        if job.kind in {"prepare", "verify", "package"}:
+            from .preparation_cache import PreparationCache
+            self.preparation_cache = PreparationCache(self)
 
 
     def event(self, label, **extra):
@@ -196,45 +198,9 @@ class Pipeline:
             prepared = []
             indices = self.job.options.get("test_indices") if self.job.kind in {"verify", "prepare"} else []
             seen = {test["input_sha"] for test in saved if self.job.kind == "prepare" and mode in {"full", "inputs"} and indices and test["index"] not in indices and test["input_sha"]}
+            from .test_preparation import prepare_test
             def prepare_case(test):
-                self.sandbox.check_cancelled()
-                index = test["index"]
-                self.event(f"테스트 준비 · {set_name} #{index}")
-                if frozen and (not test["input_sha"] or not test["answer_sha"]):
-                    raise SandboxError(f"{set_name} #{index}: 작성자가 입력·정답 생성 결과를 반영하고 커밋한 뒤 검수하세요.")
-                if mode in {"validate", "answers"} and not test["input_sha"]:
-                    raise SandboxError(f"{set_name} #{index}: 저장된 입력이 없습니다. 먼저 입력을 생성하세요.")
-                input_bytes = read_blob(test["input_sha"]) if frozen or mode in {"validate", "answers"} or not test["command"] else self.generator(test["command"])
-                sha = hashlib.sha256(input_bytes).hexdigest()
-                if self.doc["info"]["well_formed"] and (b"\r" in input_bytes or b"\x00" in input_bytes or (input_bytes and not input_bytes.endswith(b"\n"))):
-                    raise SandboxError(f"{set_name} #{index}: LF 줄바꿈과 마지막 개행을 확인하세요.")
-                valid, validator = self.validator(input_bytes, set_name, test["group"])
-                if not valid:
-                    raise SandboxError(f"{set_name} #{index}: 입력 조건 위반\n{validator['stderr']}")
-                if mode in {"inputs", "validate"}:
-                    answer_sha = test["answer_sha"] if mode == "validate" or sha == test["input_sha"] else None
-                    return ({**test, "input_sha": test["input_sha"] if mode == "validate" else None,
-                                     "answer_sha": answer_sha, "validator": "VALID", "main_cpu_ms": None, "main_memory_kb": None, "main_wall_ms": None}, sha, input_bytes if mode == "inputs" else None, None)
-                if frozen:
-                    answer = read_blob(test["answer_sha"])
-                    result = {"cpu_ms": None, "memory_kb": None, "wall_ms": None}
-                else:
-                    verdict, result = self.run_solution(main, input_bytes, read_blob(test["answer_sha"]) if self.doc["info"]["interactive"] and test["answer_sha"] else b"", preparation=True)
-                    if verdict != "AC":
-                        raise SandboxError(f"Main 풀이가 {set_name} #{index}에서 {verdict}입니다.\n{result['stderr']}")
-                    # Interactive answer files are interactor resources, not a
-                    # contestant transcript. Preserve supplied reference data.
-                    answer = (read_blob(test["answer_sha"]) if test["answer_sha"] else b"") if self.doc["info"]["interactive"] else result["output"]
-                check, checked = self.checker(input_bytes, answer, answer, test["points"])
-                if check != "AC":
-                    raise SandboxError(f"checker가 Main 출력을 거부했습니다.\n{checked['stderr']}")
-                row = {**test, "input_sha": test["input_sha"] if frozen else None, "answer_sha": test["answer_sha"] if frozen else None, "validator": "VALID", "main_cpu_ms": result["cpu_ms"], "main_memory_kb": result["memory_kb"], "main_wall_ms": result["wall_ms"]}
-                from .statement_samples import validate as validate_sample
-                sample_status = validate_sample(self, test, set_name, input_bytes, answer, main)
-                if sample_status:
-                    row["statement_io_validation"] = sample_status
-                    self.event(f"지문 표시용 예제 · {set_name} #{index} · {'검증 통과' if sample_status == 'VALID' else '자동 검증 해제'}")
-                return row, sha, None if frozen else input_bytes, None if frozen else answer
+                return prepare_test(self, test, set_name, mode, frozen, main)
             chosen = [test for test in sorted(saved, key=lambda t:t["index"]) if not indices or test["index"] in indices]
             with self.work(prepare_case, chosen) as results:
                 for row, sha, input_bytes, answer in results:
@@ -248,6 +214,11 @@ class Pipeline:
                     prepared.append(row)
             self.result["testsets"][set_name] = prepared
         label = {'inputs':'입력 재생성과 Validator 검사 완료','validate':'저장된 입력 Validator 검사 완료','answers':'저장된 입력의 Main 정답 재생성 완료'}.get(mode, '커밋된 입력·기대 출력 확인 완료' if frozen else '입력 검증과 Main 기대 출력 생성 완료')
+        cache = getattr(self, "preparation_cache", None)
+        if cache:
+            reused = sum(cache.stats["reused"].values())
+            executed = sum(cache.stats["executed"].values())
+            label = f"테스트 자료 준비 완료 · {reused}개 단계 재사용 · {executed}개 단계 실행"
         self.event(f"{label} · {', '.join(selected)}")
 
     @staticmethod

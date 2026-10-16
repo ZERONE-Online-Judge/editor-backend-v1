@@ -105,6 +105,8 @@ def process_job(job):
 
 def maintenance():
     with SessionLocal() as db:
+        from .preparation_cache import expire_entries
+        expire_entries(db)
         db.execute(update(Job).where(Job.status == "running", Job.heartbeat_at < now() - 120).values(status="failed", result={"summary": "검증 워커와의 연결이 중단되었습니다. 작업을 다시 요청하세요."}, finished_at=now()))
         db.execute(delete(LoginSession).where(LoginSession.expires_at < now()))
         db.execute(delete(LoginCode).where(LoginCode.expires_at < now() - 3600))

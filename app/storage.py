@@ -32,7 +32,7 @@ def put_blob(db, problem_id, content: bytes):
             fail("project_quota", "문제 자료의 저장 한도에 도달했습니다.", 413)
     target = blob_path(sha)
     target.parent.mkdir(parents=True, exist_ok=True)
-    if not target.exists():
+    if not target.exists() or hashlib.sha256(target.read_bytes()).hexdigest() != sha:
         fd, tmp = tempfile.mkstemp(dir=target.parent)
         try:
             with os.fdopen(fd, "wb") as stream:

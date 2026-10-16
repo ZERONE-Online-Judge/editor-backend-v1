@@ -186,6 +186,16 @@ class JobApplication(Base):
     document_hash: Mapped[str] = mapped_column(String(64))
 
 
+class PreparationEntry(Base):
+    __tablename__ = "preparation_entries"
+    problem_id: Mapped[str] = mapped_column(ForeignKey("problems.id", ondelete="CASCADE"), primary_key=True)
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    stage: Mapped[str] = mapped_column(String(20))
+    result: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[int]
+    expires_at: Mapped[int] = mapped_column(index=True)
+
+
 class JobComment(Base):
     __tablename__ = "job_comments"
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=uid)

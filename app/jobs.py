@@ -53,6 +53,7 @@ class JobOptions(Strict):
     name: str = Field(default="", max_length=120)
     note: str = Field(default="", max_length=8000)
     auto_apply: bool = False
+    force_prepare: bool = False
     execution_backend: Literal["editor", "zoj"] | None = None
     testset: str = "tests"
     all_testsets: bool = False
@@ -168,6 +169,8 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
         fail("invalid_options", "전체 세트 생성은 입력·정답 생성에서 선택하세요.")
     if options["auto_apply"] and values.kind != "prepare":
         fail("invalid_options", "자동 반영은 입력·정답 생성에서만 사용할 수 있습니다.")
+    if options["force_prepare"] and values.kind != "verify":
+        fail("invalid_options", "준비 결과 재사용 해제는 풀이 검증에서 선택하세요.")
     if values.kind == "package" and options["export_format"] == "zoj":
         from .zoj_package import check_compatibility
         check_compatibility(doc, options)
@@ -260,7 +263,7 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
             fail("execution_agents_unavailable", "Editor 실행이 허용된 채점 에이전트가 준비되지 않았습니다. 관리자에게 문의하세요.", 503)
         options["execution_revision"] = execution["runtime_revision"]
     hash_value = document_hash(doc)
-    if values.reuse:
+    if values.reuse and not options["force_prepare"]:
         cached = db.scalars(select(Job).where(Job.problem_id == problem_id, Job.document_hash == hash_value, Job.kind == values.kind, Job.status.in_(["queued", "running", "completed"])).order_by(Job.created_at.desc())).all()
         for row in cached:
             if row.options == options:
