@@ -102,6 +102,9 @@ class JobRequest(Strict):
 
 def job_json(job, include_result=True, application=None):
     result = job.result if include_result else {"summary": job.result.get("summary", ""), "progress": job.result.get("progress", 0)}
+    if include_result and job.kind == "verify" and job.status == "completed":
+        from .expectations import refresh_result
+        result = refresh_result(job.document, result)
     if include_result and job.status not in {"queued", "running"} and result.get("solutions") and "test_matrix" not in result:
         from .test_matrix import analyze
         result = {**result, "test_matrix": analyze(job.document, result)}
@@ -178,6 +181,8 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
         from .zoj_package import check_compatibility
         check_compatibility(doc, options)
     if values.kind in {"package", "verify"}:
+        from .expectations import VERSION
+        options["expectations_version"] = VERSION
         blockers = [c for c in cautions(doc) if c["blocking"]]
         if blockers:
             fail("not_ready", "필수 자료를 먼저 준비하세요.", cautions=blockers)

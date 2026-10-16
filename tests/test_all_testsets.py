@@ -43,6 +43,21 @@ def test_all_sets_scope_is_explicit_saved_and_distinct_from_single_set(owner, pr
         assert db.get(Job, response.json()["id"]).document == doc
 
 
+def test_old_expectation_rules_do_not_reuse_a_completed_verification(owner, problem):
+    saved, _ = multiple_sets(owner, problem)
+    request = {'kind': 'verify', 'version': saved['version'], 'options': {'all_testsets': True}}
+    first = owner.post(f'/api/problems/{problem}/jobs', json=request).json()
+    from app.expectations import VERSION
+    assert first['options']['expectations_version'] == VERSION
+    with SessionLocal() as db:
+        row = db.get(Job, first['id'])
+        row.status = 'completed'
+        row.options = {key: value for key, value in row.options.items() if key != 'expectations_version'}
+        db.commit()
+    fresh = owner.post(f'/api/problems/{problem}/jobs', json=request)
+    assert fresh.status_code == 202 and fresh.json()['id'] != first['id']
+
+
 def test_all_sets_accepts_custom_set_names_without_requiring_tests(owner, problem):
     saved, doc = multiple_sets(owner, problem)
     doc["testsets"] = {"custom": doc["testsets"]["tests"]}

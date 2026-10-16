@@ -227,6 +227,8 @@ class Pipeline:
 
     def verify(self):
         from .verification_progress import VerificationProgress
+        from .expectations import VERSION
+        self.result["expectations_version"] = VERSION
         selected = list(self.doc["solutions"]) if self.job.kind == "package" else self.job.options["solutions"] or list(self.doc["solutions"])
         self.verification = VerificationProgress(self, selected)
         self.prepare()
