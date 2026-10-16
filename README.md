@@ -206,9 +206,12 @@ Codeforces의 비공개 소스나 서비스 계정을 가져오지 않습니다.
 - `EDITOR_WORKER_CONCURRENCY`: 서로 다른 Editor 작업 수. 기존 설정 유지
 - `EDITOR_JUDGE_CONCURRENCY`: 작업당 ZOJ 최종 검증 연결 수. 기존 설정 유지
 
-풀이 검증은 기본적으로 `testset` 한 개를 실행합니다. `all_testsets: true`는
-모든 세트를 한 작업에서 검증하며 번호·그룹·기대 판정은 세트별로 유지합니다.
-`test_indices`와 함께 지정할 수 없습니다. 요청 범위의 `testsets`·`testset_counts`와
+풀이 검증 화면에서는 체크박스로 필요한 테스트 세트를 선택합니다. API의
+`testsets: ["tests", "tle"]`는 지정한 세트만 준비·검증하며, 빈 배열이나 없는
+세트는 거부합니다. 한 세트일 때만 `test_indices`로 번호 범위를 지정할 수 있습니다.
+기존 `testset` 단일 선택과 `all_testsets: true` 전체 선택도 지원하며, 명시적인
+`testsets`와 전체 선택 플래그를 함께 보낼 수 없습니다. 번호·그룹·기대 판정은
+세트별로 유지합니다. 요청 범위의 `testsets`·`testset_counts`와
 결과의 세트별 진행률을 보관합니다. 빈 세트·NR 범위는 실행 건수에 포함하지 않습니다.
 Editor 격리 실행과 ZOJ 실제 채점기에서 같은 범위를 사용하며, 세트별 기대 판정이
 모두 일치하고 검증 범위가 완결되어야 최종 검증 성공입니다.

@@ -57,6 +57,7 @@ class JobOptions(Strict):
     force_prepare: bool = False
     execution_backend: Literal["editor", "zoj"] | None = None
     testset: str = "tests"
+    testsets: list[Annotated[str, Field(strict=True, min_length=1, max_length=100)]] | None = Field(default=None, min_length=1, max_length=20)
     all_testsets: bool = False
     snapshot: Literal["working_copy", "committed"] | None = None
     temporary_solutions: list[TemporarySolution] = Field(default_factory=list, max_length=10)
@@ -169,6 +170,17 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
         doc["solutions"][source.name] = {**metadata, "tag": source.tag, "extra_tags": {}}
         temporary.append((metadata, content))
     options["temporary_solutions"] = [{**metadata, "tag": doc["solutions"][metadata["name"]]["tag"]} for metadata, _ in temporary]
+    if options["testsets"] is not None:
+        if values.kind not in {"prepare", "verify", "package"} or options["all_testsets"]:
+            fail("invalid_options", "선택 세트는 테스트 준비·풀이 검증·패키지 생성에서 전체 세트 옵션과 별도로 지정하세요.")
+        if values.kind == "package" and options["export_format"] != "zoj":
+            fail("invalid_options", "패키지의 세트 선택은 ZOJ 문제 ZIP에서 지원합니다.")
+        if set(options["testsets"]) - doc["testsets"].keys():
+            fail("invalid_testset", "선택한 테스트 세트를 찾을 수 없습니다.")
+        options["testsets"] = selected_testsets(doc, options, values.kind)
+        options["testset"] = options["testsets"][0]
+        if len(options["testsets"]) > 1 and options["test_indices"]:
+            fail("invalid_options", "선택 번호는 한 테스트 세트에서 지정하세요.")
     if options["all_testsets"] and values.kind not in {"prepare", "verify", "package"}:
         fail("invalid_options", "전체 세트는 테스트 준비·풀이 검증·패키지 생성에서 선택하세요.")
     if options["all_testsets"] and options["test_indices"]:
@@ -200,7 +212,7 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
     if values.kind != "prepare" and options["prepare_mode"] != "full":
         fail("invalid_options", "부분 생성 모드는 테스트 준비에서만 사용하세요.")
     if values.kind == "prepare":
-        sets = doc["testsets"].values() if options["all_testsets"] else [doc["testsets"][options["testset"]]]
+        sets = [doc["testsets"][name] for name in selected_testsets(doc, options, values.kind)]
         if (options["test_indices"] or options["prepare_mode"] != "full") and any(config["script"].strip() for config in sets):
             fail("materialize_first", "전체 입력·정답을 생성하고 반영하여 생성 규칙을 등록 테스트로 확정한 뒤 부분 작업을 실행하세요.")
         if options["test_indices"]:
@@ -225,8 +237,8 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
         options["scope"] = {"testset": options["testset"], "solutions": runnable,
                             "test_indices": options["test_indices"],
                             "test_count": len(options["test_indices"]) if options["test_indices"] else len(tests)}
-        if options["all_testsets"]:
-            options["scope"].update(all_testsets=True, testsets=set_names, testset_counts=test_counts)
+        if options["all_testsets"] or options["testsets"] is not None:
+            options["scope"].update(all_testsets=set_names == list(doc["testsets"]), testsets=set_names, testset_counts=test_counts)
     if values.kind == "stress":
         # New requests must not reuse legacy runs that discarded passing I/O.
         options["stress_results_version"] = 1

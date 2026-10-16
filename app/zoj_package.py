@@ -11,6 +11,7 @@ from .domain import fail, references
 from .schema import Document
 from .storage import put_blob, read_blob
 from .sandbox import VENDOR
+from .invocation_scope import selected_testsets
 
 
 def statement_language_code(value):
@@ -32,7 +33,7 @@ def check_compatibility(doc, options):
         issues.append("editor-project.json은 ZOJ 작업 자료용 파일명입니다. 파일명을 바꾸세요.")
     if info["interactive"] or info["input_file"] != "stdin" or info["output_file"] != "stdout":
         issues.append("ZOJ는 현재 표준 입출력의 비대화형 문제를 지원합니다.")
-    if info["points_enabled"] or any(s["groups_enabled"] for s in doc["testsets"].values()):
+    if info["points_enabled"] or any(doc["testsets"][name]["groups_enabled"] for name in selected_testsets(doc, options, "package")):
         issues.append("그룹·부분 점수 채점은 현재 ZOJ 문제 ZIP에 표현할 수 없습니다.")
     if not 100 <= info["time_limit_ms"] <= 10000 or not 16 <= info["memory_limit_mb"] <= 1024:
         issues.append("ZOJ 제한 범위는 시간 100~10,000ms, 메모리 16~1,024MiB입니다.")
@@ -57,7 +58,10 @@ def check_compatibility(doc, options):
 
 def build_zoj_package(job, testsets):
     check_compatibility(job.document, job.options)
-    if not testsets.get(job.options["testset"]):
+    selected = selected_testsets(job.document, job.options, "package") if job.options.get("testsets") is not None else [job.options["testset"]]
+    if any(name not in testsets for name in selected):
+        raise ValueError("선택한 테스트 세트의 준비 결과가 없습니다.")
+    if not any(testsets.get(name) for name in selected):
         raise ValueError("ZOJ에 활성화할 테스트 세트에는 입력·정답이 있어야 합니다.")
     doc = copy.deepcopy(job.document)
     for name, tests in testsets.items():
@@ -119,16 +123,18 @@ def build_zoj_package(job, testsets):
             asset(name, content, category)
         examples = []
         count = 0
-        for version, (set_name, tests) in enumerate(testsets.items(), 1):
+        batches = [(True, [(name, test) for name in selected for test in testsets[name]])] if job.options.get("testsets") is not None else [
+            (name == job.options["testset"], [(name, test) for test in tests]) for name, tests in testsets.items()]
+        for version, (active, tests) in enumerate(batches, 1):
             cases = []
-            active = set_name == job.options["testset"]
-            for test in tests:
+            for ordinal, (set_name, test) in enumerate(tests, 1):
                 count += 1
                 if count > 10000:
                     raise ValueError("ZOJ 패키지는 전체 테스트 10,000개까지 지원합니다.")
                 inp, out = read_blob(test["input_sha"]), read_blob(test["answer_sha"])
-                path = f"testcases/v{version}/{test['index']:05d}"
-                cases.append({"display_order": test["index"], "input": file(path + ".in", inp), "output": file(path + ".out", out),
+                order = ordinal if job.options.get("testsets") is not None else test["index"]
+                path = f"testcases/v{version}/{order:05d}"
+                cases.append({"display_order": order, "input": file(path + ".in", inp), "output": file(path + ".out", out),
                     "time_limit_ms_override": None, "memory_limit_mb_override": None})
                 if active and test["sample"]:
                     from .statement_samples import display
@@ -178,7 +184,7 @@ def build_zoj_package(job, testsets):
         raise ValueError("패키지 크기가 Editor의 128MiB 한도를 초과했습니다.")
     return {"filename": job.problem_id[:8] + f"-r{job.revision}.zoj.zip", "format": "zoj", "size": destination.stat().st_size,
         "verified": bool(job.options["verify"]), "sha256": hashlib.sha256(destination.read_bytes()).hexdigest(),
-        "testset": job.options["testset"], "statement_language": job.options["statement_language"]}
+        "testset": job.options["testset"], "testsets": selected, "statement_language": job.options["statement_language"]}
 
 
 def restore_editor_snapshot(archive, db, problem_id):

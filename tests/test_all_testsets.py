@@ -24,6 +24,47 @@ def multiple_sets(owner, problem):
     return saved.json(), doc
 
 
+def test_selected_subset_is_saved_canonical_and_excludes_other_sets(owner, problem):
+    saved, _ = multiple_sets(owner, problem)
+    response = owner.post(f"/api/problems/{problem}/jobs", json={"kind": "verify", "version": saved["version"], "options": {
+        "testsets": ["samples", "tests", "samples"], "solutions": ["main.cpp"],
+    }})
+    assert response.status_code == 202, response.text
+    options = response.json()["options"]
+    assert options["testsets"] == ["tests", "samples"]
+    assert options["scope"] == {"testset": "tests", "all_testsets": False, "testsets": ["tests", "samples"],
+                                "testset_counts": {"tests": 3, "samples": 3}, "test_count": 6,
+                                "solutions": ["main.cpp"], "test_indices": []}
+    other = owner.post(f"/api/problems/{problem}/jobs", json={"kind": "verify", "version": saved["version"], "options": {
+        "testsets": ["samples"], "solutions": ["main.cpp"], "test_indices": [1],
+    }})
+    assert other.status_code == 202, other.text
+    assert other.json()["id"] != response.json()["id"]
+    assert other.json()["options"]["scope"]["test_count"] == 1
+
+
+@pytest.mark.parametrize("options,status", [
+    ({"testsets": []}, 422), ({"testsets": ["missing"]}, 400),
+    ({"testsets": ["tests", "samples"], "test_indices": [1]}, 400),
+    ({"testsets": ["tests"], "all_testsets": True}, 400),
+])
+def test_invalid_subset_never_queues_a_job(owner, problem, options, status):
+    saved, _ = multiple_sets(owner, problem)
+    response = owner.post(f"/api/problems/{problem}/jobs", json={"kind": "verify", "version": saved["version"], "options": options})
+    assert response.status_code == status, response.text
+    with SessionLocal() as db:
+        assert db.query(Job).count() == 0
+
+
+@pytest.mark.parametrize("kind", ["prepare", "verify", "package"])
+def test_preparation_subset_never_runs_unselected_scripts(problem, kind):
+    pipeline, seen = scoped_pipeline(problem, kind, testsets=["samples", "subtask1"])
+    pipeline.doc["testsets"]["tests"]["script"] = "invalid unselected script"
+    pipeline.prepare()
+    assert seen == ["samples", "subtask1"]
+    assert pipeline.result["processed_testsets"] == ["samples", "subtask1"]
+
+
 def test_all_sets_scope_is_explicit_saved_and_distinct_from_single_set(owner, problem):
     saved, doc = multiple_sets(owner, problem)
     options = {"all_testsets": True, "solutions": ["main.cpp"]}

@@ -112,6 +112,38 @@ def test_zoj_manifest_assets_samples_checksum_and_editor_roundtrip(owner,problem
     assert restored['problem']['folder_id']==folder
 
 
+def test_selected_sets_merge_into_one_active_zoj_dataset_and_restore_original_sets(owner, problem):
+    saved_package(problem, owner)
+    with SessionLocal() as db:
+        p = db.get(Problem, problem)
+        doc = copy.deepcopy(p.document)
+        doc['testsets']['tle'] = copy.deepcopy(doc['testsets']['tests'])
+        doc['testsets']['unused'] = copy.deepcopy(doc['testsets']['tests'])
+        job = Job(problem_id=problem, user_id=p.owner_id, kind='package', status='completed', document=doc,
+                  document_hash=document_hash(doc), workspace_version=0, revision=0,
+                  options={'export_format': 'zoj', 'testset': 'tests', 'testsets': ['tests', 'tle'],
+                           'statement_language': 'korean', 'verify': True})
+        db.add(job); db.flush()
+        package = build_zoj_package(job, {name: list(doc['testsets'][name]['tests'].values()) for name in ['tests', 'tle']})
+        path = get_settings().data_dir / 'packages' / (job.id + '.zip')
+        assert package['testsets'] == ['tests', 'tle']
+    with zipfile.ZipFile(path) as archive:
+        manifest = json.loads(archive.read('manifest.json'))
+        assert len(manifest['testcase_sets']) == 1
+        active = manifest['testcase_sets'][0]
+        assert active['is_active']
+        assert [case['display_order'] for case in active['testcases']] == [1, 2, 3, 4, 5, 6]
+        assert [archive.read(case['input']) for case in active['testcases'][:3]] == [archive.read(case['input']) for case in active['testcases'][3:]]
+        for item in manifest['files']:
+            assert hashlib.sha256(archive.read(item['path'])).hexdigest() == item['sha256']
+    response = owner.post('/api/imports?name=Selected&slug=selected', content=path.read_bytes())
+    assert response.status_code == 201, response.text
+    restored = owner.get('/api/problems/' + response.json()['id']).json()['document']
+    assert set(restored['testsets']) == {'tests', 'tle', 'unused'}
+    if os.environ.get('ZOJ_SELECTED_SETS_ARTIFACT'):
+        Path(os.environ['ZOJ_SELECTED_SETS_ARTIFACT']).write_bytes(path.read_bytes())
+
+
 @pytest.mark.parametrize("mode", ["points", "cpp20_checker"])
 def test_export_rejects_unsupported_judging_instead_of_silently_changing_it(owner,problem,mode):
     saved_package(problem,owner)
