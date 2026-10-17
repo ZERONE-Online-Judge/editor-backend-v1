@@ -223,3 +223,90 @@ def test_concurrent_acceptance_and_invitation_revocation_do_not_report_false_rem
         accepted,revoked=list(workers.map(accept_or_cancel,[True,False]))
     assert (accepted,revoked) in {(200,409),(409,200)}
     assert bool(member.get('/api/folders').json())==(accepted==200)
+
+
+def test_pending_invitation_permissions_apply_only_after_acceptance(owner, clients):
+    space = shared(owner)
+    member = clients('member')
+    pid = add_problem(owner, space)
+    invitation = owner.post(f'/api/shared-folders/{space}/invitations', json={
+        'email': 'member@example.com', 'role': 'EDITOR',
+    }).json()['id']
+    with SessionLocal() as db:
+        row = db.get(WorkspaceInvitation, invitation)
+        original = (row.email, row.created_at, row.expires_at)
+    endpoint = f'/api/shared-folders/{space}/invitations/{invitation}'
+    response = owner.put(endpoint, json={'permissions': ['execute', 'issues']})
+    assert response.status_code == 200, response.text
+    received = member.get('/api/shared-folders/invitations').json()[0]
+    assert received['permissions'] == ['execute', 'issues']
+    assert member.get(f'/api/problems/{pid}').status_code == 404
+    # Empty means read-only, even when the same invitation was originally EDITOR.
+    assert owner.put(endpoint, json={'permissions': []}).status_code == 200
+    with SessionLocal() as db:
+        row = db.get(WorkspaceInvitation, invitation)
+        assert (row.email, row.created_at, row.expires_at) == original
+        assert row.status == 'pending' and row.permissions == {}
+    assert member.post(f'/api/shared-folders/invitations/{invitation}/accept').status_code == 200
+    assert member.get(f'/api/problems/{pid}').json()['problem']['permissions'] == []
+    assert owner.put(endpoint, json={'permissions': ['issues']}).status_code == 409
+    assert member.get(f'/api/problems/{pid}').json()['problem']['permissions'] == []
+
+
+@pytest.mark.parametrize('state', ['expired', 'revoked', 'declined'])
+def test_invitation_permission_edit_cannot_revive_processed_invites(owner, clients, state):
+    space = shared(owner)
+    member = clients('member')
+    invitation = owner.post(f'/api/shared-folders/{space}/invitations', json={
+        'email': 'member@example.com', 'permissions': ['issues'],
+    }).json()['id']
+    with SessionLocal() as db:
+        row = db.get(WorkspaceInvitation, invitation)
+        if state == 'expired':
+            row.expires_at = now() - 1
+        else:
+            row.status = state
+        db.commit()
+    endpoint = f'/api/shared-folders/{space}/invitations/{invitation}'
+    assert owner.put(endpoint, json={'role': 'ADMIN'}).status_code == 409
+    assert member.get('/api/shared-folders/invitations').json() == []
+    assert member.post(f'/api/shared-folders/invitations/{invitation}/accept').status_code == 409
+
+
+def test_invitation_permission_edit_checks_actor_scope_and_grant_sponsor(owner, clients):
+    from test_feature_permissions import team
+    space = shared(owner)
+    manager = clients('manager')
+    ident = team(owner, manager, space, ['manage_access', 'issues'], 'manager')
+    recipient = clients('recipient')
+    viewer = clients('viewer')
+    team(owner, viewer, space, [], 'viewer')
+    invitation = owner.post(f'/api/shared-folders/{space}/invitations', json={
+        'email': 'recipient@example.com', 'permissions': ['issues'],
+    }).json()['id']
+    endpoint = f'/api/shared-folders/{space}/invitations/{invitation}'
+    assert viewer.put(endpoint, json={'permissions': []}).status_code == 403
+    assert recipient.put(endpoint, json={'permissions': []}).status_code == 404
+    assert manager.put(endpoint, json={'permissions': ['publish']}).status_code == 403
+    assert owner.put(endpoint, json={'permissions': ['publish']}).status_code == 200
+    assert manager.put(endpoint, json={'permissions': []}).status_code == 403
+    assert owner.put(endpoint, json={'permissions': ['manage_access']}).status_code == 200
+    assert manager.put(endpoint, json={'permissions': []}).status_code == 403
+    assert owner.put(endpoint, json={'permissions': ['issues']}).status_code == 200
+    assert manager.put(endpoint, json={'permissions': ['issues']}).status_code == 200
+    # The current grant is sponsored by the editing manager and rechecked on accept.
+    assert owner.put(f'/api/shared-folders/{space}/members/{ident}', json={'permissions': []}).status_code == 200
+    assert recipient.post(f'/api/shared-folders/invitations/{invitation}/accept').status_code == 409
+    assert owner.put(endpoint, json={'permissions': ['issues']}).status_code == 200
+    assert recipient.post(f'/api/shared-folders/invitations/{invitation}/accept').status_code == 200
+
+
+def test_invitation_permission_edit_rejects_wrong_workspace_and_unknown_permissions(owner, clients):
+    first = shared(owner, 'First')
+    second = shared(owner, 'Second')
+    invitation = owner.post(f'/api/shared-folders/{first}/invitations', json={
+        'email': 'member@example.com', 'permissions': [],
+    }).json()['id']
+    assert owner.put(f'/api/shared-folders/{second}/invitations/{invitation}', json={'permissions': []}).status_code == 404
+    endpoint = f'/api/shared-folders/{first}/invitations/{invitation}'
+    assert owner.put(endpoint, json={'permissions': ['unknown']}).status_code == 422

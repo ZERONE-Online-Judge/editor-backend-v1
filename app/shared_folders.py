@@ -152,6 +152,29 @@ class ChangeRole(Strict):
     permissions: list[Permission] | None = Field(default=None, max_length=16)
 
 
+@router.put("/{workspace_id}/invitations/{invitation_id}")
+def change_invitation(workspace_id: str, invitation_id: str, values: ChangeRole, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
+    space, actor_role = space_access(db, user, workspace_id, admin=True, lock=True)
+    row = db.get(WorkspaceInvitation, invitation_id)
+    if not row or row.workspace_id != workspace_id:
+        fail("invitation_not_found", "초대를 찾을 수 없습니다.", 404)
+    if row.status != "pending" or row.expires_at <= now():
+        fail("invitation_processed", "만료되거나 이미 처리된 초대입니다. 수락한 사용자는 구성원 목록에서 권한을 변경하세요.", 409)
+    if actor_role != "OWNER" and "manage_access" in grants(row, folder=True):
+        fail("owner_required", "관리자 초대 권한은 소유자만 변경할 수 있습니다.", 403)
+    actor = workspace_access(db, workspace_id, user.id)
+    requested = set(values.permissions) if values.permissions is not None else grants(values, folder=True)
+    delegate(actor, grants(row, folder=True), folder=True)
+    delegate(actor, requested, folder=True)
+    row.role = "CUSTOM" if values.permissions is not None else values.role
+    row.permissions = stored(requested)
+    # Acceptance rechecks the administrator who approved the current grant.
+    # Editing does not renew the invitation or grant membership in advance.
+    row.inviter_id = user.id
+    db.commit()
+    return {"ok": True}
+
+
 @router.put("/{workspace_id}/members/{user_id}")
 def change_role(workspace_id: str, user_id: str, values: ChangeRole, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
     space, actor_role = space_access(db, user, workspace_id, admin=True, lock=True)
