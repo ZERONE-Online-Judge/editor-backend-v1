@@ -120,13 +120,13 @@ def build_package(job, testsets, report=None):
         from .zoj_package import build_zoj_package
         return build_zoj_package(job, testsets)
     doc = copy.deepcopy(job.document)
-    for name, tests in testsets.items():
+    for name, tests in (testsets.items() if job.options.get("verify", True) or job.options.get("export_format") == "linux" else []):
         doc["testsets"][name]["tests"] = {str(t["index"]): {key: value for key, value in t.items() if key in {"index", "input_sha", "answer_sha", "command", "group", "points", "description", "sample", "statement_input", "statement_output", "verify_statement_io"}} for t in tests}
         doc["testsets"][name]["script"] = ""
     destination = get_settings().data_dir / "packages" / (job.id + ".zip")
     destination.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("editor.json", json.dumps({"format": "zoj-editor-v1", "revision": job.revision, "source_document_hash": job.document_hash, "document": doc}, ensure_ascii=False))
+        archive.writestr("editor.json", json.dumps({"format": "zoj-editor-v1", "revision": job.revision, "source_document_hash": job.document_hash, "verified": bool(job.options["verify"]), "document": doc}, ensure_ascii=False))
         archive.writestr("problem.xml", descriptor(job, testsets))
         for sha in references(doc):
             archive.writestr("blobs/" + sha, read_blob(sha))

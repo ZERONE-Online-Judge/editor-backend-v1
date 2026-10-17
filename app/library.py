@@ -1,4 +1,4 @@
-"""ZOJ-initiated access to the caller's own Editor projects only."""
+"""ZOJ-initiated access to projects the authenticated caller can edit."""
 import base64
 import hashlib
 import hmac
@@ -16,7 +16,7 @@ from .domain import document_hash, fail, workspace
 from .jobs import JobOptions, JobRequest, _create_job
 from .schema import Strict
 from .folders import accessible_folders
-from .folder_access import workspace_role
+from .folder_access import effective_access, writable_problem_ids, workspace_role
 from .db import SharedPlacement
 
 router = APIRouter(prefix="/api/zoj-library", tags=["ZOJ library"])
@@ -58,10 +58,11 @@ async def caller(request: Request, db: Session = Depends(session_dependency)):
     return email, db.scalar(select(User).where(func.lower(User.email) == email))
 
 
-def own_problem(db, user, problem_id):
+def editable_problem(db, user, problem_id):
     row = db.get(Problem, problem_id) if user else None
-    if not row or row.owner_id != user.id or row.deleted:
-        fail("library_problem_not_found", "내 계정의 문제를 찾을 수 없습니다.", 404)
+    access = effective_access(db, problem_id, user.id) if row else None
+    if not row or row.deleted or not access or access.role not in {"OWNER", "WRITE"}:
+        fail("library_problem_not_found", "쓰기 권한이 있는 문제를 찾을 수 없습니다.", 404)
     return row
 
 
@@ -82,7 +83,7 @@ def list_projects(q: str = Query(default="", max_length=200), offset: int = Quer
         return result
     available = accessible_folders(db, user)
     shared = select(SharedPlacement.problem_id).join(Folder, Folder.id == SharedPlacement.folder_id).where(Folder.id.in_([f.id for f in available if f.workspace_id]))
-    query = select(Problem).where(Problem.owner_id == user.id, Problem.deleted.is_(False))
+    query = select(Problem).where(Problem.id.in_(writable_problem_ids(user.id)), Problem.deleted.is_(False))
     if folder != "all":
         if folder == "root":
             classified = select(Placement.problem_id).where(Placement.user_id == user.id, Placement.folder_id.is_not(None))
@@ -121,7 +122,7 @@ class PackageOptions(Strict):
 @router.post("/problems/{problem_id}/packages", status_code=202)
 def prepare_package(problem_id: str, request: Request, identity=Depends(caller), db: Session = Depends(session_dependency)):
     _, user = identity
-    problem = own_problem(db, user, problem_id)
+    problem = editable_problem(db, user, problem_id)
     try:
         values = PackageOptions.model_validate(json.loads(request.state.library_body))
     except ValueError:
@@ -133,7 +134,7 @@ def prepare_package(problem_id: str, request: Request, identity=Depends(caller),
 
 
 def own_package(db, user, problem_id, job_id):
-    problem = own_problem(db, user, problem_id)
+    problem = editable_problem(db, user, problem_id)
     job = db.get(Job, job_id)
     if not job or job.problem_id != problem_id or job.kind != "package" or job.options.get("export_format") != "zoj":
         fail("library_package_not_found", "검증 패키지를 찾을 수 없습니다.", 404)

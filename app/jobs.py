@@ -134,6 +134,11 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
     if not writer and values.kind in {"prepare", "package"}:
         fail("forbidden", "검수자는 입력·정답 생성이나 패키지 생성을 할 수 없습니다.", 403)
     options = values.options.model_dump()
+    archive_only = values.kind == "package" and not options["verify"]
+    if archive_only:
+        # Do not reuse legacy jobs that ran generators or validators despite
+        # opting out of verification.
+        options["package_export_version"] = 1
     if not writer and options["auto_apply"]:
         fail("forbidden", "검수 결과는 문제 자료에 자동 반영할 수 없습니다.", 403)
     if not writer and not translator_render and options["snapshot"] == "working_copy":
@@ -192,12 +197,15 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
     if values.kind == "package" and options["export_format"] == "zoj":
         from .zoj_package import check_compatibility
         check_compatibility(doc, options)
-    if values.kind in {"package", "verify"}:
+    if values.kind == "verify" or (values.kind == "package" and options["verify"]):
         from .expectations import VERSION
         options["expectations_version"] = VERSION
         blockers = [c for c in cautions(doc) if c["blocking"]]
         if blockers:
             fail("not_ready", "필수 자료를 먼저 준비하세요.", cautions=blockers)
+    if archive_only:
+        from .package_export import stored_testsets
+        stored_testsets(doc, options)
     options["runtime_revision"] = get_settings().runtime_revision
     if values.kind == "verify" and options["all_testsets"]:
         if not doc["testsets"]:
@@ -272,7 +280,7 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
         if options["minimize"] and doc["info"]["interactive"]:
             fail("invalid_stress_minimize", "자동 축소는 비인터랙티브 입력에서 사용할 수 있습니다.")
         options["stress_configuration"] = stress_configuration(doc, options)
-    if values.kind == "package" and options["export_format"] == "linux":
+    if values.kind == "package" and options["export_format"] == "linux" and not archive_only:
         if options["execution_backend"] not in {None, "editor"}:
             fail("invalid_replay_backend", "Linux 재현 패키지는 Editor 격리 실행을 선택하세요. ZOJ 대회 채점기의 언어별 보정을 재현했다고 표시하지 않습니다.")
         options["execution_backend"] = "editor"
@@ -283,7 +291,7 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
         from .judge_bridge import compatible, capabilities
         compatible(doc, options, values.kind)
         options["judge_revision"] = capabilities(user)["runtime_revision"]
-    options["execution_transport"] = get_settings().execution_transport
+    options["execution_transport"] = "archive" if archive_only else get_settings().execution_transport
     if options["execution_transport"] == "agent":
         from .judge_bridge import capabilities
         execution = capabilities(user).get("execution", {})

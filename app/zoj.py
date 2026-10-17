@@ -1,4 +1,4 @@
-"""Publish a verified immutable ZIP using the server's verified account identity."""
+"""Publish an immutable ZIP using the authenticated writer's ZOJ identity."""
 import base64
 import hashlib
 import hmac
@@ -95,10 +95,10 @@ def publications(problem_id: str, user: User = Depends(current_user), db: Sessio
 
 @router.post("/problems/{problem_id}/publish-zoj")
 def publish(problem_id: str, values: Publish, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
-    problem, _ = authorize(db, problem_id, user, owner=True)
+    problem, _ = authorize(db, problem_id, user, write=True)
     job = db.get(Job, values.job_id)
-    if not job or job.problem_id != problem_id or job.kind != "package" or job.status != "completed" or job.result.get("package", {}).get("format") != "zoj" or not job.result["package"].get("verified"):
-        fail("zoj_package_required", "검증을 통과한 ZOJ 형식 패키지를 먼저 만드세요.", 409)
+    if not job or job.problem_id != problem_id or job.kind != "package" or job.status != "completed" or job.result.get("package", {}).get("format") != "zoj":
+        fail("zoj_package_required", "ZOJ 형식 패키지를 먼저 만드세요.", 409)
     wc = db.get(WorkingCopy, (problem_id, user.id))
     if job.document_hash != document_hash(problem.document) or job.revision != problem.revision or (wc and document_hash(wc.document) != job.document_hash):
         fail("stale_package", "문제가 변경되었습니다. 커밋 후 ZOJ 패키지를 다시 만드세요.", 409)

@@ -161,11 +161,11 @@ def test_export_rejects_unsupported_judging_instead_of_silently_changing_it(owne
     assert r.status_code==400 and r.json()['error']['code']=='zoj_incompatible'
 
 
-def test_publish_checks_owner_current_revision_and_artifact_and_reuses_request(owner,clients,problem,monkeypatch):
+def test_publish_checks_write_access_revision_and_artifact_and_reuses_request(owner,clients,problem,monkeypatch):
     job_id,path=saved_package(problem,owner)
     writer=clients('writer')
     with SessionLocal() as db:
-        db.add(Access(problem_id=problem,user_id=db.query(User).filter_by(handle='writer').one().id,role='WRITE'));db.commit()
+        db.add(Access(problem_id=problem,user_id=db.query(User).filter_by(handle='writer').one().id,role='READ'));db.commit()
     values={'job_id':job_id,'contest_id':str(uuid.uuid4()),'division_id':str(uuid.uuid4()),'problem_code':'A'}
     calls=[]
     def send(method,route,user,package=None,sha=None):
@@ -178,6 +178,20 @@ def test_publish_checks_owner_current_revision_and_artifact_and_reuses_request(o
     second=owner.post('/api/problems/'+problem+'/publish-zoj',json=values);assert second.status_code==200
     assert calls[0][1]==calls[1][1] and calls[0][2]=='author@example.com'
     assert len(owner.get('/api/problems/'+problem+'/zoj-publications').json())==1
+    with SessionLocal() as db:
+        access = db.query(Access).filter_by(problem_id=problem, user_id=db.query(User).filter_by(handle='writer').one().id).one()
+        access.role = 'WRITE'
+        # The author can share an unverified package with a writer; that writer
+        # must send it under their own ZOJ identity, never the author's.
+        row = db.get(Job, job_id)
+        row.result = {**row.result, 'package': {**row.result['package'], 'verified': False}}
+        db.commit()
+    assert writer.post('/api/problems/'+problem+'/publish-zoj',json=values).status_code==200
+    assert calls[-1][2] == 'writer@example.com'
+    with SessionLocal() as db:
+        db.query(Access).filter_by(problem_id=problem, user_id=db.query(User).filter_by(handle='writer').one().id).one().role = 'READ'
+        db.commit()
+    assert writer.post('/api/problems/'+problem+'/publish-zoj',json=values).status_code==403
     path.write_bytes(b'changed')
     assert owner.post('/api/problems/'+problem+'/publish-zoj',json=values).status_code==409
     with SessionLocal() as db:
@@ -190,6 +204,43 @@ def test_unconfigured_service_and_fixed_server_targets(owner):
     from app.config import Settings
     for url in ['https://zoj.kr/api?key=1','http://user:pass@host/api','https://zoj.kr/api/../auth']:
         with pytest.raises(ValueError): Settings(zoj_api_url=url)
+
+
+@pytest.mark.parametrize('role,allowed', [('EDITOR',True), ('ADMIN',True), ('REVIEWER',False), ('TRANSLATOR',False), ('VIEWER',False)])
+def test_publish_uses_current_inherited_write_access_and_callers_zoj_identity(owner, clients, problem, monkeypatch, role, allowed):
+    from test_shared_folders import shared, join
+    job_id, _ = saved_package(problem, owner)
+    space = shared(owner)
+    member = clients('member')
+    join(owner, member, space, role, 'member')
+    assert owner.post('/api/folders/move-problems', json={'problem_ids':[problem], 'folder_id':space, 'share_confirmed':True}).status_code == 200
+    calls = []
+    def send(method, route, user, package=None, sha=None):
+        calls.append(user.email)
+        return {'problem_id':str(uuid.uuid4()), 'title':'Shared'}
+    monkeypatch.setattr(zoj, 'remote', send)
+    values = {'job_id':job_id,'contest_id':str(uuid.uuid4()),'division_id':str(uuid.uuid4()),'problem_code':'A'}
+    response = member.post('/api/problems/'+problem+'/publish-zoj',json=values)
+    assert response.status_code == (200 if allowed else 403), response.text
+    assert calls == (['member@example.com'] if allowed else [])
+    if allowed:
+        ident = member.get('/api/auth/me').json()['id']
+        assert owner.put(f'/api/shared-folders/{space}/members/{ident}',json={'role':'VIEWER'}).status_code == 200
+        assert member.post('/api/problems/'+problem+'/publish-zoj',json=values).status_code == 403
+
+
+def test_write_access_never_bypasses_zoj_contest_permissions(owner, clients, problem, monkeypatch):
+    from app.domain import fail
+    job_id, _ = saved_package(problem, owner)
+    writer = clients('writer')
+    assert owner.put(f'/api/problems/{problem}/accesses', json={'login':'writer','role':'WRITE'}).status_code == 200
+    def denied(method, route, user, package=None, sha=None):
+        assert user.email == 'writer@example.com'
+        fail('scope_denied', 'ZOJ 대회 문제 등록 권한이 없습니다.', 403)
+    monkeypatch.setattr(zoj, 'remote', denied)
+    values = {'job_id':job_id,'contest_id':str(uuid.uuid4()),'division_id':str(uuid.uuid4()),'problem_code':'A'}
+    response = writer.post(f'/api/problems/{problem}/publish-zoj',json=values)
+    assert response.status_code == 403 and response.json()['error']['code'] == 'scope_denied'
 
 
 def test_editor_restore_survives_zoj_reexported_file_paths(owner,problem):

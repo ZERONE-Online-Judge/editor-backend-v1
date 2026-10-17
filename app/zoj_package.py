@@ -29,6 +29,8 @@ def statement_language_code(value):
 def check_compatibility(doc, options):
     issues = []
     info = doc["info"]
+    if not doc["checker"]:
+        issues.append("ZOJ에서 사용할 checker를 선택하세요.")
     if "editor-project.json" in doc["files"] or "editor-project.json" in doc["solutions"]:
         issues.append("editor-project.json은 ZOJ 작업 자료용 파일명입니다. 파일명을 바꾸세요.")
     if info["interactive"] or info["input_file"] != "stdin" or info["output_file"] != "stdout":
@@ -144,7 +146,7 @@ def build_zoj_package(job, testsets):
             if sha not in mappings:
                 asset("blob-" + sha + ".bin", read_blob(sha), "package-files/package-resource")
         # The source snapshot preserves Editor-only metadata for reimport.
-        snapshot = {"format": "zoj-editor-source-v1", "document": doc, "source_document": job.document,
+        snapshot = {"format": "zoj-editor-source-v1", "verified": bool(job.options["verify"]), "document": doc, "source_document": job.document,
                     "revision": job.revision, "document_hash": job.document_hash, "blobs": dict(mappings)}
         encoded_snapshot = json.dumps(snapshot, ensure_ascii=False).encode()
         if len(encoded_snapshot) > get_settings().max_upload_bytes:

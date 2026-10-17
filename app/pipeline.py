@@ -304,14 +304,14 @@ class Pipeline:
 
     def run(self):
         try:
+            if self.job.kind == "package" and not self.job.options.get("verify", True):
+                from .package_export import export_package
+                self.result = export_package(self.job, self.publish, self.sandbox.check_cancelled)
+                return self.result
             if self.job.kind == "prepare":
                 self.prepare()
             elif self.job.kind in {"verify", "package"}:
-                if self.job.kind == "package" and not self.job.options["verify"]:
-                    self.prepare()
-                    self.result["verified"] = False
-                else:
-                    self.verify()
+                self.verify()
                 if self.job.kind == "package":
                     from .packages import build_package
                     if self.job.options["verify"] and not self.result["verified"]:

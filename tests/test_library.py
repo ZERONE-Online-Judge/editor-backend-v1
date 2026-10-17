@@ -49,13 +49,17 @@ def test_signed_identity_purpose_expiry_replay_and_body(client, owner, problem):
     assert client.get(ROOT).status_code == 401
 
 
-def test_library_lists_only_own_projects_not_shared_access(client, owner, problem, clients):
+def test_library_includes_write_access_and_excludes_read_access(client, owner, problem, clients):
     stranger = clients("stranger")
     other = stranger.post("/api/problems", json={"name": "private", "slug": "private"}).json()["id"]
+    saved_package(other, stranger)
     stranger.put(f"/api/problems/{other}/accesses", json={"login": "author", "role": "WRITE"})
     rows = signed(client, "GET", ROOT).json()
-    assert [r["id"] for r in rows["problems"]] == [problem]
+    assert {r["id"] for r in rows["problems"]} == {problem, other}
     assert rows["email"] == "author@example.com" and rows["account_exists"]
+    assert signed(client, "POST", ROOT + "/" + other + "/packages", values={}).status_code == 202
+    stranger.put(f"/api/problems/{other}/accesses", json={"login": "author", "role": "READ"})
+    assert [r["id"] for r in signed(client, "GET", ROOT).json()["problems"]] == [problem]
     assert signed(client, "POST", ROOT + "/" + other + "/packages", values={}).status_code == 404
     unknown = signed(client, "GET", ROOT, "missing@example.com").json()
     assert unknown["account_exists"] is False and unknown["problems"] == []
@@ -119,17 +123,21 @@ def test_download_checks_owner_current_revision_verification_and_hash(client, ow
     assert signed(client, "GET", path).json()["error"]["code"] == "library_package_stale"
 
 
-def test_shared_folders_keep_zoj_library_owner_only(client,owner,problem,clients):
+def test_shared_folder_writers_can_use_library_until_permission_is_removed(client,owner,problem,clients):
     from test_shared_folders import shared,join,add_problem
     space=shared(owner);member=clients('member');join(owner,member,space,'EDITOR','member')
     peer=add_problem(member,space,'peer-owned')
     assert owner.post('/api/folders/move-problems',json={'problem_ids':[problem],'folder_id':space,'share_confirmed':True}).status_code==200
     result=signed(client,'GET',ROOT+'?folder='+space).json()
-    assert [p['id'] for p in result['problems']]==[problem]
-    assert result['problems'][0]['folder_id']==space
+    assert {p['id'] for p in result['problems']}=={problem,peer}
+    assert all(p['folder_id']==space for p in result['problems'])
     assert signed(client,'GET',ROOT+'?folder=root').json()['total']==0
     result=signed(client,'GET',ROOT+'?folder='+space,'member@example.com').json()
-    assert [p['id'] for p in result['problems']]==[peer]
+    assert {p['id'] for p in result['problems']}=={problem,peer}
+    saved_package(problem, owner)
+    assert signed(client,'POST',ROOT+'/'+problem+'/packages','member@example.com',{}).status_code==202
+    assert owner.put('/api/shared-folders/'+space+'/members/'+member.get('/api/auth/me').json()['id'],json={'role':'VIEWER'}).status_code == 200
+    assert [p['id'] for p in signed(client,'GET',ROOT,'member@example.com').json()['problems']]==[peer]
     assert signed(client,'POST',ROOT+'/'+problem+'/packages','member@example.com',{}).status_code==404
 
 

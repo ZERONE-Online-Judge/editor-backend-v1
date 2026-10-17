@@ -100,7 +100,8 @@ def test_no_permanent_resharing_or_owner_privilege_via_shared_editor(owner,clien
     assert member.put(f'/api/problems/{pid}/accesses',json={'login':'member','role':'WRITE'}).status_code==403
     assert member.post('/api/folders/move-problems',json={'problem_ids':[pid],'folder_id':None,'share_confirmed':True}).status_code==403
     assert member.patch(f'/api/problems/{pid}/deleted',json={'deleted':True}).status_code==403
-    assert member.post(f'/api/problems/{pid}/publish-zoj',json={'job_id':'a'*32,'contest_id':'12345678-1234-1234-1234-123456789abc','division_id':'12345678-1234-1234-1234-123456789abc','problem_code':'A'}).status_code==403
+    response = member.post(f'/api/problems/{pid}/publish-zoj',json={'job_id':'a'*32,'contest_id':'12345678-1234-1234-1234-123456789abc','division_id':'12345678-1234-1234-1234-123456789abc','problem_code':'A'})
+    assert response.status_code == 409 and response.json()['error']['code'] == 'zoj_package_required'
     assert member.post('/api/folders',json={'name':'Private'}).status_code==201
     assert owner.put(f'/api/problems/{problem}/accesses',json={'login':'member','role':'WRITE'}).status_code==200
     assert member.post('/api/folders/move-problems',json={'problem_ids':[problem],'folder_id':space,'share_confirmed':True}).status_code==403

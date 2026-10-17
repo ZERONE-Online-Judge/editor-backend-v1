@@ -50,6 +50,15 @@ def visible_problem_ids(db, user_id):
         Folder.workspace_id.in_(workspace_ids(db, user_id)))
 
 
+def writable_problem_ids(user_id):
+    direct = select(Access.problem_id).where(Access.user_id == user_id, Access.role.in_({"OWNER", "WRITE"}))
+    spaces = select(SharedWorkspace.id).where(or_(SharedWorkspace.owner_id == user_id,
+        SharedWorkspace.id.in_(select(WorkspaceMember.workspace_id).where(
+            WorkspaceMember.user_id == user_id, WorkspaceMember.role.in_(WRITE_ROLES)))))
+    inherited = select(SharedPlacement.problem_id).join(Folder, Folder.id == SharedPlacement.folder_id).where(Folder.workspace_id.in_(spaces))
+    return direct.union(inherited)
+
+
 def can_manage_access(db, problem, user):
     # Shared editors cannot turn a revocable folder grant into permanent access.
     return problem.owner_id == user.id or shared_folder(db, problem.id) is None

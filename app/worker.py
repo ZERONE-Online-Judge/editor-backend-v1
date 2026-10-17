@@ -67,8 +67,12 @@ def process_job(job):
     status = "completed"
     pipeline = None
     try:
-        pipeline = Pipeline(job, publish, check)
-        latest = pipeline.run()
+        if job.kind == "package" and not job.options.get("verify", True):
+            from .package_export import export_package
+            latest = export_package(job, publish, check)
+        else:
+            pipeline = Pipeline(job, publish, check)
+            latest = pipeline.run()
     except Cancelled as error:
         status = "cancelled"
         latest = copy.deepcopy(getattr(pipeline, "result", latest))
