@@ -121,7 +121,7 @@ memory_mb = config.get("memory_mb", 256)
 cpu_ms = config.get("cpu_ms", 1000)
 output_bytes = config.get("output_bytes", 1048576)
 wall_seconds = config.get("wall_seconds", cpu_ms / 1000 * 5 + 3)
-env = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "HOME": "/tmp", "TMPDIR": "/tmp"}
+env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8", "HOME": "/tmp", "TMPDIR": "/tmp"}
 
 if config.get("interactive"):
     solution_dir, interactor_dir = root / "solution", root / "interactor"
@@ -179,7 +179,7 @@ result["output_base64"] = encoded(root / ".output", output_bytes)
 artifacts = {}
 if config.get("compile_language") and result["status"] == "ok" and result["exit_code"] == 0:
     language = config["compile_language"]
-    selected = [run_dir / "program"] if language in {"cpp17", "cpp20", "c17", "c99"} else list(run_dir.rglob("*.class")) if language in {"java17", "java8"} else []
+    selected = [run_dir / "program"] if language in {"cpp17", "cpp20", "c17", "c99"} else list(run_dir.rglob("*.class")) if language in {"java17", "java8"} else [run_dir / "program.jar"] if language == "kotlin" else []
     total = 0
     for file in selected:
         if file.is_symlink() or not file.is_file():

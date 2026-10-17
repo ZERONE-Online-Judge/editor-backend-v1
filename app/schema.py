@@ -67,7 +67,7 @@ class Statement(Strict):
 
 
 class ResourcePolicy(Strict):
-    languages: list[Literal["cpp17", "cpp20", "c17", "c99", "python3", "java17", "java8"]] = Field(min_length=1, max_length=7)
+    languages: list[Literal["cpp17", "cpp20", "c17", "c99", "python3", "pypy3", "kotlin", "java17", "java8"]] = Field(min_length=1, max_length=9)
     targets: list[Literal["SOLUTION"]] = Field(default_factory=lambda:["SOLUTION"], min_length=1, max_length=1)
     stages: list[Literal["COMPILE"]] = Field(default_factory=lambda:["COMPILE"], min_length=1, max_length=1)
 
@@ -75,7 +75,7 @@ class ResourcePolicy(Strict):
 class SourceFile(Strict):
     name: str
     kind: Literal["source", "resource", "aux", "statement"] = "source"
-    language: Literal["cpp17", "cpp20", "c17", "c99", "python3", "java17", "java8", "text"] = "cpp17"
+    language: Literal["cpp17", "cpp20", "c17", "c99", "python3", "pypy3", "kotlin", "java17", "java8", "text"] = "cpp17"
     compile_with_solution: bool = False
     resource_policy: ResourcePolicy | None = None
     attach_to_build: bool | None = None

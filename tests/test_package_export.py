@@ -126,3 +126,21 @@ def test_unprepared_zoj_tests_are_reported_before_queueing(owner, problem):
     assert "tests #2" in response.json()["error"]["message"]
     with SessionLocal() as db:
         assert not db.query(Job).count()
+
+
+@pytest.mark.parametrize('language,name,code',[('pypy3','main.py','print(3)'),('kotlin','Main.kt','fun main(){println(3)}')])
+def test_icpc_solution_language_survives_zoj_export_and_import(owner,problem,monkeypatch,language,name,code):
+    with SessionLocal() as db:
+        row=db.get(Problem,problem);doc=populate(db,row)
+        blob=put_blob(db,problem,code.encode())
+        doc['solutions']={name:{**SourceFile(name=name,language=language,**blob).model_dump(),'tag':'MA','extra_tags':{}}}
+        row.document=doc;db.get(Revision,(problem,0)).document=copy.deepcopy(doc);db.commit()
+    archive,content=run_export(owner,problem,monkeypatch)
+    with archive:
+        manifest=json.loads(archive.read('manifest.json'))
+        verification=next(a for a in manifest['assets'] if a['category']=='verification-solutions/accepted')
+        assert verification['source_language']==language
+    imported=owner.post('/api/imports?name=Imported&slug=imported-'+language,content=content)
+    assert imported.status_code==201,imported.text
+    restored=owner.get('/api/problems/'+imported.json()['id']).json()['document']
+    assert restored['solutions'][name]['language']==language

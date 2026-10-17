@@ -220,9 +220,14 @@ class Sandbox:
             package = re.search(r"^\s*package\s+([A-Za-z_][A-Za-z0-9_.]*)\s*;", text, re.M)
             entry = source.get("entry_class") or (package.group(1) + "." if package else "") + classname
             cmd = ["java", "-XX:ActiveProcessorCount=1", "-XX:+UseSerialGC", "-Xss1m", entry]
-        elif language == "python3":
-            argv = ["python3", "-m", "py_compile", name]
-            cmd = ["python3", name]
+        elif language == "kotlin":
+            units = [r["name"] for r in resources if is_solution and r.get("compile_with_solution") and r["language"] == "kotlin" and r["name"] != name]
+            argv = ["kotlinc", "-J-Xmx512m", "-J-XX:ActiveProcessorCount=1", name, *units, "-include-runtime", "-d", "program.jar"]
+            cmd = ["/usr/local/lib/icpc-jdk/bin/java", "-Dfile.encoding=UTF-8", "-XX:ActiveProcessorCount=1", "-XX:+UseSerialGC", "-Xss64m", "-jar", "program.jar"]
+        elif language in {"python3", "pypy3"}:
+            interpreter = "pypy3" if language == "pypy3" else "python3"
+            argv = [interpreter, "-m", "py_compile", name]
+            cmd = [interpreter, name]
         else:
             raise SandboxError("실행 가능한 언어를 선택하세요.")
         result = self.execute(folder, argv, cpu_ms=30000, memory_mb=2048, output_bytes=64 * 1024 * 1024, wall_seconds=60, compile_language=language)
@@ -261,8 +266,10 @@ class Sandbox:
         if input_file != "stdin":
             (folder / safe_name(input_file)).write_bytes(stdin)
         command = list(program.command)
-        if program.language in {"java17", "java8"}:
-            command.insert(-1, f"-Xmx{max(4, memory_mb - 64)}m")
+        if program.language == "kotlin":
+            command[1:1] = [f"-Xms{memory_mb}m", f"-Xmx{memory_mb}m"]
+        elif program.language in {"java17", "java8"}:
+            command.insert(1, f"-Xmx{max(4, memory_mb - 64)}m")
         result = self.execute(folder, [*command, *args], stdin, cpu_ms, memory_mb, output_bytes, output_file=output_file)
         return result
 
@@ -276,8 +283,10 @@ class Sandbox:
         (interactor_dir / "input").write_bytes(stdin)
         (interactor_dir / "answer").write_bytes(answer)
         command = list(program.command)
-        if program.language in {"java17", "java8"}:
-            command.insert(-1, f"-Xmx{max(4, memory_mb - 64)}m")
+        if program.language == "kotlin":
+            command[1:1] = [f"-Xms{memory_mb}m", f"-Xmx{memory_mb}m"]
+        elif program.language in {"java17", "java8"}:
+            command.insert(1, f"-Xmx{max(4, memory_mb - 64)}m")
         result = self.execute(folder, command, cpu_ms=cpu_ms, memory_mb=memory_mb,
             interactive={"interactive": True, "interactor_command": [*actor.command, "input", "transcript", "answer"]})
         return result
