@@ -31,7 +31,7 @@ def preparation_status(problem_id: str, user: User = Depends(current_user), db: 
 
 class TemporarySolution(Strict):
     name: str = Field(min_length=1, max_length=100)
-    language: Literal["cpp17", "cpp20", "c17", "c99", "python3", "java17", "java8"] = "python3"
+    language: Literal["cpp17", "cpp20", "c17", "c99", "python3", "pypy3", "kotlin", "java17", "java8"] = "python3"
     tag: Literal["OK", "RJ", "TL", "TO", "TM", "WA", "PE", "ML", "NR", "RE"] = "OK"
     content: str = Field(min_length=1, max_length=1048576)
 

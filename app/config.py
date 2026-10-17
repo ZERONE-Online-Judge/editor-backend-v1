@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     execution_concurrency: int = Field(default=4, ge=1, le=16)
     job_timeout_seconds: int = Field(default=1800, ge=1, le=86400)
     stress_max_seconds: int = Field(default=1800, ge=1, le=86400)
-    runtime_revision: str = "editor-runtime-0.1.2"
+    runtime_revision: str = "editor-runtime-0.2.0-icpc"
     judge_backend: Literal["editor", "zoj"] = "editor"
     judge_concurrency: int = 3
     judge_request_retry_seconds: float = Field(default=120, ge=1, le=600)

@@ -208,7 +208,7 @@ def test_language_diagnostics_group_files_and_respect_selected_scope(problem,tmp
     assert len(detail['unsupported_solutions'])==7
     assert all(row['label']=='C++20' for row in detail['unsupported_solutions'])
     assert '7개' in detail['message'] and 'wrong-0' not in detail['message']
-    assert len(detail['supported_languages'])==4 and detail['suggested_backend']=='editor'
+    assert len(detail['supported_languages'])==6 and detail['suggested_backend']=='editor'
     assert not detail['issues']
     bridge.compatible(p.doc,{**p.job.options,'solutions':['main.cpp']},'verify')
     assert all(s['language']=='cpp20' for name,s in p.doc['solutions'].items() if name.startswith('wrong-'))

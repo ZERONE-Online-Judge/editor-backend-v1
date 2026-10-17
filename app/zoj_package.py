@@ -88,7 +88,7 @@ def build_zoj_package(job, testsets):
             manifest["files"].append({"path": path, "size": len(content), "sha256": sha})
             mappings[sha] = path
             return path
-        def asset(name, content, category):
+        def asset(name, content, category, language=None):
             index = len(manifest["assets"]) + 1
             if index > 10000:
                 raise ValueError("ZOJ 패키지의 첨부 파일 한도를 초과했습니다.")
@@ -96,7 +96,7 @@ def build_zoj_package(job, testsets):
             identifier = f"asset-{index}"
             manifest["assets"].append({"id": identifier, "file": path, "original_filename": name,
                 "mime_type": mimetypes.guess_type(name)[0] or "application/octet-stream", "category": category,
-                "asset_status": "active", "created_at": created})
+                "asset_status": "active", "created_at": created, **({"source_language": language} if language else {})})
             return identifier
         images = {}
         generators = {t.get("command", "").split()[0] for tests in testsets.values() for t in tests if t.get("command")}
@@ -122,7 +122,8 @@ def build_zoj_package(job, testsets):
             if solution["tag"] == "MA":
                 asset(name, content, "package-files/main-solution")
             category = "verification-solutions/" + status[solution["tag"]] if solution["tag"] in status else "package-files/wrong-solution"
-            asset(name, content, category)
+            from .judge_bridge import LANGUAGES
+            asset(name, content, category, LANGUAGES.get(solution["language"]))
         examples = []
         count = 0
         batches = [(True, [(name, test) for name in selected for test in testsets[name]])] if job.options.get("testsets") is not None else [

@@ -48,7 +48,7 @@ def config(value):
     number(value["memory_mb"], 4, 4096, True)
     number(value["output_bytes"], 1, MAX_FILES_BYTES, True)
     number(value["wall_seconds"], 0.01, 600)
-    if value["compile_language"] not in {None, "cpp17", "cpp20", "c17", "c99", "java17", "java8", "python3"}:
+    if value["compile_language"] not in {None, "cpp17", "cpp20", "c17", "c99", "java17", "java8", "python3", "pypy3", "kotlin"}:
         raise ValueError("Invalid compiler language")
     if value["output_file"] != "stdout":
         path(value["output_file"])
@@ -162,7 +162,7 @@ def validate_result(value, limits):
     language = limits["compile_language"]
     for name, content in artifacts.items():
         path(name)
-        compiler_artifact = language in {"cpp17", "cpp20", "c17", "c99"} and name == "program" or language in {"java17", "java8"} and name.endswith(".class")
+        compiler_artifact = language in {"cpp17", "cpp20", "c17", "c99"} and name == "program" or language in {"java17", "java8"} and name.endswith(".class") or language == "kotlin" and name == "program.jar"
         if not compiler_artifact and name not in limits["export_files"]:
             raise ValueError("Unexpected execution artifact")
         total += len(encoded(content, 32 * 1024**2))
