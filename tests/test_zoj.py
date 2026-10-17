@@ -181,10 +181,17 @@ def test_publish_checks_write_access_revision_and_artifact_and_reuses_request(ow
     with SessionLocal() as db:
         access = db.query(Access).filter_by(problem_id=problem, user_id=db.query(User).filter_by(handle='writer').one().id).one()
         access.role = 'WRITE'
-        # The author can share an unverified package with a writer; that writer
-        # must send it under their own ZOJ identity, never the author's.
+        # Neither the author nor a writer can bypass mandatory verification.
         row = db.get(Job, job_id)
         row.result = {**row.result, 'package': {**row.result['package'], 'verified': False}}
+        db.commit()
+    before = len(calls)
+    assert writer.post('/api/problems/'+problem+'/publish-zoj',json=values).status_code==409
+    assert owner.post('/api/problems/'+problem+'/publish-zoj',json=values).status_code==409
+    assert len(calls) == before
+    with SessionLocal() as db:
+        row = db.get(Job, job_id)
+        row.result = {**row.result, 'package': {**row.result['package'], 'verified': True}}
         db.commit()
     assert writer.post('/api/problems/'+problem+'/publish-zoj',json=values).status_code==200
     assert calls[-1][2] == 'writer@example.com'
@@ -204,6 +211,37 @@ def test_unconfigured_service_and_fixed_server_targets(owner):
     from app.config import Settings
     for url in ['https://zoj.kr/api?key=1','http://user:pass@host/api','https://zoj.kr/api/../auth']:
         with pytest.raises(ValueError): Settings(zoj_api_url=url)
+
+
+def test_verified_package_update_previews_target_and_records_same_problem(owner,problem,monkeypatch):
+    job_id,path=saved_package(problem,owner)
+    cid,pid,division=str(uuid.uuid4()),str(uuid.uuid4()),str(uuid.uuid4())
+    values={'job_id':job_id,'contest_id':cid,'target_problem_id':pid}
+    calls=[]
+    def send(method,route,user,package=None,sha=None):
+        calls.append((route,user.email,sha))
+        assert package==path and sha==hashlib.sha256(path.read_bytes()).hexdigest()
+        if route.endswith(':preview'):
+            return {'target_hash':'c'*64,'archive_sha256':sha}
+        return {'problem':{'problem_id':pid,'division_id':division,'problem_code':'B','title':'Updated'},
+                'backup_url':f'/api/operator/contests/{cid}/problems/{pid}/package-backups/'+('d'*64),'official_results_unchanged':True}
+    monkeypatch.setattr(zoj,'remote',send)
+    response=owner.post(f'/api/problems/{problem}/zoj-updates:preview',json=values)
+    assert response.status_code==200,response.text
+    options={**values,**response.json(),'reason':'Fix test','confirm_running':True}
+    result=owner.post(f'/api/problems/{problem}/zoj-updates',json=options)
+    assert result.status_code==200,result.text
+    assert result.json()['problem']['problem_id']==pid
+    assert 'confirm_running=true' in calls[-1][0] and 'target_hash='+('c'*64) in calls[-1][0]
+    rows=owner.get(f'/api/problems/{problem}/zoj-publications').json()
+    assert len(rows)==1 and rows[0]['result']['kind']=='update' and rows[0]['result']['problem_id']==pid
+    assert owner.post(f'/api/problems/{problem}/zoj-updates',json={**options,'archive_sha256':'0'*64}).status_code==409
+    assert len(calls)==2
+    with SessionLocal() as db:
+        job=db.get(Job,job_id);job.result={**job.result,'package':{**job.result['package'],'verified':False}};db.commit()
+    assert owner.post(f'/api/problems/{problem}/zoj-updates:preview',json=values).status_code==409
+    assert owner.post(f'/api/problems/{problem}/zoj-updates',json=options).status_code==409
+    assert len(calls)==2
 
 
 @pytest.mark.parametrize('role,allowed', [('EDITOR',True), ('ADMIN',True), ('REVIEWER',False), ('TRANSLATOR',False), ('VIEWER',False)])

@@ -93,12 +93,11 @@ def publications(problem_id: str, user: User = Depends(current_user), db: Sessio
     return [publication_json(row) for row in db.scalars(select(Publication).where(Publication.problem_id == problem_id).order_by(Publication.created_at.desc()).limit(100)) if row.result]
 
 
-@router.post("/problems/{problem_id}/publish-zoj")
-def publish(problem_id: str, values: Publish, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
+def verified_package(problem_id, job_id, user, db):
     problem, _ = authorize(db, problem_id, user, permission="publish")
-    job = db.get(Job, values.job_id)
-    if not job or job.problem_id != problem_id or job.kind != "package" or job.status != "completed" or job.result.get("package", {}).get("format") != "zoj":
-        fail("zoj_package_required", "ZOJ 형식 패키지를 먼저 만드세요.", 409)
+    job = db.get(Job, job_id)
+    if not job or job.problem_id != problem_id or job.kind != "package" or job.status != "completed" or job.result.get("package", {}).get("format") != "zoj" or not job.result.get("package", {}).get("verified"):
+        fail("zoj_package_required", "검증을 완료한 ZOJ 형식 패키지를 먼저 만드세요.", 409)
     wc = db.get(WorkingCopy, (problem_id, user.id))
     if job.document_hash != document_hash(problem.document) or job.revision != problem.revision or (wc and document_hash(wc.document) != job.document_hash):
         fail("stale_package", "문제가 변경되었습니다. 커밋 후 ZOJ 패키지를 다시 만드세요.", 409)
@@ -111,6 +110,12 @@ def publish(problem_id: str, values: Publish, user: User = Depends(current_user)
             digest.update(chunk)
     if digest.hexdigest() != job.result["package"]["sha256"]:
         fail("zoj_package_changed", "보관된 패키지의 무결성 검사가 실패했습니다.", 409)
+    return job, path, digest.hexdigest()
+
+
+@router.post("/problems/{problem_id}/publish-zoj")
+def publish(problem_id: str, values: Publish, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
+    job, path, sha = verified_package(problem_id, values.job_id, user, db)
     operation = hashlib.sha256("\n".join([user.id, job.id, values.contest_id, values.division_id, values.problem_code]).encode()).hexdigest()[:32]
     row = db.get(Publication, operation)
     if not row:
@@ -124,8 +129,60 @@ def publish(problem_id: str, values: Publish, user: User = Depends(current_user)
             row = db.get(Publication, operation)
     query = urlencode({"division_id": values.division_id, "problem_code": values.problem_code, "operation_id": operation})
     # ZOJ rechecks current roles and contest lock inside the import transaction.
-    result = remote("POST", f"/api/editor/contests/{values.contest_id}/imports?{query}", user, path, digest.hexdigest())
+    result = remote("POST", f"/api/editor/contests/{values.contest_id}/imports?{query}", user, path, sha)
     row.result = {"problem_id": result["problem_id"], "title": result["title"], "revision": job.revision,
         "url": get_settings().zoj_public_origin.rstrip("/") + f"/operator/contests/{values.contest_id}/problems"}
     db.commit()
     return publication_json(row)
+
+
+class UpdatePreview(Strict):
+    job_id: str = Field(pattern=r"^[a-f0-9]{32}$")
+    contest_id: str = Field(pattern=r"^[a-f0-9-]{36}$")
+    target_problem_id: str = Field(pattern=r"^[a-f0-9-]{36}$")
+
+
+class PackageUpdate(UpdatePreview):
+    target_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    archive_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    reason: str = Field(min_length=1, max_length=1000)
+    confirm_running: bool = False
+
+    @field_validator("reason")
+    @classmethod
+    def reason_required(cls, value):
+        if not value.strip():
+            raise ValueError("업데이트 이유를 입력하세요.")
+        return value.strip()
+
+
+@router.post("/problems/{problem_id}/zoj-updates:preview")
+def preview_update(problem_id: str, values: UpdatePreview, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
+    _, path, sha = verified_package(problem_id, values.job_id, user, db)
+    return remote("POST", f"/api/editor/contests/{values.contest_id}/problems/{values.target_problem_id}/package-updates:preview", user, path, sha)
+
+
+@router.post("/problems/{problem_id}/zoj-updates")
+def update_package(problem_id: str, values: PackageUpdate, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
+    job, path, sha = verified_package(problem_id, values.job_id, user, db)
+    if sha != values.archive_sha256:
+        fail("package_update_archive_changed", "패키지가 변경되었습니다. 변경 내용을 다시 확인하세요.", 409)
+    query = urlencode({"target_hash": values.target_hash, "reason": values.reason,
+                       "confirm_running": str(values.confirm_running).lower(),
+                       "editor_problem_id": problem_id, "editor_revision": job.revision})
+    result = remote("POST", f"/api/editor/contests/{values.contest_id}/problems/{values.target_problem_id}/package-updates?{query}", user, path, sha)
+    problem = result["problem"]
+    operation = hashlib.sha256("\n".join([user.id, job.id, values.contest_id, values.target_problem_id, values.target_hash]).encode()).hexdigest()[:32]
+    row = db.get(Publication, operation)
+    if not row:
+        row = Publication(operation_id=operation, user_id=user.id, problem_id=problem_id, job_id=job.id,
+            contest_id=values.contest_id, division_id=problem["division_id"], problem_code=problem["problem_code"])
+        db.add(row)
+    origin = get_settings().zoj_public_origin.rstrip("/")
+    row.result = {"problem_id": problem["problem_id"], "title": problem["title"], "revision": job.revision,
+        "url": origin + f"/operator/contests/{values.contest_id}/problems", "kind": "update"}
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+    return {**result, "backup_url": origin + result["backup_url"], "revision": job.revision}

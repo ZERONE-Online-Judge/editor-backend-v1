@@ -148,3 +148,24 @@ def test_shared_placement_overrides_old_personal_filing(client,owner,problem):
     owner.post('/api/folders/move-problems',json={'problem_ids':[problem],'folder_id':space,'share_confirmed':True})
     assert signed(client,'GET',ROOT+'?folder='+private).json()['total']==0
     assert signed(client,'GET',ROOT+'?folder='+space).json()['problems'][0]['folder_id']==space
+
+
+def test_library_package_combines_selected_sets_and_always_verifies(client, owner, problem):
+    import copy
+    saved_package(problem, owner)
+    state = owner.get('/api/problems/'+problem).json()
+    doc = copy.deepcopy(state['document'])
+    doc['testsets']['tle'] = copy.deepcopy(doc['testsets']['tests'])
+    saved = owner.put(f'/api/problems/{problem}/working-copy', json={'version':state['version'],'document':doc})
+    assert saved.status_code == 200, saved.text
+    committed = owner.post(f'/api/problems/{problem}/commit', json={'version':saved.json()['version'],'message':'Add TLE set'})
+    assert committed.status_code == 200, committed.text
+    response = signed(client, 'POST', ROOT+'/'+problem+'/packages', values={'testsets':['tests','tle']})
+    assert response.status_code == 202, response.text
+    with SessionLocal() as db:
+        job = db.get(Job, response.json()['id'])
+        assert job.options['testsets'] == ['tests','tle'] and job.options['verify'] is True
+        from app.domain import document_hash
+        assert job.document_hash == document_hash(job.document)
+    assert signed(client, 'POST', ROOT+'/'+problem+'/packages', values={'testsets':[]}).status_code == 422
+    assert signed(client, 'POST', ROOT+'/'+problem+'/packages', values={'testsets':['tests'],'verify':False}).status_code == 422

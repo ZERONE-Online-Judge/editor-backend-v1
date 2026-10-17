@@ -117,6 +117,7 @@ def list_projects(q: str = Query(default="", max_length=200), offset: int = Quer
 
 class PackageOptions(Strict):
     testset: str = Field(default="tests", min_length=1, max_length=100)
+    testsets: list[str] | None = Field(default=None, min_length=1, max_length=20)
     statement_language: str = Field(default="korean", min_length=1, max_length=100)
 
 
