@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session, load_only
 from .config import get_settings
 from .auth import current_user
 from .db import Job, JobApplication, JobComment, Revision, User, WorkingCopy, now, session_dependency
+from .permissions import has, editing, require, job_permission, check_changes, FIELDS
 from .domain import authorize, cautions, document_hash, expanded_tests, fail, parse_script, validate_document, workspace
 from .schema import Strict, SourceFile, Info
 from .storage import put_blob
@@ -23,7 +24,7 @@ router = APIRouter(prefix="/api/problems", tags=["execution"])
 def preparation_status(problem_id: str, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
     problem, access = authorize(db, problem_id, user)
     wc = workspace(db, problem, user)
-    editable = access.role in {"OWNER", "WRITE"}
+    editable = has(access, "edit_tests")
     return {"version": wc.version, "pending_preparations":
             pending_preparations(db, problem_id, user.id, document_hash(wc.document)) if editable else []}
 
@@ -127,19 +128,16 @@ def create_job(problem_id: str, values: JobRequest, user: User = Depends(current
 
 def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *, from_committed_revision: bool = False):
     problem, access = authorize(db, problem_id, user)
-    writer = access.role in {"WRITE", "OWNER"}
-    translator_render = values.kind == "render" and access.translator and not access.reviewer
-    if not writer and not access.reviewer and not translator_render:
-        fail("forbidden", "실행에는 쓰기 권한 또는 검수자 권한이 필요합니다.", 403)
-    if not writer and values.kind in {"prepare", "package"}:
-        fail("forbidden", "검수자는 입력·정답 생성이나 패키지 생성을 할 수 없습니다.", 403)
+    require(access, job_permission(values.kind))
+    writer = editing(access) and (values.kind != "render" or has(access, "edit_statements"))
+    translator_render = values.kind == "render" and has(access, "translate")
     options = values.options.model_dump()
     archive_only = values.kind == "package" and not options["verify"]
     if archive_only:
         # Do not reuse legacy jobs that ran generators or validators despite
         # opting out of verification.
         options["package_export_version"] = 1
-    if not writer and options["auto_apply"]:
+    if options["auto_apply"] and not has(access, "edit_tests"):
         fail("forbidden", "검수 결과는 문제 자료에 자동 반영할 수 없습니다.", 403)
     if not writer and not translator_render and options["snapshot"] == "working_copy":
         fail("forbidden", "검수자는 커밋된 리비전으로만 실행할 수 있습니다.", 403)
@@ -158,8 +156,17 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
         doc = copy.deepcopy(committed.document)
     else:
         doc = copy.deepcopy(wc.document)
-    if values.kind == "package" and wc.document != problem.document and not from_committed_revision:
+    if wc and snapshot == "working_copy":
+        check_changes(access, wc.base_document, wc.document)
+    if values.kind == "package" and wc and wc.document != problem.document and not from_committed_revision:
         fail("commit_required", "패키지를 만들기 전에 변경사항을 커밋하세요.", 409)
+    required = {job_permission(values.kind)}
+    if wc and snapshot == "working_copy":
+        for field in set(wc.base_document) | set(wc.document):
+            if wc.base_document.get(field) != wc.document.get(field):
+                capability = FIELDS.get(field)
+                required.add("translate" if capability == "edit_statements" and not has(access, capability) else capability)
+    options["permission_requirements"] = sorted(required)
     options.update(snapshot=snapshot, source_document_hash=document_hash(doc), source_revision=revision,
                    permission_mode="write" if writer else "translator" if translator_render else "reviewer")
     temporary = []
@@ -342,7 +349,7 @@ def cancel_job(problem_id: str, job_id: str, user: User = Depends(current_user),
     row = db.get(Job, job_id)
     if not row or row.problem_id != problem_id:
         fail("not_found", "실행 기록을 찾을 수 없습니다.", 404)
-    if access.role not in {"WRITE", "OWNER"} and not (access.reviewer and row.user_id == user.id):
+    if not (editing(access) and has(access, job_permission(row.kind))) and not (row.user_id == user.id and has(access, job_permission(row.kind))):
         fail("forbidden", "검수자는 자신이 요청한 실행만 취소할 수 있습니다.", 403)
     db.execute(update(Job).where(Job.id == job_id, Job.status.in_(["queued", "running"])).values(status="cancelled", finished_at=now()))
     db.commit()
@@ -368,7 +375,7 @@ def list_comments(problem_id: str, job_id: str, user: User = Depends(current_use
 @router.post("/{problem_id}/jobs/{job_id}/comments", status_code=201)
 def add_comment(problem_id: str, job_id: str, values: InvocationComment, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
     _, access = authorize(db, problem_id, user)
-    if access.role not in {"WRITE", "OWNER"} and not access.reviewer:
+    if not has(access, "issues"):
         fail("forbidden", "의견 작성에는 쓰기 권한 또는 검수자 권한이 필요합니다.", 403)
     job = db.scalar(select(Job).where(Job.id == job_id, Job.problem_id == problem_id).with_for_update())
     if not job:
@@ -403,7 +410,7 @@ class ApplyCounterexamples(ApplyResults):
 
 @router.post("/{problem_id}/jobs/{job_id}/counterexamples/apply")
 def apply_counterexamples(problem_id: str, job_id: str, values: ApplyCounterexamples, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
-    problem, _ = authorize(db, problem_id, user, write=True)
+    problem, _ = authorize(db, problem_id, user, permission="edit_tests")
     job = db.get(Job, job_id)
     if not job or job.problem_id != problem_id:
         fail("not_found", "실행 기록을 찾을 수 없습니다.", 404)
@@ -475,7 +482,7 @@ def apply_counterexamples(problem_id: str, job_id: str, values: ApplyCounterexam
 
 @router.post("/{problem_id}/jobs/{job_id}/apply")
 def apply_prepared(problem_id: str, job_id: str, values: ApplyResults, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
-    problem, _ = authorize(db, problem_id, user, write=True)
+    problem, _ = authorize(db, problem_id, user, permission="edit_tests")
     row = db.get(Job, job_id)
     if not row or row.problem_id != problem_id:
         fail("not_found", "실행 기록을 찾을 수 없습니다.", 404)

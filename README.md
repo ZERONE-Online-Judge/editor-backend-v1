@@ -273,3 +273,27 @@ Checker와 지문 표시용 예제 검사도 각각의 실제 의존 자료를 �
 ```sh
 python tools/benchmark_parallel.py /tmp/editor-parallel-benchmark.json
 ```
+
+### Feature permissions
+
+Problem sharing and shared-folder membership use the same capability checklist.
+Reading problem data, files, revisions, and saved results is the baseline. Editing
+settings, statements, files/components, solutions/expected verdicts, tests, and
+public materials are separate grants. Translation can be granted without editing
+the source language. Each granted edit scope permits saving and committing only
+that section; revoked scopes also block committing older drafts.
+
+Verification/stress execution, statement rendering, test preparation, package
+creation, ZOJ transfer, issue/review comments, and membership administration are
+independent. Test preparation does not imply permission to apply its outputs;
+that requires test editing. ZOJ transfer still requires the acting user's ZOJ
+contest permission. Creating a package for transfer requires package permission.
+Team folders additionally offer folder organization and new-problem creation.
+
+Existing roles remain effective when `permissions` is SQL NULL. An explicit
+empty checklist is read-only. Folder and direct problem grants combine; removing
+one grant does not remove another. Owners retain all permissions. A manager may
+only delegate permissions they currently hold; invitations recheck the inviter
+at acceptance, and queued/running jobs recheck capabilities. Folder membership
+cannot be turned into permanent direct problem access by a shared editor or
+manager. Problem deletion and moving between sharing scopes remain owner-only.

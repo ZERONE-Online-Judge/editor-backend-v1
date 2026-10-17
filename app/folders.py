@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from .auth import current_user
 from .db import Access, Folder, Placement, Problem, SharedPlacement, SharedWorkspace, User, session_dependency
 from .domain import authorize, fail
-from .folder_access import ADMIN_ROLES, WRITE_ROLES, workspace_ids, workspace_role, workspace_roles, shared_folder
+from .folder_access import workspace_ids, workspace_role, workspace_roles, shared_folder, workspace_permissions
 from .schema import Strict
 
 router = APIRouter(prefix="/api/folders", tags=["folders"])
@@ -20,26 +20,26 @@ def lock_user(db, user):
         db.scalar(select(User).where(User.id == user.id).with_for_update())
 
 
-def owned_folder(db, user, folder_id, write=True):
+def owned_folder(db, user, folder_id, write=True, permission="manage_folders"):
     if folder_id is None:
         return None
     folder = db.scalar(select(Folder).where(Folder.id == folder_id).execution_options(populate_existing=True))
     role = workspace_role(db, folder.workspace_id, user.id) if folder and folder.workspace_id else None
     if not folder or (not role if folder.workspace_id else folder.user_id != user.id):
         fail("folder_not_found", "폴더를 찾을 수 없습니다.", 404)
-    if write and folder.workspace_id and role not in WRITE_ROLES:
-        fail("folder_read_only", "이 공유 폴더에 문제와 폴더를 추가·이동하려면 편집자 이상 권한이 필요합니다.", 403)
+    if write and folder.workspace_id and permission not in workspace_permissions(db, folder.workspace_id, user.id):
+        fail("folder_read_only", "이 공유 폴더에서 해당 작업을 할 권한이 없습니다.", 403)
     return folder
 
 
-def lock_folder(db, user, folder_id):
+def lock_folder(db, user, folder_id, permission="manage_folders"):
     folder = owned_folder(db, user, folder_id, write=False)
     lock_user(db, db.get(User, folder.user_id) if folder else user)
-    return owned_folder(db, user, folder_id)
+    return owned_folder(db, user, folder_id, permission=permission)
 
 
-def place(db, user, problem_id, folder_id):
-    folder = lock_folder(db, user, folder_id)
+def place(db, user, problem_id, folder_id, permission="manage_folders"):
+    folder = lock_folder(db, user, folder_id, permission=permission)
     if folder and folder.workspace_id:
         row = db.get(SharedPlacement, problem_id)
         if row:
@@ -56,10 +56,13 @@ def place(db, user, problem_id, folder_id):
 
 def folder_json(row, db=None, user=None, roles=None):
     role = (roles.get(row.workspace_id) if roles is not None else workspace_role(db, row.workspace_id, user.id)) if row.workspace_id and db and user else None
+    permissions = workspace_permissions(db, row.workspace_id, user.id) if row.workspace_id else set()
     return {"id": row.id, "name": row.name, "parent_id": row.parent_id,
             "workspace_id": row.workspace_id, "workspace_role": role,
-            "can_edit": not row.workspace_id or role in WRITE_ROLES,
-            "can_manage": not row.workspace_id or role in ADMIN_ROLES}
+            "permissions": sorted(permissions),
+            "can_edit": not row.workspace_id or "manage_folders" in permissions,
+            "can_create": not row.workspace_id or "create_problems" in permissions,
+            "can_manage": not row.workspace_id or "manage_access" in permissions}
 
 
 def check_parent(db, user, parent_id, moving_id=None):
@@ -127,7 +130,7 @@ def edit_folder(folder_id: str, values: FolderValues, user: User = Depends(curre
     row = lock_folder(db, user, folder_id)
     parent = owned_folder(db, user, values.parent_id)
     if row.workspace_id and row.id == row.workspace_id:
-        if values.parent_id is not None or workspace_role(db, row.workspace_id, user.id) not in ADMIN_ROLES:
+        if values.parent_id is not None or "manage_access" not in workspace_permissions(db, row.workspace_id, user.id):
             fail("workspace_root", "공유 폴더의 최상위 이름은 관리자만 변경할 수 있고 다른 폴더로 이동할 수 없습니다.", 403)
     elif row.workspace_id != (parent.workspace_id if parent else None):
         fail("folder_scope", "폴더는 같은 개인 영역 또는 같은 공유 폴더 안에서만 이동할 수 있습니다.")

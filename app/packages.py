@@ -239,7 +239,7 @@ class ImportInfo(Strict):
 
 @router.post("/imports", status_code=201)
 async def import_package(request: Request, name: str, slug: str, folder_id: str | None = None, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
-    owned_folder(db, user, folder_id)
+    owned_folder(db, user, folder_id, permission="create_problems")
     values = ImportInfo(name=name, slug=slug)
     content = bytearray()
     async for chunk in request.stream():
@@ -277,7 +277,7 @@ async def import_package(request: Request, name: str, slug: str, folder_id: str 
             doc = polygon_document(archive, db, problem.id, values.name, report)
         problem.document = validate_document(db, problem.id, doc)
         db.add(Access(problem_id=problem.id, user_id=user.id, role="OWNER"))
-        place(db, user, problem.id, folder_id)
+        place(db, user, problem.id, folder_id, permission="create_problems")
         db.add(Revision(problem_id=problem.id, number=0, author_id=user.id, message="문제 패키지 가져오기", document=copy.deepcopy(problem.document)))
         db.commit()
     except (ValueError, KeyError, TypeError, AttributeError, ET.ParseError, zipfile.BadZipFile) as error:

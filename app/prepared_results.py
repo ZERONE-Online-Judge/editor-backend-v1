@@ -22,7 +22,7 @@ def pending_preparations(db, problem_id, user_id, current_hash):
 
 
 def apply_prepared_results(db, job, user, version):
-    problem, _ = authorize(db, job.problem_id, user, write=True)
+    problem, _ = authorize(db, job.problem_id, user, permission="edit_tests")
     wc = workspace(db, problem, user)
     db.refresh(wc, with_for_update=True)
     if job.kind != "prepare" or job.status != "completed":

@@ -46,8 +46,8 @@ def process_job(job):
             if stop_event.is_set() or not state or state.status != "running" or state.lease != job.lease:
                 raise Cancelled("작업이 취소되거나 워커가 중지되었습니다.")
             access = effective_access(db, job.problem_id, job.user_id)
-            mode = job.options.get("permission_mode", "write")
-            if not access or not (access.role in {"WRITE", "OWNER"} or mode == "reviewer" and access.reviewer or mode == "translator" and job.kind == "render" and access.translator):
+            from .permissions import job_allowed
+            if not access or not job_allowed(access, job):
                 raise Cancelled("문제 실행 권한이 해제되었습니다.")
         if now() - job.started_at > get_settings().job_timeout_seconds:
             raise RuntimeError("작업 실행 한도에 도달했습니다.")

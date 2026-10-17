@@ -10,6 +10,7 @@ from .auth import current_user, user_json
 from .db import Access, Blob, Issue, Job, Placement, Problem, Revision, User, WorkingCopy, now, session_dependency
 from .folders import owned_folder, place
 from .folder_access import visible_problem_ids, merge_access, problem_access_context
+from .permissions import grants, editing, check_changes, PROBLEM
 from .domain import authorize, cautions, document_hash, fail, references, three_way_merge, validate_document, workspace
 from .config import get_settings
 from .execution_limits import public_limits
@@ -23,15 +24,18 @@ router = APIRouter(prefix="/api/problems", tags=["problems"])
 def problem_json(db, problem, user, context=None):
     direct, shared_rows, roles, roots = context or problem_access_context(db, [problem.id], user.id)
     shared = shared_rows.get(problem.id)
-    inherited_role = roles.get(shared.workspace_id) if shared else None
-    access = merge_access(direct.get(problem.id), inherited_role)
+    inherited = roles.get(shared.workspace_id) if shared else None
+    inherited_role = inherited.role if inherited else None
+    access = merge_access(direct.get(problem.id), inherited)
     working = db.get(WorkingCopy, (problem.id, user.id))
     owner = db.get(User, problem.owner_id)
     placement = db.get(Placement, (user.id, problem.id))
-    doc = working.document if working and access.role in {"WRITE", "OWNER"} else problem.document
+    doc = working.document if working and editing(access) else problem.document
     return {"id": problem.id, "slug": problem.slug, "name": doc["info"]["name"], "owner": owner.handle,
             "owner_name": owner.display_name, "role": access.role, "reviewer": access.reviewer,
-            "translator": access.translator, "revision": problem.revision,
+            "translator": access.translator, "permissions": sorted(grants(access)),
+            "direct_permissions": sorted(grants(direct.get(problem.id))),
+            "inherited_permissions": sorted(grants(inherited, folder=True) & PROBLEM), "revision": problem.revision,
             "working_revision": working.base_revision if working else problem.revision,
             "modified": bool(working and document_hash(working.document) != document_hash(working.base_document)),
             "tags": doc["info"]["tags"], "note": problem.note, "deleted": problem.deleted,
@@ -39,8 +43,9 @@ def problem_json(db, problem, user, context=None):
             "folder_id": shared.id if inherited_role else placement.folder_id if placement else None,
             "workspace_id": shared.workspace_id if inherited_role else None,
             "workspace_role": inherited_role,
+            "workspace_permissions": sorted(grants(inherited, folder=True)),
             "workspace_name": roots.get(shared.workspace_id) if inherited_role else None,
-            "can_manage_access": problem.owner_id == user.id or shared is None}
+            "can_manage_access": "manage_access" in grants(access) and (problem.owner_id == user.id or shared is None)}
 
 
 @router.get("")
@@ -61,14 +66,18 @@ class CreateProblem(Strict):
 
 @router.post("", status_code=201)
 def create_problem(values: CreateProblem, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
-    owned_folder(db, user, values.folder_id)
+    folder = owned_folder(db, user, values.folder_id, write=False)
+    if folder and folder.workspace_id:
+        from .folder_access import workspace_permissions
+        if "create_problems" not in workspace_permissions(db, folder.workspace_id, user.id):
+            fail("forbidden", "이 폴더에 문제를 만들 권한이 없습니다.", 403)
     if db.scalar(select(Problem).where(Problem.owner_id == user.id, Problem.slug == values.slug)):
         fail("slug_taken", "같은 이름의 문제가 이미 있습니다.", 409)
     problem = Problem(owner_id=user.id, slug=values.slug, document=empty_document(values.name))
     db.add(problem)
     db.flush()
     db.add(Access(problem_id=problem.id, user_id=user.id, role="OWNER"))
-    place(db, user, problem.id, values.folder_id)
+    place(db, user, problem.id, values.folder_id, permission="create_problems")
     db.add(Revision(problem_id=problem.id, number=0, author_id=user.id, message="문제 생성", document=copy.deepcopy(problem.document)))
     db.commit()
     return problem_json(db, problem, user)
@@ -78,7 +87,7 @@ def create_problem(values: CreateProblem, user: User = Depends(current_user), db
 def get_problem(problem_id: str, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
     problem, access = authorize(db, problem_id, user)
     wc = workspace(db, problem, user)
-    editable = access.role in {"OWNER", "WRITE"} or access.translator
+    editable = editing(access)
     doc = wc.document if editable else problem.document
     return {"problem": problem_json(db, problem, user), "document": doc,
             "version": wc.version, "base_revision": wc.base_revision,
@@ -96,7 +105,7 @@ class SaveWorking(Strict):
 def get_review_report(problem_id: str, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
     problem, access = authorize(db, problem_id, user)
     wc = workspace(db, problem, user)
-    doc = wc.document if access.role in {"OWNER", "WRITE"} or access.translator else problem.document
+    doc = wc.document if editing(access) else problem.document
     from .review_report import report
     return report(db, problem_id, doc)
 
@@ -117,7 +126,7 @@ def save_working(db, wc, doc, version):
 @router.put("/{problem_id}/working-copy")
 def save_document(problem_id: str, values: SaveWorking, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
     problem, access = authorize(db, problem_id, user)
-    if access.role not in {"OWNER", "WRITE"} and not access.translator:
+    if not editing(access):
         fail("forbidden", "쓰기 권한이 필요합니다.", 403)
     wc = workspace(db, problem, user)
     doc = validate_document(db, problem.id, values.document.model_dump())
@@ -126,13 +135,7 @@ def save_document(problem_id: str, values: SaveWorking, user: User = Depends(cur
     for language, stamp in doc.get("translation_reviews",{}).items():
         if stamp != wc.document.get("translation_reviews",{}).get(language) and (not current or stamp['source_hash'] != current or stamp['target_hash'] != statement_fingerprint(doc,language) or language == doc.get("translation_source")):
             fail("translation_review_stale", "현재 원문 내용을 기준으로 번역을 검토한 뒤 표시하세요.")
-    if access.role == "READ" and access.translator:
-        for key in set(doc) | set(wc.document):
-            if key not in {"statements", "translation_reviews"} and doc.get(key) != wc.document.get(key):
-                fail("translator_scope", "번역자는 지문만 수정할 수 있습니다.", 403)
-        basis=wc.document.get("translation_source")
-        if basis and doc['statements'].get(basis)!=wc.document['statements'].get(basis):
-            fail("translator_scope", "기준 원문은 작성 권한이 있는 협업자가 수정할 수 있습니다.", 403)
+    check_changes(access, wc.document, doc)
     save_working(db, wc, doc, values.version)
     return {"version": wc.version, "document_hash": document_hash(doc), "modified": doc != wc.base_document,
             "cautions": cautions(doc), "pending_preparations": pending_preparations(db, problem_id, user.id, document_hash(doc))}
@@ -155,18 +158,15 @@ class CommitPreview(WorkingAction):
 @router.post("/{problem_id}/commit-preview")
 def preview_commit(problem_id: str, values: CommitPreview, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
     problem, access = authorize(db, problem_id, user)
-    if access.role not in {"OWNER", "WRITE"} and not access.translator:
+    if not editing(access):
         fail("forbidden", "커밋 권한이 필요합니다.", 403)
     wc = workspace(db, problem, user)
     if wc.version != values.version:
         fail("workspace_changed", "최신 작업 사본을 불러오세요.", 409)
     doc = validate_document(db, problem.id, values.document.model_dump())
-    if access.role == "READ" and any(doc.get(k) != wc.base_document.get(k) for k in set(doc)|set(wc.base_document) if k not in {"statements", "translation_reviews"}):
-        fail("translator_scope", "번역자는 지문 변경만 커밋할 수 있습니다.", 403)
+    check_changes(access, wc.base_document, doc)
     proposed, conflicts = three_way_merge(wc.base_document, doc, problem.document)
-    basis=problem.document.get("translation_source")
-    if access.role == "READ" and basis and proposed['statements'].get(basis)!=problem.document['statements'].get(basis):
-        fail("translator_scope", "번역자는 기준 원문을 변경할 수 없습니다.", 403)
+    check_changes(access, problem.document, proposed)
     return {"revision": problem.revision, "before": problem.document, "after": proposed,
             "conflicts": conflicts}
 
@@ -174,22 +174,19 @@ def preview_commit(problem_id: str, values: CommitPreview, user: User = Depends(
 @router.post("/{problem_id}/commit")
 def commit(problem_id: str, values: Commit, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
     problem, access = authorize(db, problem_id, user)
-    if access.role not in {"OWNER", "WRITE"} and not access.translator:
+    if not editing(access):
         fail("forbidden", "커밋 권한이 필요합니다.", 403)
     wc = workspace(db, problem, user)
     if values.expected_revision is not None and values.expected_revision != problem.revision:
         fail("preview_changed", "공유 리비전이 변경되었습니다. 변경사항을 다시 확인한 뒤 커밋하세요.", 409)
     if wc.version != values.version:
         fail("workspace_changed", "최신 작업 사본을 불러오세요.", 409)
-    if access.role == "READ" and any(wc.document.get(k) != wc.base_document.get(k) for k in set(wc.document)|set(wc.base_document) if k not in {"statements", "translation_reviews"}):
-        fail("translator_scope", "번역자는 지문 변경만 커밋할 수 있습니다.", 403)
+    check_changes(access, wc.base_document, wc.document)
     doc, conflicts = three_way_merge(wc.base_document, wc.document, problem.document)
     if conflicts:
         fail("revision_conflict", "동료의 변경과 충돌했습니다. 충돌 항목을 확인해 주세요.", 409, conflicts=conflicts)
     doc = validate_document(db, problem.id, doc)
-    basis=problem.document.get("translation_source")
-    if access.role == "READ" and basis and doc['statements'].get(basis)!=problem.document['statements'].get(basis):
-        fail("translator_scope", "번역자는 기준 원문을 변경할 수 없습니다.", 403)
+    check_changes(access, problem.document, doc)
     if doc == problem.document:
         save_working(db, wc, doc, values.version)
         wc.base_revision = problem.revision
@@ -237,7 +234,7 @@ def discard(problem_id: str, values: WorkingAction, user: User = Depends(current
 @router.post("/{problem_id}/blobs", status_code=201)
 async def upload_blob(problem_id: str, request: Request, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
     _, access = authorize(db, problem_id, user)
-    if access.role not in {"OWNER", "WRITE"} and not access.translator:
+    if not editing(access):
         fail("forbidden", "업로드 권한이 필요합니다.", 403)
     content = bytearray()
     async for chunk in request.stream():
@@ -279,7 +276,7 @@ class Note(Strict):
 
 @router.put("/{problem_id}/note")
 def note(problem_id: str, values: Note, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
-    problem, _ = authorize(db, problem_id, user, write=True)
+    problem, _ = authorize(db, problem_id, user, permission="edit_info")
     problem.note = values.note
     db.commit()
     return {"note": problem.note}
@@ -306,11 +303,10 @@ class Resolve(WorkingAction):
 @router.post("/{problem_id}/resolve")
 def resolve_conflicts(problem_id: str, values: Resolve, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
     problem, access = authorize(db, problem_id, user)
-    if access.role not in {"WRITE", "OWNER"} and not access.translator:
+    if not editing(access):
         fail("forbidden", "충돌을 해결할 권한이 없습니다.", 403)
     wc = workspace(db, problem, user)
-    if access.role == "READ" and any(wc.document.get(k) != wc.base_document.get(k) for k in set(wc.document) | set(wc.base_document) if k not in {"statements", "translation_reviews"}):
-        fail("translator_scope", "번역자는 지문 변경만 커밋할 수 있습니다.", 403)
+    check_changes(access, wc.base_document, wc.document)
     if problem.revision != values.revision:
         fail("revision_changed", "공유 리비전이 변경되었습니다. 최신 충돌을 다시 확인하세요.", 409)
     merged, conflicts = three_way_merge(wc.base_document, wc.document, problem.document)
@@ -335,9 +331,7 @@ def resolve_conflicts(problem_id: str, values: Resolve, user: User = Depends(cur
         else:
             target[parts[-1]] = copy.deepcopy(source)
     doc = validate_document(db, problem_id, merged)
-    basis = problem.document.get("translation_source")
-    if access.role == "READ" and basis and doc["statements"].get(basis) != problem.document["statements"].get(basis):
-        fail("translator_scope", "번역자는 기준 원문을 변경할 수 없습니다.", 403)
+    check_changes(access, problem.document, doc)
     changed = db.execute(update(WorkingCopy).where(WorkingCopy.problem_id == problem_id, WorkingCopy.user_id == user.id, WorkingCopy.version == values.version).values(document=doc, base_document=copy.deepcopy(problem.document), base_revision=problem.revision, version=values.version + 1, updated_at=now()))
     if not changed.rowcount:
         db.rollback()

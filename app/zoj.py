@@ -95,7 +95,7 @@ def publications(problem_id: str, user: User = Depends(current_user), db: Sessio
 
 @router.post("/problems/{problem_id}/publish-zoj")
 def publish(problem_id: str, values: Publish, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
-    problem, _ = authorize(db, problem_id, user, write=True)
+    problem, _ = authorize(db, problem_id, user, permission="publish")
     job = db.get(Job, values.job_id)
     if not job or job.problem_id != problem_id or job.kind != "package" or job.status != "completed" or job.result.get("package", {}).get("format") != "zoj":
         fail("zoj_package_required", "ZOJ 형식 패키지를 먼저 만드세요.", 409)

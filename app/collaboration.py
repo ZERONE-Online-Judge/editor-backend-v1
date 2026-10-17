@@ -8,6 +8,7 @@ from .db import Access, Collection, Issue, Problem, User, now, session_dependenc
 from .domain import authorize, fail
 from .folder_access import effective_access, can_manage_access
 from .problems import problem_json
+from .permissions import Permission, PROBLEM, grants, has, delegate, stored, projection
 from .schema import Strict
 
 router = APIRouter(prefix="/api", tags=["collaboration"])
@@ -15,21 +16,22 @@ router = APIRouter(prefix="/api", tags=["collaboration"])
 
 @router.get("/problems/{problem_id}/accesses")
 def accesses(problem_id: str, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
-    authorize(db, problem_id, user, write=True)
+    authorize(db, problem_id, user, permission="manage_access")
     rows = db.scalars(select(Access).where(Access.problem_id == problem_id)).all()
-    return [{"user_id": a.user_id, "handle": db.get(User, a.user_id).handle, "display_name": db.get(User, a.user_id).display_name, "role": a.role, "reviewer": a.reviewer, "translator": a.translator} for a in rows]
+    return [{"user_id": a.user_id, "handle": db.get(User, a.user_id).handle, "display_name": db.get(User, a.user_id).display_name, "role": a.role, "reviewer": a.reviewer, "translator": a.translator, "permissions": sorted(grants(a))} for a in rows]
 
 
 class SetAccess(Strict):
     login: str = Field(min_length=1, max_length=254)
-    role: Literal["READ", "WRITE", "NONE"]
+    role: Literal["READ", "WRITE", "NONE"] = "READ"
+    permissions: list[Permission] | None = Field(default=None, max_length=16)
     reviewer: bool = False
     translator: bool = False
 
 
 @router.put("/problems/{problem_id}/accesses")
 def set_access(problem_id: str, values: SetAccess, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
-    problem, _ = authorize(db, problem_id, user, write=True)
+    problem, actor = authorize(db, problem_id, user, permission="manage_access")
     if not can_manage_access(db, problem, user):
         fail("workspace_access_managed", "공유 폴더의 구성원 권한은 폴더 관리자에게 요청하세요. 문제별 직접 공유는 문제 소유자만 변경할 수 있습니다.", 403)
     target = db.scalar(select(User).where((User.handle == values.login) | (User.email == values.login.lower())))
@@ -38,13 +40,21 @@ def set_access(problem_id: str, values: SetAccess, user: User = Depends(current_
     if target.id == problem.owner_id:
         fail("owner_protected", "소유자의 권한은 제거하거나 변경할 수 없습니다.")
     row = db.get(Access, (problem_id, target.id))
+    requested = set(values.permissions) if values.permissions is not None else grants(values)
+    if requested - PROBLEM:
+        fail("invalid_permissions", "폴더 전용 권한은 문제에 부여할 수 없습니다.")
+    if row:
+        delegate(actor, grants(row))
     if values.role == "NONE":
         if row:
             db.delete(row)
-    elif not row:
-        db.add(Access(problem_id=problem_id, user_id=target.id, role=values.role, reviewer=values.reviewer, translator=values.translator))
     else:
-        row.role, row.reviewer, row.translator = values.role, values.reviewer, values.translator
+        delegate(actor, requested)
+        if not row:
+            row = Access(problem_id=problem_id, user_id=target.id)
+            db.add(row)
+        row.role, row.reviewer, row.translator = projection(requested), "execute" in requested, "translate" in requested
+        row.permissions = stored(requested)
     db.commit()
     return {"ok": True}
 
@@ -65,7 +75,7 @@ def issue_json(db, row):
 
 def issue_permission(db, problem_id, user):
     _, access = authorize(db, problem_id, user)
-    if access.role not in {"WRITE", "OWNER"} and not access.reviewer and not access.translator:
+    if not has(access, "issues"):
         fail("forbidden", "이슈를 작성할 권한이 없습니다.", 403)
 
 
@@ -74,8 +84,8 @@ def assignee(db, problem_id, handle):
         return None
     target = db.scalar(select(User).where(User.handle == handle))
     member = effective_access(db, problem_id, target.id) if target else None
-    if not member or member.role not in {"WRITE", "OWNER"}:
-        fail("invalid_assignee", "쓰기 권한이 있는 담당자를 선택하세요.")
+    if not member or not has(member, "issues"):
+        fail("invalid_assignee", "이슈 처리 권한이 있는 담당자를 선택하세요.")
     return target.id
 
 

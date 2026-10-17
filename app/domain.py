@@ -18,7 +18,7 @@ def document_hash(doc):
     return hashlib.sha256(json.dumps(doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
 
 
-def authorize(db, problem_id, user, write=False, owner=False, allow_deleted=False):
+def authorize(db, problem_id, user, write=False, owner=False, allow_deleted=False, permission=None):
     problem = db.get(Problem, problem_id)
     access = effective_access(db, problem_id, user.id)
     if not problem or not access or (problem.deleted and not allow_deleted):
@@ -27,6 +27,9 @@ def authorize(db, problem_id, user, write=False, owner=False, allow_deleted=Fals
         fail("forbidden", "소유자만 이 작업을 할 수 있습니다.", 403)
     if write and access.role not in {"WRITE", "OWNER"}:
         fail("forbidden", "쓰기 권한이 필요합니다.", 403)
+    if permission:
+        from .permissions import require
+        require(access, permission)
     return problem, access
 
 

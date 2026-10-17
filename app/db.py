@@ -71,6 +71,7 @@ class Access(Base):
     problem_id: Mapped[str] = mapped_column(ForeignKey("problems.id", ondelete="CASCADE"), primary_key=True)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
     role: Mapped[str] = mapped_column(String(20), default="READ")
+    permissions: Mapped[dict | None] = mapped_column(JSON(none_as_null=True), nullable=True)
     reviewer: Mapped[bool] = mapped_column(default=False)
     translator: Mapped[bool] = mapped_column(default=False)
 
@@ -87,6 +88,7 @@ class WorkspaceMember(Base):
     workspace_id: Mapped[str] = mapped_column(ForeignKey("shared_workspaces.id", ondelete="CASCADE"), primary_key=True)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
     role: Mapped[str] = mapped_column(String(20))
+    permissions: Mapped[dict | None] = mapped_column(JSON(none_as_null=True), nullable=True)
     created_at: Mapped[int] = mapped_column(default=now)
 
 
@@ -96,6 +98,7 @@ class WorkspaceInvitation(Base):
     workspace_id: Mapped[str] = mapped_column(ForeignKey("shared_workspaces.id", ondelete="CASCADE"), index=True)
     email: Mapped[str] = mapped_column(String(254), index=True)
     role: Mapped[str] = mapped_column(String(20))
+    permissions: Mapped[dict | None] = mapped_column(JSON(none_as_null=True), nullable=True)
     inviter_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
     status: Mapped[str] = mapped_column(String(20), default="pending")
     created_at: Mapped[int] = mapped_column(default=now)

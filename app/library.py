@@ -16,6 +16,7 @@ from .domain import document_hash, fail, workspace
 from .jobs import JobOptions, JobRequest, _create_job
 from .schema import Strict
 from .folders import accessible_folders
+from .permissions import has
 from .folder_access import effective_access, writable_problem_ids, workspace_role
 from .db import SharedPlacement
 
@@ -61,7 +62,7 @@ async def caller(request: Request, db: Session = Depends(session_dependency)):
 def editable_problem(db, user, problem_id):
     row = db.get(Problem, problem_id) if user else None
     access = effective_access(db, problem_id, user.id) if row else None
-    if not row or row.deleted or not access or access.role not in {"OWNER", "WRITE"}:
+    if not row or row.deleted or not access or not has(access, "publish"):
         fail("library_problem_not_found", "쓰기 권한이 있는 문제를 찾을 수 없습니다.", 404)
     return row
 
