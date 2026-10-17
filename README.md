@@ -297,3 +297,26 @@ only delegate permissions they currently hold; invitations recheck the inviter
 at acceptance, and queued/running jobs recheck capabilities. Folder membership
 cannot be turned into permanent direct problem access by a shared editor or
 manager. Problem deletion and moving between sharing scopes remain owner-only.
+
+### 협업·팀 폴더 안내 메일
+
+문제의 직접 협업 권한을 처음 부여하거나 권한을 추가하면 해당 계정의
+이메일로 안내합니다. 팀 폴더는 처음 초대할 때와 초대 대기자·구성원의
+권한을 추가할 때 안내합니다. 읽기 전용 초대도 포함하며, 동일 설정의
+재저장과 권한 축소·해제에는 새 메일을 만들지 않습니다. 기존 권한을
+소급해 발송하지 않습니다.
+
+권한 변경과 `access_mail_outbox` 예약은 같은 DB 트랜잭션입니다. 워커의
+별도 메일 스레드가 기존 ZOJ 서버의 메일 큐로 전달하므로 메일 장애가
+권한 저장이나 채점 슬롯을 막지 않습니다. 네트워크 오류는 15초부터
+최대 1시간 간격으로 재시도하며, 최대 20회 또는 7일 후 중단합니다.
+전송 전 해제·만료·변경된 권한의 안내는 취소하고, 기록은 30일 보관합니다.
+
+운영 환경은 기존 `EDITOR_AUTH_API_URL`, `EDITOR_AUTH_CA_FILE`,
+`EDITOR_AUTH_BRIDGE_SECRET`을 사용합니다. 별도 SMTP 설정은 필요 없습니다.
+`POST /api/editor/mail/access`는 전용 HMAC 목적
+`zoj-editor-access-mail-v1`로 고정된 권한 안내만 요청하며 사용자 세션을
+보내지 않습니다. ZOJ 메일 API를 먼저 배포한 뒤 Editor를 배포하세요.
+`delivery_id`는 ZOJ 메일 큐 접수 영수증이며 실제 SMTP 발송 완료와 다릅니다.
+메일 발송 상태는 ZOJ 서비스 관리의 이메일 로그에서 확인합니다.
+로컬 로그인 모드에서는 메일을 보내지 않고 이벤트 ID만 로그에 남깁니다.

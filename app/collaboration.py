@@ -10,6 +10,8 @@ from .folder_access import effective_access, can_manage_access
 from .problems import problem_json
 from .permissions import Permission, PROBLEM, grants, has, delegate, stored, projection
 from .schema import Strict
+from .access_mail import enqueue as enqueue_access_mail
+from .folders import lock_user
 
 router = APIRouter(prefix="/api", tags=["collaboration"])
 
@@ -32,6 +34,8 @@ class SetAccess(Strict):
 @router.put("/problems/{problem_id}/accesses")
 def set_access(problem_id: str, values: SetAccess, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
     problem, actor = authorize(db, problem_id, user, permission="manage_access")
+    lock_user(db, db.get(User, problem.owner_id))
+    problem, actor = authorize(db, problem_id, user, permission="manage_access")
     if not can_manage_access(db, problem, user):
         fail("workspace_access_managed", "공유 폴더의 구성원 권한은 폴더 관리자에게 요청하세요. 문제별 직접 공유는 문제 소유자만 변경할 수 있습니다.", 403)
     target = db.scalar(select(User).where((User.handle == values.login) | (User.email == values.login.lower())))
@@ -40,6 +44,8 @@ def set_access(problem_id: str, values: SetAccess, user: User = Depends(current_
     if target.id == problem.owner_id:
         fail("owner_protected", "소유자의 권한은 제거하거나 변경할 수 없습니다.")
     row = db.get(Access, (problem_id, target.id))
+    previous = grants(row)
+    new_access = row is None
     requested = set(values.permissions) if values.permissions is not None else grants(values)
     if requested - PROBLEM:
         fail("invalid_permissions", "폴더 전용 권한은 문제에 부여할 수 없습니다.")
@@ -55,6 +61,10 @@ def set_access(problem_id: str, values: SetAccess, user: User = Depends(current_
             db.add(row)
         row.role, row.reviewer, row.translator = projection(requested), "execute" in requested, "translate" in requested
         row.permissions = stored(requested)
+        if new_access or requested - previous:
+            enqueue_access_mail(db, kind="problem_access", resource_id=problem_id,
+                resource_name=problem.document["info"]["name"], email=target.email,
+                actor=user, permissions=requested)
     db.commit()
     return {"ok": True}
 

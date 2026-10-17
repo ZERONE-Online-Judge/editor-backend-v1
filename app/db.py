@@ -76,6 +76,27 @@ class Access(Base):
     translator: Mapped[bool] = mapped_column(default=False)
 
 
+class AccessMail(Base):
+    """Transactional outbox; access changes never depend on SMTP availability."""
+    __tablename__ = "access_mail_outbox"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=uid)
+    kind: Mapped[str] = mapped_column(String(32))
+    resource_id: Mapped[str] = mapped_column(String(32))
+    resource_name: Mapped[str] = mapped_column(String(200))
+    recipient_email: Mapped[str] = mapped_column(String(254))
+    actor_name: Mapped[str] = mapped_column(String(80))
+    permissions: Mapped[list] = mapped_column(JSON)
+    invitation_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    expires_at: Mapped[int | None] = mapped_column(nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    attempts: Mapped[int] = mapped_column(default=0)
+    available_at: Mapped[int] = mapped_column(default=now, index=True)
+    lease: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    delivery_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[int] = mapped_column(default=now)
+
+
 class SharedWorkspace(Base):
     __tablename__ = "shared_workspaces"
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=uid)

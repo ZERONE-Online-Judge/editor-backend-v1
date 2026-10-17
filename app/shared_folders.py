@@ -11,6 +11,7 @@ from .folder_access import workspace_role, workspace_access, workspace_permissio
 from .permissions import Permission, grants, delegate, stored
 from .folders import FolderValues, lock_user, commit, folder_json
 from .schema import Strict
+from .access_mail import enqueue as enqueue_access_mail
 
 router = APIRouter(prefix="/api/shared-folders", tags=["shared-folders"])
 Role = Literal["ADMIN", "EDITOR", "REVIEWER", "TRANSLATOR", "VIEWER"]
@@ -135,6 +136,7 @@ def invite(workspace_id: str, values: Invite, user: User = Depends(current_user)
     if target and workspace_role(db, workspace_id, target.id):
         fail("already_member", "이미 구성원입니다. 구성원 목록에서 권한을 변경하세요.", 409)
     row = db.scalar(select(WorkspaceInvitation).where(WorkspaceInvitation.workspace_id == workspace_id, WorkspaceInvitation.email == values.email))
+    notify = not row or row.status != "pending" or row.expires_at <= now() or bool(requested - grants(row, folder=True))
     if not row and db.scalar(select(func.count()).select_from(WorkspaceInvitation).where(WorkspaceInvitation.workspace_id == workspace_id,
             WorkspaceInvitation.status == "pending", WorkspaceInvitation.expires_at > now())) >= 200:
         fail("too_many_invitations", "대기 중인 초대는 최대 200개입니다.")
@@ -143,6 +145,11 @@ def invite(workspace_id: str, values: Invite, user: User = Depends(current_user)
         db.add(row)
     row.permissions = stored(requested)
     row.role, row.inviter_id, row.status, row.created_at, row.expires_at = "CUSTOM" if values.permissions is not None else values.role, user.id, "pending", now(), now()+7*86400
+    if notify:
+        db.flush()
+        enqueue_access_mail(db, kind="folder_invitation", resource_id=workspace_id,
+            resource_name=db.get(Folder, workspace_id).name, email=values.email,
+            actor=user, permissions=requested, invitation_id=row.id, expires_at=row.expires_at)
     db.commit()
     return {"id": row.id, "expires_at": row.expires_at}
 
@@ -166,11 +173,16 @@ def change_invitation(workspace_id: str, invitation_id: str, values: ChangeRole,
     requested = set(values.permissions) if values.permissions is not None else grants(values, folder=True)
     delegate(actor, grants(row, folder=True), folder=True)
     delegate(actor, requested, folder=True)
+    added = requested - grants(row, folder=True)
     row.role = "CUSTOM" if values.permissions is not None else values.role
     row.permissions = stored(requested)
     # Acceptance rechecks the administrator who approved the current grant.
     # Editing does not renew the invitation or grant membership in advance.
     row.inviter_id = user.id
+    if added:
+        enqueue_access_mail(db, kind="folder_invitation", resource_id=workspace_id,
+            resource_name=db.get(Folder, workspace_id).name, email=row.email,
+            actor=user, permissions=requested, invitation_id=row.id, expires_at=row.expires_at)
     db.commit()
     return {"ok": True}
 
@@ -189,8 +201,13 @@ def change_role(workspace_id: str, user_id: str, values: ChangeRole, user: User 
     requested = set(values.permissions) if values.permissions is not None else grants(values, folder=True)
     delegate(actor, grants(row, folder=True), folder=True)
     delegate(actor, requested, folder=True)
+    added = requested - grants(row, folder=True)
     row.role = "CUSTOM" if values.permissions is not None else values.role
     row.permissions = stored(requested)
+    if added:
+        enqueue_access_mail(db, kind="folder_access", resource_id=workspace_id,
+            resource_name=db.get(Folder, workspace_id).name, email=db.get(User, user_id).email,
+            actor=user, permissions=requested)
     db.commit()
     return {"ok": True}
 

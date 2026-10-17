@@ -114,6 +114,8 @@ def process_job(job):
 
 def maintenance():
     with SessionLocal() as db:
+        from .access_mail import cleanup
+        cleanup(db)
         from .preparation_cache import expire_entries
         expire_entries(db)
         db.execute(update(Job).where(Job.status == "running", Job.heartbeat_at < now() - 120).values(status="failed", result={"summary": "검증 워커와의 연결이 중단되었습니다. 작업을 다시 요청하세요."}, finished_at=now()))
@@ -131,6 +133,10 @@ def main():
         signal.signal(sig, lambda *_: stop_event.set())
     signal.signal(signal.SIGUSR1, lambda *_: drain_event.set())
     DRAIN_MARKER.unlink(missing_ok=True)
+    from .access_mail import run as run_access_mail
+    # Mail delivery has its own thread and never consumes a judging worker slot.
+    mail_thread = threading.Thread(target=run_access_mail, args=(stop_event,), daemon=True)
+    mail_thread.start()
     with ThreadPoolExecutor(max_workers=get_settings().worker_concurrency) as pool:
         futures = set()
         last_maintenance = 0
@@ -147,6 +153,7 @@ def main():
                     futures.add(pool.submit(process_job, row))
                     continue
             stop_event.wait(0.5)
+    mail_thread.join(timeout=20)
 
 
 if __name__ == "__main__":
