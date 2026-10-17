@@ -69,20 +69,27 @@ def compatible(doc, options, kind):
         issues.append("grader와 결합하는 풀이는 Editor 격리 실행으로 검증하세요.")
     if any(f.get("resource_policy") for f in doc["files"].values()):
         issues.append("언어·대상별 리소스 정책은 Editor 격리 실행으로 검증하세요. 에이전트 전송 모드에서는 같은 채점 노드가 격리 실행을 처리합니다.")
+    unsupported = []
     selected = list(doc["solutions"]) if kind == "package" else options["solutions"] or list(doc["solutions"])
-    for name in selected:
+    labels = {"cpp17":"C++17", "cpp20":"C++20", "c17":"C17", "c99":"C99", "python3":"Python 3.13", "java17":"Java 17", "java8":"Java 8"}
+    for name in dict.fromkeys(selected):
         s = doc["solutions"][name]
         if s["tag"] == "NR":
             continue
         if s["language"] not in LANGUAGES:
-            issues.append(f"{name}: ZOJ 지원 언어는 C++17·C99·Python 3.13·Java 8입니다. 언어 표준을 자동으로 바꾸지 않습니다.")
+            unsupported.append({"name":name,"language":s["language"],"label":labels.get(s["language"],s["language"])})
         if s["tag"] == "PE" or "PE" in s.get("extra_tags", {}).values() or any("PE" in tags.values() for tags in s.get("group_tags", {}).values()):
             issues.append(f"{name}: PE 기대 판정은 Editor 격리 실행을 선택해 검증하세요.")
     checker = doc["files"].get(doc["checker"])
     if checker and checker["language"] not in {"cpp17", "c99", "python3"}:
         issues.append("ZOJ checker는 C++17·C99·Python 소스로 검증하세요.")
-    if issues:
-        fail("judge_incompatible", " ".join(issues), 400, issues=issues)
+    if unsupported or issues:
+        issues = list(dict.fromkeys(issues))
+        message = f"풀이 {len(unsupported)}개의 언어 표준이 ZOJ 실제 채점기와 호환되지 않습니다." if unsupported else "선택한 문제 설정은 ZOJ 실제 채점기에서 지원하지 않습니다."
+        fail("judge_incompatible", message, 400, issues=issues, unsupported_solutions=unsupported,
+             supported_languages=[{"language":key,"label":labels[key]} for key in LANGUAGES],
+             guidance="지원 언어로 풀이 설정을 변경하거나 에이전트 격리 실행을 선택하세요. 언어 표준을 자동으로 바꾸지 않습니다.",
+             suggested_backend="editor")
 
 
 def archive(pipeline, name, set_name, tests, attempt):

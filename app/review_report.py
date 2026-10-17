@@ -8,26 +8,12 @@ from .db import Job, JobApplication, now
 from .domain import cautions, document_hash, expanded_tests
 from .statements import effective, translation_status
 from .storage import blob_path
+from .constraint_bounds import statement_bounds, validator_bounds
 
 _CACHE = OrderedDict()
 _LOCK = Lock()
 CATEGORIES = {'settings': '공통 설정', 'statements': '지문 · 번역', 'tests': '테스트 구조',
               'components': 'Checker · Validator', 'solutions': '풀이 검증', 'constraints': '제한 비교', 'packages': '패키지'}
-
-
-def literal(value):
-    value = value.strip().replace(' ', '').replace(',', '')
-    if len(value) > 24: return None
-    if re.fullmatch(r'-?\d+(?:[uUlL]{0,3})', value): return int(value.rstrip('uUlL'))
-    power = re.fullmatch(r'10\^\{?(\d{1,2})\}?', value)
-    if power and int(power[1]) <= 18: return 10 ** int(power[1])
-    return None
-
-
-def strip_comments(source):
-    # Preserve quoted testlib variable labels and line numbers.
-    return re.sub(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|//[^\n]*|/\*[\s\S]*?\*/',
-                  lambda m: m[0] if not m[0].startswith(('/',)) else re.sub(r'[^\n]', ' ', m[0]), source)
 
 
 def constraint_checks(doc, tests, add):
@@ -38,42 +24,42 @@ def constraint_checks(doc, tests, add):
         if len(raw) > 262144:
             add('CONSTRAINT_TOO_LARGE','info','constraints','Validator가 커서 제한 자동 비교를 생략했습니다.','validator','256KiB 이하 소스만 자동 비교합니다.')
             return
-        source = strip_comments(raw.decode('utf-8'))
+        raw_source = raw.decode('utf-8')
     except (OSError, UnicodeError): return
-    # Only named readInt/readLong calls with literal endpoints are comparable.
-    calls = list(re.finditer(r'\binf\.(?:readInt|readLong)\s*\(\s*([^,()]+),\s*([^,()]+),\s*"([A-Za-z][A-Za-z0-9_]*)"\s*\)', source))
+    source, calls, validator_skipped = validator_bounds(raw_source)
+    statements, statement_skipped = statement_bounds(doc)
     bounds = defaultdict(list)
-    for call in calls:
-        low, high = literal(call[1]), literal(call[2])
-        if low is not None and high is not None: bounds[call[3]].append((low, high, call))
-    statements = '\n'.join(effective(doc, lang).get(key, '') for lang in doc['statements'] for key in ('legend', 'input'))
-    normalized = statements.replace('\\leq', '≤').replace('\\le', '≤').replace('<=', '≤')
-    declared = defaultdict(set)
-    for match in re.finditer(r'(?<![\w,])(-?\d[\d,]{0,23}(?:\s*\^\s*\{?\d{1,2}\}?)?)\s*≤\s*\$?([A-Za-z][A-Za-z0-9_]*)\$?\s*≤\s*(\d[\d,]{0,23}(?:\s*\^\s*\{?\d{1,2}\}?)?)(?![\w^,])', normalized):
-        if re.match(r'\s*(?:[+*/^]|-(?!\s*$)|\\(?:times|cdot)|[A-Za-z])', normalized[match.end():]): continue
-        low, high = literal(match[1]), literal(match[3])
-        if low is not None and high is not None: declared[match[2]].add((low, high))
+    declared = defaultdict(list)
+    for call in calls: bounds[call.name].append(call)
+    for entry in statements: declared[entry.name].append(entry)
     compared = 0
+    skipped = validator_skipped | statement_skipped
     for name, entries in bounds.items():
-        values = declared.get(name, set())
-        if len(entries) != 1 or len(values) != 1: continue
-        low, high, call = entries[0]; expected = next(iter(values)); compared += 1
-        line = source.count('\n', 0, call.start()) + 1
-        if (low, high) != expected:
-            add('CONSTRAINT_DIFFERENCE', 'warning', 'constraints', f'{name}의 지문·Validator 제한이 다릅니다.', 'validator',
-                f'지문 {expected[0]}…{expected[1]} / {validator["name"]}:{line} {low}…{high}. 동일 변수인지 검토하세요. 단순 리터럴 비교이며 의미 증명이 아닙니다.')
-    add('CONSTRAINT_SCOPE', 'info', 'constraints', f'제한 {compared}개를 단순 리터럴로 비교했습니다.', 'validator',
-        '지원: 이름이 일치하는 하한 ≤ 변수 ≤ 상한과 testlib readInt/readLong. 수식·조건부 제한·반복문·의미와 지문 문법 교정은 자동 검증하지 않습니다.')
+        expected = declared.get(name, [])
+        actual_ranges = {(e.low,e.high) for e in entries}
+        declared_ranges = {(e.low,e.high) for e in expected}
+        if name in skipped or len(actual_ranges)!=1 or len(declared_ranges)!=1:
+            if expected: skipped.add(name)
+            continue
+        call, statement = entries[0], expected[0]; compared += 1
+        if (call.low,call.high)!=(statement.low,statement.high):
+            add('CONSTRAINT_DIFFERENCE','warning','constraints',f'{name}의 지문·Validator 정수 범위가 일치하지 않습니다.','validator',
+                f'지문 {statement.low:,}…{statement.high:,} ({statement.location}: {statement.expression}) / '
+                f'{validator["name"]}:{call.location} {call.low:,}…{call.high:,} ({call.expression}). 이름이 일치하는 명시적 정수 범위를 비교한 결과입니다.')
+    skipped_text = f' 해석이 불확실하거나 조건·언어별로 다른 {len(skipped)}개 변수는 비교에서 제외했습니다.' if skipped else ''
+    add('CONSTRAINT_SCOPE','info','constraints',f'명시적 정수 범위 {compared}개를 비교했습니다.','validator',
+        'LaTeX 숫자 구분·거듭제곱·정수 사칙연산, 엄격 부등호와 Validator의 상수식을 해석합니다. '
+        '변수에 의존하는 식·조건부 제한은 불일치로 단정하지 않습니다.' + skipped_text)
     # A maximum-coverage claim requires a single unconditional first read directly
     # after registration. Otherwise the input prefix cannot identify the variable.
     first = re.search(r'\binf\.read\w+\s*\(', source)
     register = re.search(r'\bregisterValidation\s*\([^;]*\)\s*;', source)
-    if not first or not register or not calls or first.start() != calls[0].start(): return
+    if not first or not register or not calls or first.start() != calls[0].start: return
     call = calls[0]
-    if not re.fullmatch(r'\s*(?:(?:const\s+)?(?:int|long\s+long|auto)\s+\w+\s*=\s*)?', source[register.end():call.start()]): return
-    entries = bounds.get(call[3], [])
-    if len(entries) != 1: return
-    high = entries[0][1]; values = []
+    if not re.fullmatch(r'\s*(?:(?:const\s+)?(?:int|long\s+long|auto)\s+\w+\s*=\s*)?', source[register.end():call.start]): return
+    entries = bounds.get(call.name, [])
+    if len(entries) != 1 or call.name in validator_skipped: return
+    high = entries[0].high; values = []
     if not tests: return
     for test in tests:
         if not test.get('input_sha'): return
@@ -84,7 +70,7 @@ def constraint_checks(doc, tests, add):
         if not token: return
         values.append(int(token[1]))
     if high not in values:
-        add('NO_MAXIMUM_INPUT', 'warning', 'tests', f'{call[3]}의 상한 {high}을 사용하는 등록 입력이 없습니다.', 'tests',
+        add('NO_MAXIMUM_INPUT', 'warning', 'tests', f'{call.name}의 상한 {high}을 사용하는 등록 입력이 없습니다.', 'tests',
             f'첫 입력 토큰을 {validator["name"]}의 첫 readInt/readLong과 대응했습니다. {len(values)}개 입력의 최대 관측값 {max(values)}. 다른 변수나 생성 전 입력은 판정하지 않습니다.')
 
 
@@ -144,7 +130,7 @@ def build(doc, jobs=()):
     if not package: add('PACKAGE_UNBUILT','recommendation','packages','현재 자료의 완료된 패키지가 없습니다.','packages')
     counts = {key:sum(i['severity']==key for i in items) for key in ['error','warning','recommendation','info']}
     return {'document_hash':document_hash(doc),'generated_at':now(),'categories':CATEGORIES,'counts':counts,'items':items,
-            'evidence_jobs':[j.id for j in jobs], 'method':'자료 규칙 · 저장된 실행 기록 · 제한 리터럴 비교. AI 호출 및 새 코드 실행 없음'}
+            'evidence_jobs':[j.id for j in jobs], 'method':'자료 규칙 · 저장된 실행 기록 · 명시적 정수 범위 비교. AI 호출 및 새 코드 실행 없음'}
 
 
 def report(db, problem_id, doc):

@@ -181,7 +181,8 @@ def test_unsupported_features_require_explicit_editor_backend(problem, tmp_path)
     with pytest.raises(HTTPException) as error:
         bridge.compatible(p.doc, p.job.options, 'verify')
     assert error.value.detail['code'] == 'judge_incompatible'
-    assert '자동으로 바꾸지 않습니다' in error.value.detail['message']
+    assert '자동으로 바꾸지 않습니다' in error.value.detail['guidance']
+    assert error.value.detail['unsupported_solutions']==[{'name':'main.cpp','language':'cpp20','label':'C++20'}]
 
 
 def test_group_expected_tags_are_supported_without_partial_score_semantic_changes(problem,tmp_path,monkeypatch):
@@ -196,3 +197,18 @@ def test_group_expected_tags_are_supported_without_partial_score_semantic_change
     result=bridge.verify_solution(p,object(),'main.cpp',threading.Event())
     assert result['matched'] and result['expectations_complete']
     assert [case['verdict'] for case in result['cases']]==['AC','AC','TLE']
+
+
+def test_language_diagnostics_group_files_and_respect_selected_scope(problem,tmp_path):
+    p=fixture_data(problem,tmp_path)
+    for i in range(7):
+        p.doc['solutions'][f'wrong-{i}.cpp']={**p.doc['solutions']['main.cpp'],'name':f'wrong-{i}.cpp','language':'cpp20','tag':'WA'}
+    with pytest.raises(HTTPException) as error:bridge.compatible(p.doc,{**p.job.options,'solutions':[]},'verify')
+    detail=error.value.detail
+    assert len(detail['unsupported_solutions'])==7
+    assert all(row['label']=='C++20' for row in detail['unsupported_solutions'])
+    assert '7개' in detail['message'] and 'wrong-0' not in detail['message']
+    assert len(detail['supported_languages'])==4 and detail['suggested_backend']=='editor'
+    assert not detail['issues']
+    bridge.compatible(p.doc,{**p.job.options,'solutions':['main.cpp']},'verify')
+    assert all(s['language']=='cpp20' for name,s in p.doc['solutions'].items() if name.startswith('wrong-'))

@@ -65,5 +65,28 @@ def test_report_does_not_parse_commented_validator_or_cross_user_access(owner,pr
         validator=put_blob(db,problem,b'// inf.readInt(1, 200, "N");\nint main(){registerValidation(argc,argv); if(flag){inf.readInt(1, 100, "N");}}')
         doc['files']['val.cpp'].update(validator);db.commit()
     codes={item['code'] for item in build(doc)['items']}
-    assert 'CONSTRAINT_DIFFERENCE' in codes and 'NO_MAXIMUM_INPUT' not in codes
+    assert 'CONSTRAINT_DIFFERENCE' not in codes and 'NO_MAXIMUM_INPUT' not in codes
     assert clients('outsider').get(f'/api/problems/{problem}/review-report').status_code in {403,404}
+
+
+def test_realistic_latex_thousands_and_indexed_variables_have_no_false_mismatch(problem):
+    doc=setup_doc(problem)
+    doc['statements']['korean']['legend']=r'$1 \le K \le 1\,000$; $0 \le A_{i} \le 10^{3}$'
+    with SessionLocal() as db:
+        blob=put_blob(db,problem,b'#define MAX_K 1000\nint main(){registerValidation(argc,argv);int k=inf.readInt(1,MAX_K,"K");for(int i=0;i<k;i++){inf.readInt(0,1000,"A_i");}}')
+        doc['files']['val.cpp'].update(blob);db.commit()
+    report=build(doc)
+    assert not any(i['code']=='CONSTRAINT_DIFFERENCE' for i in report['items'])
+    assert any(i['code']=='CONSTRAINT_SCOPE' and '2개' in i['message'] for i in report['items'])
+    doc['statements']['korean']['legend']=r'$1 \le K \le 10^{4}$'
+    difference=next(i for i in build(doc)['items'] if i['code']=='CONSTRAINT_DIFFERENCE')
+    assert '10,000' in difference['evidence'] and '1,000' in difference['evidence'] and 'MAX_K' in difference['evidence']
+
+
+def test_conflicting_translations_or_symbolic_limits_are_excluded(problem):
+    doc=setup_doc(problem)
+    doc['statements']['english']={**doc['statements']['korean'],'legend':r'$1 \le N \le 100$'}
+    assert not any(i['code']=='CONSTRAINT_DIFFERENCE' for i in build(doc)['items'])
+    del doc['statements']['english']
+    doc['statements']['korean']['legend']=r'$1 \le N \le 1000 + K$'
+    assert not any(i['code']=='CONSTRAINT_DIFFERENCE' for i in build(doc)['items'])
