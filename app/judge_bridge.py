@@ -136,7 +136,7 @@ def archive(pipeline, name, set_name, tests, attempt):
         write("manifest.json", json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode())
         for sha, content in sorted(blobs.items()):
             write("blobs/" + sha, content)
-    if path.stat().st_size > get_settings().max_archive_bytes or sum(map(len, blobs.values())) > 256 * 1024**2:
+    if path.stat().st_size > min(get_settings().max_archive_bytes, 128 * 1024**2) or sum(map(len, blobs.values())) > 256 * 1024**2:
         path.unlink()
         raise SandboxError("ZOJ 채점 자료는 ZIP 128MiB·전체 원본 256MiB 이하여야 합니다.")
     digest = hashlib.sha256()

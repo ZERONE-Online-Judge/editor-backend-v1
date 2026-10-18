@@ -4,10 +4,12 @@ import html
 import io
 import json
 import stat
+import tempfile
 import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path, PurePosixPath
 from fastapi import APIRouter, Depends, Request, Response
+from starlette.concurrency import run_in_threadpool
 from pydantic import Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -179,12 +181,30 @@ def build_package(job, testsets, report=None):
     return {"filename": job.problem_id[:8] + f"-r{job.revision}" + ("-linux" if kind == "linux" else "") + ".zip", "format": kind, "size": destination.stat().st_size, "verified": bool(job.options["verify"]), "sha256": hashlib.sha256(destination.read_bytes()).hexdigest()}
 
 
+def archive_limit_message(limit):
+    unit, divisor = ("GiB", 1024 ** 3) if limit >= 1024 ** 3 else ("MiB", 1024 ** 2)
+    return f"압축 파일은 {limit / divisor:g}{unit} 이하여야 합니다."
+
+
+@router.get("/imports/limits")
+def import_limits():
+    settings = get_settings()
+    return {"archive_bytes": settings.max_archive_bytes,
+            "entry_bytes": settings.max_upload_bytes,
+            "uncompressed_bytes": settings.max_uncompressed_archive_bytes}
+
+
 def checked_archive(content):
     settings = get_settings()
-    if len(content) > settings.max_archive_bytes:
-        fail("too_large", "압축 파일은 128MiB 이하여야 합니다.", 413)
+    source = io.BytesIO(content) if isinstance(content, (bytes, bytearray)) else content
+    source.seek(0, io.SEEK_END)
+    size = source.tell()
+    source.seek(0)
+    if size > settings.max_archive_bytes:
+        fail("too_large", archive_limit_message(settings.max_archive_bytes), 413)
+    archive = None
     try:
-        archive = zipfile.ZipFile(io.BytesIO(content))
+        archive = zipfile.ZipFile(source)
         names = set()
         total = 0
         if len(archive.infolist()) > 15000:
@@ -201,6 +221,8 @@ def checked_archive(content):
                 raise ValueError("Uncompressed archive limit exceeded")
         return archive
     except (zipfile.BadZipFile, ValueError) as error:
+        if archive is not None:
+            archive.close()
         fail("invalid_archive", f"문제 패키지를 확인해 주세요: {error}")
 
 
@@ -245,14 +267,27 @@ class ImportInfo(Strict):
 async def import_package(request: Request, name: str, slug: str, folder_id: str | None = None, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
     owned_folder(db, user, folder_id, permission="create_problems")
     values = ImportInfo(name=name, slug=slug)
-    content = bytearray()
-    async for chunk in request.stream():
-        content.extend(chunk)
-        if len(content) > get_settings().max_archive_bytes:
-            fail("too_large", "압축 파일은 128MiB 이하여야 합니다.", 413)
-    archive = checked_archive(bytes(content))
+    settings = get_settings()
+    length = request.headers.get("content-length", "")
+    if length.isdecimal() and int(length) > settings.max_archive_bytes:
+        fail("too_large", archive_limit_message(settings.max_archive_bytes), 413)
+    directory = settings.data_dir / "imports"
+    directory.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryFile(dir=directory) as uploaded:
+        received = 0
+        async for chunk in request.stream():
+            received += len(chunk)
+            if received > settings.max_archive_bytes:
+                fail("too_large", archive_limit_message(settings.max_archive_bytes), 413)
+            await run_in_threadpool(uploaded.write, chunk)
+        uploaded.seek(0)
+        return await run_in_threadpool(restore_package, uploaded, values, folder_id, user, db)
+
+
+def restore_package(content, values, folder_id, user, db):
     if db.scalar(select(Problem).where(Problem.owner_id == user.id, Problem.slug == values.slug)):
         fail("slug_taken", "같은 이름의 문제가 이미 있습니다.", 409)
+    archive = checked_archive(content)
     problem = Problem(owner_id=user.id, slug=values.slug, document=empty_document(values.name))
     db.add(problem)
     db.flush()

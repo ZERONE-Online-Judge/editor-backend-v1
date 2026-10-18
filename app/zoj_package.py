@@ -184,7 +184,8 @@ def build_zoj_package(job, testsets):
         archive.writestr("manifest.json", encoded)
     if destination.stat().st_size > get_settings().max_archive_bytes:
         destination.unlink()
-        raise ValueError("패키지 크기가 Editor의 128MiB 한도를 초과했습니다.")
+        from .packages import archive_limit_message
+        raise ValueError(archive_limit_message(get_settings().max_archive_bytes))
     return {"filename": job.problem_id[:8] + f"-r{job.revision}.zoj.zip", "format": "zoj", "size": destination.stat().st_size,
         "verified": bool(job.options["verify"]), "sha256": hashlib.sha256(destination.read_bytes()).hexdigest(),
         "testset": job.options["testset"], "testsets": selected, "statement_language": job.options["statement_language"]}
