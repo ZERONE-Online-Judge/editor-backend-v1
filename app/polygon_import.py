@@ -62,6 +62,12 @@ class PolygonImport:
         if len(xml) > 1048576 or re.search(br"<!\s*(DOCTYPE|ENTITY)", xml, re.I):
             raise ValueError("Unsafe XML descriptor")
         self.root = ET.fromstring(xml)
+        self.windows_text_tests = (
+            any(node.get("type") == "exe.win32" for node in self.root.findall(".//binary"))
+            and any(node.get("name") == "tests-wellformed" and node.get("value") == "true"
+                    for node in self.root.findall("properties/property"))
+        )
+        self.normalized_test_files = set()
         self.doc = empty_document(name)
         self.doc["files"], self.doc["solutions"] = {}, {}
         self.used = set()
@@ -92,6 +98,23 @@ class PolygonImport:
     def store(self, path):
         blob = put_blob(self.db, self.problem_id, self.read(path))
         self.used.add(self.prefix + str(PurePosixPath(path)))
+        return blob
+
+    def test_data(self, path):
+        content = self.read(path)
+        normalized = content
+        if self.windows_text_tests and b"\r\n" in content and b"\x00" not in content:
+            try:
+                content.decode("utf-8-sig")
+                normalized = content.replace(b"\r\n", b"\n")
+            except UnicodeDecodeError:
+                pass
+        blob = put_blob(self.db, self.problem_id, normalized)
+        if normalized == content:
+            self.used.add(self.prefix + str(PurePosixPath(path)))
+        else:
+            # The original remains unused so preserve_originals saves it as Aux.
+            self.normalized_test_files.add(path)
         return blob
 
     def warning(self, message):
@@ -181,6 +204,7 @@ class PolygonImport:
             if current_limits != limits:
                 self.warning(f"{name}: 세트별 시간·메모리 제한이 달라 기본 세트의 제한을 적용했습니다. 원본 problem.xml을 함께 보관합니다.")
             tests, groups = {}, {}
+            pending_inputs = missing_answers = 0
             for index, test in enumerate(node.findall("tests/test"), 1):
                 path = pattern_path(node.findtext("input-path-pattern"), index)
                 pattern = node.findtext("answer-path-pattern")
@@ -190,10 +214,26 @@ class PolygonImport:
                     groups[group] = {"points_policy": "COMPLETE_GROUP", "feedback_policy": "COMPLETE", "dependencies": []}
                 points = float(test.get("points", "0"))
                 self.doc["info"]["points_enabled"] |= points > 0
-                tests[str(index)] = {"index": index, "input_sha": self.store(path)["sha256"],
-                    "answer_sha": self.store(answer)["sha256"] if answer and self.exists(answer) else None,
-                    "command": test.get("cmd", ""), "description": test.get("description", ""),
+                command = test.get("cmd", "")
+                if self.exists(path):
+                    input_sha = self.test_data(path)["sha256"]
+                elif test.get("method") == "generated" and command.strip():
+                    # Standard/source packages can contain commands instead of
+                    # generated data. Keep the test pending, never fabricate it.
+                    input_sha = None
+                    pending_inputs += 1
+                else:
+                    raise ValueError(f"Missing package file: {path}")
+                answer_sha = self.test_data(answer)["sha256"] if answer and self.exists(answer) else None
+                missing_answers += answer_sha is None
+                tests[str(index)] = {"index": index, "input_sha": input_sha,
+                    "answer_sha": answer_sha,
+                    "command": command, "description": test.get("description", ""),
                     "group": group, "points": points, "sample": test.get("sample") == "true"}
+            if pending_inputs:
+                self.warning(f"{name}: 아직 생성되지 않은 입력 {pending_inputs}개를 생성기 명령과 함께 가져왔습니다. ‘입력·정답 생성’을 실행하세요.")
+            if missing_answers:
+                self.warning(f"{name}: 정답 파일이 없는 테스트 {missing_answers}개는 Main 풀이로 정답을 생성해야 합니다.")
             for group in node.findall("groups/group"):
                 groups[group.get("name")] = {"points_policy": group.get("points-policy", "complete-group").upper().replace("-", "_"),
                     "feedback_policy": group.get("feedback-policy", "complete").upper(),
@@ -210,7 +250,7 @@ class PolygonImport:
                 if value is None and self.exists(path):
                     value = self.text(path)
                 if value is not None:
-                    test["statement_" + field] = value
+                    test["statement_" + field] = value.replace("\r\n", "\n") if self.windows_text_tests else value
         if len(self.sample_values) > 1:
             self.warning(f"표시용 예제는 {language} 지문 기준으로 가져왔습니다. 다른 언어의 원본 지문 설정도 보조 파일로 보관합니다.")
 
@@ -269,12 +309,12 @@ class PolygonImport:
                     if role == "validator" and self.doc["extra_validators"]:
                         self.warning("추가 Validator의 자체 테스트는 원본 보조 파일로 보관했습니다. 주 Validator의 자체 테스트와 합치지 않습니다.")
                         break
-                    unit = {"input_sha": self.store(pattern_path(tests.findtext("input-path-pattern"), index))["sha256"],
+                    unit = {"input_sha": self.test_data(pattern_path(tests.findtext("input-path-pattern"), index))["sha256"],
                             "output_sha": None, "answer_sha": None, "expected": test.get("verdict").upper().replace("-", "_")}
                     for field, xml_key in (("output_sha", "output-path-pattern"), ("answer_sha", "answer-path-pattern")):
                         pattern = tests.findtext(xml_key)
                         if pattern:
-                            unit[field] = self.store(pattern_path(pattern, index))["sha256"]
+                            unit[field] = self.test_data(pattern_path(pattern, index))["sha256"]
                     self.doc[role + "_tests"][str(index)] = unit
 
     def generator_roles(self):
@@ -332,6 +372,8 @@ class PolygonImport:
         self.testsets(judging)
         self.assets()
         self.generator_roles()
+        if self.normalized_test_files:
+            self.warning(f"Windows 텍스트 테스트 파일 {len(self.normalized_test_files)}개의 줄바꿈을 Linux LF로 변환했습니다. 변환 전 원본은 보조 파일로 보관했습니다.")
         self.preserve_originals()
         return self.doc
 

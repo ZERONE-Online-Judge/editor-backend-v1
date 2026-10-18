@@ -208,16 +208,31 @@ def test_real_package_has_no_missing_payloads_or_authoring_sections(owner):
             assert PurePosixPath(source.get("path")).name in [doc["validator"], *doc["extra_validators"]]
         properties = json.loads(archive.read("statements/korean/problem-properties.json"))
         for key in ("legend", "input", "output", "notes", "tutorial"):
-            assert doc["statements"]["korean"][key] == properties[key]
+            assert doc["statements"]["korean"][key] == (properties.get(key) or "")
+        windows_text = any(n.get("type") == "exe.win32" for n in root.findall(".//binary")) and any(n.get("name") == "tests-wellformed" and n.get("value") == "true" for n in root.findall("properties/property"))
+        def portable(value):
+            return value.replace(b"\r\n", b"\n") if windows_text else value
         tests = doc["testsets"]["tests"]["tests"]
         nodes = root.findall("judging/testset/tests/test")
         assert len(tests) == len(nodes)
         for index, node in enumerate(nodes, 1):
             assert tests[str(index)]["command"] == node.get("cmd", "")
             assert tests[str(index)]["description"] == node.get("description", "")
+            test = tests[str(index)]
+            input_path = "tests/%02d" % index
+            if input_path in archive.namelist():
+                assert read_blob(test["input_sha"]) == portable(archive.read(input_path))
+            else:
+                assert node.get("method") == "generated" and node.get("cmd", "").strip()
+                assert test["input_sha"] is None
+            answer_path = input_path + ".a"
+            if answer_path in archive.namelist():
+                assert read_blob(test["answer_sha"]) == portable(archive.read(answer_path))
+            else:
+                assert test["answer_sha"] is None
         for index, sample in enumerate(properties["sampleTests"], 1):
-            assert tests[str(index)]["statement_input"] == sample["input"]
-            assert tests[str(index)]["statement_output"] == sample["output"]
+            assert tests[str(index)]["statement_input"] == (sample["input"].replace("\r\n", "\n") if windows_text else sample["input"])
+            assert tests[str(index)]["statement_output"] == (sample["output"].replace("\r\n", "\n") if windows_text else sample["output"])
         checksums = references(doc)
         for entry in archive.infolist():
             if not entry.is_dir():
@@ -236,8 +251,8 @@ def test_real_package_has_no_missing_payloads_or_authoring_sections(owner):
             "all_original_payloads_preserved": True, "import_report": report}, ensure_ascii=False, indent=2))
         (folder / "render-input.json").write_text(json.dumps(doc["statements"], ensure_ascii=False))
         (folder / "render-samples.json").write_text(json.dumps([
-            {"input": test.get("statement_input", read_blob(test["input_sha"]).decode()),
-             "output": test.get("statement_output", read_blob(test["answer_sha"]).decode())}
+            {"input": test.get("statement_input") if test.get("statement_input") is not None else read_blob(test["input_sha"]).decode(),
+             "output": test.get("statement_output") if test.get("statement_output") is not None else read_blob(test["answer_sha"]).decode()}
             for ts in doc["testsets"].values() for test in ts["tests"].values() if test["sample"]], ensure_ascii=False))
 
 
@@ -263,24 +278,117 @@ def test_real_imported_programs_compile_and_examples_validate_in_sandbox(owner):
         for test in doc["testsets"]["tests"]["tests"].values():
             if not test["sample"]:
                 continue
-            inp, answer = read_blob(test["input_sha"]), read_blob(test["answer_sha"])
+            inp = read_blob(test["input_sha"])
             valid, result = pipeline.validator(inp)
             assert valid, result
             verdict, result = pipeline.run_solution(main, inp)
             assert verdict == "AC", result
+            answer = read_blob(test["answer_sha"]) if test["answer_sha"] else result["output"]
             verdict, result = pipeline.checker(inp, result["output"], answer)
             assert verdict == "AC", result
             from app.statement_samples import validate
             assert validate(pipeline, test, "tests", inp, answer, main) == "VALID"
             results.append({"index": test["index"], "validator": "VALID", "main": verdict, "statement_io": "VALID"})
-        test = next(test for test in doc["testsets"]["tests"]["tests"].values() if test["command"])
-        generated = pipeline.generator(test["command"])
-        valid, result = pipeline.validator(generated)
-        assert valid, result
+        generated_count = 0
+        for test in doc["testsets"]["tests"]["tests"].values():
+            if not test["command"]:
+                continue
+            generated = pipeline.generator(test["command"])
+            valid, result = pipeline.validator(generated)
+            assert valid, result
+            generated_count += 1
+        pipeline.unit_tests("validator-tests")
+        assert all(case["matched"] for case in pipeline.result["unit_tests"]), pipeline.result["unit_tests"]
         artifact = os.environ.get("EDITOR_POLYGON_IMPORT_REPORT")
         if artifact:
             Path(artifact).write_text(json.dumps({"solutions_compiled": len(doc["solutions"]),
                 "sources_compiled": sum(source["kind"] == "source" for source in doc["files"].values()),
-                "registered_examples": results, "generator_output_validator": "VALID"}, indent=2))
+                "registered_examples": results, "generator_output_validator": "VALID", "generated_tests_validated": generated_count, "validator_self_tests": pipeline.result["unit_tests"]}, indent=2))
     finally:
         pipeline.sandbox.close()
+
+
+def rewrite_package(files):
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, 'w', zipfile.ZIP_DEFLATED) as archive:
+        for name, data in files.items():
+            archive.writestr(name, data)
+    return stream.getvalue()
+
+
+@pytest.mark.parametrize('prefix', ['', 'wrapped/'])
+def test_source_package_preserves_pending_generated_tests_without_inventing_data(owner, prefix):
+    _, files = package()
+    del files['tests/02']
+    del files['tests/01.a']
+    del files['tests/02.a']
+    # The component-test file with the same basename is unrelated data.
+    files['files/tests/validator-tests/02'] = b'unrelated validator fixture\n'
+    doc, report = imported(owner, rewrite_package({prefix+name: data for name,data in files.items()}))
+    manual, generated = doc['testsets']['tests']['tests'].values()
+    assert read_blob(manual['input_sha']) == b'2\r\n'
+    assert manual['answer_sha'] is None
+    assert generated['input_sha'] is None and generated['answer_sha'] is None
+    assert generated['command'] == 'gen 5 17'
+    assert generated['description'] == 'Random'
+    assert doc['files']['gen.cpp']['roles'] == ['generator']
+    assert manual['statement_input'] == '2\n' and manual['statement_output'] == '42\n'
+    assert any('아직 생성되지 않은 입력 1개' in warning for warning in report['warnings'])
+    assert any('정답 파일이 없는 테스트 2개' in warning for warning in report['warnings'])
+    assert report['tests'] == 2
+
+
+@pytest.mark.parametrize('method, command', [('manual', None), ('manual', 'gen 5 17'), ('generated', None), ('generated', '   ')])
+def test_missing_input_is_an_error_without_a_declared_generator_command(owner, method, command):
+    _, files = package()
+    del files['tests/02']
+    root = ET.fromstring(files['problem.xml'])
+    test = root.findall('judging/testset/tests/test')[1]
+    test.set('method', method)
+    test.attrib.pop('cmd', None)
+    if command is not None:
+        test.set('cmd', command)
+    files['problem.xml'] = ET.tostring(root)
+    response = owner.post('/api/imports?name=Broken&slug=broken-package', content=rewrite_package(files))
+    assert response.status_code == 400
+    assert 'Missing package file: tests/02' in response.json()['error']['message']
+    assert owner.get('/api/problems').json() == []
+
+
+def test_wellformed_windows_tests_use_linux_newlines_and_keep_exact_originals(owner):
+    _, files = package()
+    root = ET.fromstring(files['problem.xml'])
+    ET.SubElement(root.find('assets/solutions/solution'), 'binary', path='solutions/main.exe', type='exe.win32')
+    ET.SubElement(ET.SubElement(root, 'properties'), 'property', name='tests-wellformed', value='true')
+    validator_tests = ET.SubElement(root.find('assets/validators/validator'), 'testset')
+    ET.SubElement(validator_tests, 'input-path-pattern').text = 'validator-tests/%02d'
+    ET.SubElement(ET.SubElement(validator_tests, 'tests'), 'test', verdict='valid')
+    files['validator-tests/01'] = b'2\r\n'
+    files['problem.xml'] = ET.tostring(root)
+    properties = json.loads(files['statements/korean/problem-properties.json'])
+    properties['sampleTests'] = [{'input':'2\r\n','output':'42\r\n'}]
+    files['statements/korean/problem-properties.json'] = json.dumps(properties).encode()
+    doc, report = imported(owner, rewrite_package(files))
+    test = doc['testsets']['tests']['tests']['1']
+    assert read_blob(test['input_sha']) == b'2\n'
+    assert read_blob(test['answer_sha']) == b'42\n'
+    assert read_blob(doc['validator_tests']['1']['input_sha']) == b'2\n'
+    assert test['statement_input'] == '2\n' and test['statement_output'] == '42\n'
+    originals = {entry['path']: entry['name'] for entry in report['preserved_files']}
+    for path in ['tests/01','tests/01.a','validator-tests/01']:
+        source = doc['files'][originals[path]]
+        assert source['kind'] == 'aux' and source['attach_to_build'] is False
+        assert read_blob(source['sha256']) == files[path]
+    assert any('Linux LF' in warning for warning in report['warnings'])
+
+
+@pytest.mark.parametrize('content', [b'\0\r\n', b'\xff\r\n', b'bare\rreturn\n'])
+def test_windows_import_does_not_rewrite_binary_or_other_line_endings(owner, content):
+    _, files = package()
+    root = ET.fromstring(files['problem.xml'])
+    ET.SubElement(root.find('assets/solutions/solution'), 'binary', type='exe.win32')
+    ET.SubElement(ET.SubElement(root, 'properties'), 'property', name='tests-wellformed', value='true')
+    files['problem.xml'] = ET.tostring(root)
+    files['tests/02'] = content
+    doc, _ = imported(owner, rewrite_package(files))
+    assert read_blob(doc['testsets']['tests']['tests']['2']['input_sha']) == content
