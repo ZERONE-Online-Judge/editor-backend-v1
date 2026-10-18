@@ -18,7 +18,8 @@ from .storage import blob_path, put_blob, read_blob
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--temporary-fixture', action='store_true', required=True)
-    parser.parse_args()
+    parser.add_argument('--large-files', action='store_true')
+    args = parser.parse_args()
     if get_settings().judge_backend != 'zoj':
         raise SystemExit('Configure ZOJ judging before running this check.')
     fixture_id = uuid4().hex
@@ -41,6 +42,21 @@ def main():
                 'memory.cpp': ('cpp17', 'ML', '#include <vector>\n#include <cstdlib>\n#include <cstring>\nint main(){std::vector<void*> p;while(true){void* q=malloc(65536);if(!q)return 1;memset(q,123,65536);p.push_back(q);}}\n'),
                 'broken.cpp': ('cpp17', 'RJ', 'int main( this is not C++\n'),
             }
+            if args.large_files:
+                doc['info'].update(time_limit_ms=5000, memory_limit_mb=256)
+                replacements = {
+                    'gen.cpp': '#include <cstdio>\n#include <string>\nint main(){std::string b(1023,120);b+=char(10);for(int i=0;i<48*1024;i++)fwrite(b.data(),1,b.size(),stdout);}',
+                    'validator.cpp': '#include <cstdio>\nint main(){char b[65536];while(auto n=fread(b,1,sizeof(b),stdin))for(size_t i=0;i<n;i++)if(b[i]!=120 && b[i]!=10)return 1;}',
+                    'main.cpp': '#include <cstdio>\nint main(){char b[65536];while(auto n=fread(b,1,sizeof(b),stdin))fwrite(b,1,n,stdout);}',
+                    'wrong.py': 'print("wrong")\n',
+                }
+                for name, code in replacements.items():
+                    target = doc['files'] if name in doc['files'] else doc['solutions']
+                    target[name].update(put_blob(db, fixture_id, code.encode()))
+                test = copy.deepcopy(doc['testsets']['tests']['tests']['1'])
+                test.update(input_sha=None, answer_sha=None, command='gen', sample=False)
+                doc['testsets']['tests']['tests'] = {'1': test}
+                extra = {}
             for name, (language, tag, code) in extra.items():
                 doc['solutions'][name] = {'name': name, 'kind': 'source', 'language': language, 'tag': tag, 'extra_tags': {}, **put_blob(db, fixture_id, code.encode())}
             doc = Document.model_validate(doc).model_dump()
@@ -70,6 +86,12 @@ def main():
             raise RuntimeError('The deployed worker did not complete the fixture: ' + result.get('error', state[0]))
         expected = {'main.cpp': 'accepted', 'main.c': 'accepted', 'main.py': 'accepted', 'Main.java': 'accepted',
                     'wrong.py': 'wrong_answer', 'tle.cpp': 'time_limit_exceeded', 'memory.cpp': 'memory_limit_exceeded', 'broken.cpp': 'compile_error'}
+        if args.large_files:
+            expected = {'main.cpp': 'accepted', 'wrong.py': 'wrong_answer'}
+            prepared = result['testsets']['tests'][0]
+            for key in ['input_sha', 'answer_sha']:
+                if blob_path(prepared[key]).stat().st_size != 48 * 1024**2:
+                    raise RuntimeError('Large generator/Main output was truncated.')
         seen = set()
         for solution in result['solutions']:
             name = solution['name']
@@ -80,7 +102,7 @@ def main():
                 raise RuntimeError('Expected-tag matching was incorrect: ' + name)
             cases = solution['cases']
             if name != 'broken.cpp':
-                if not solution['complete'] or len(records) != 1 or len(cases) != 3:
+                if not solution['complete'] or len(records) != 1 or len(cases) != (1 if args.large_files else 3):
                     raise RuntimeError('Full-suite verification reran or skipped tests: ' + name)
                 if any(case['cpu_ms'] is None or case['memory_kb'] is None or not case.get('actual_sha') for case in cases):
                     raise RuntimeError('Individual metrics or actual stdout are missing: ' + name)
@@ -90,10 +112,10 @@ def main():
             seen.add(name)
             print(json.dumps({'source': name, 'verdict': expected[name], 'complete': solution['complete'],
                               'runs': [{k: r.get(k) for k in ('node_name', 'agent_version', 'testcase_count', 'runtime_ms', 'memory_kb')} for r in records]}, ensure_ascii=False), flush=True)
-        if seen != set(expected) or result.get('mismatches') != ['broken.cpp'] or result['runtime']['backend'] != 'zoj' or result['preparation_runtime']['backend'] not in {'editor', 'agent'}:
+        if seen != set(expected) or result.get('mismatches') != ([] if args.large_files else ['broken.cpp']) or result['runtime']['backend'] != 'zoj' or result['preparation_runtime']['backend'] not in {'editor', 'agent'}:
             raise RuntimeError('The complete mixed-language verification result was inconsistent.')
         progress = result.get('verification_progress', {})
-        if progress.get('current') != 21 or progress.get('total') != 24 or progress.get('percent') != 87 or progress.get('completed_solutions') != 8:
+        if (progress.get('current'), progress.get('total'), progress.get('percent'), progress.get('completed_solutions')) != ((2, 2, 100, 2) if args.large_files else (21, 24, 87, 8)):
             raise RuntimeError('Confirmed progress must exclude the unexecuted compile-error tests.')
         print('Physical judge integration verified; temporary Editor fixture will be removed.', flush=True)
     finally:

@@ -11,7 +11,7 @@ from .domain import expanded_tests
 from .sandbox import Sandbox, SandboxError, VENDOR
 from .storage import put_blob, read_blob
 from .scoring import score_results
-from .execution_limits import MAX_GENERATOR_ARGUMENTS, GENERATOR_CPU_MS, GENERATOR_MEMORY_MB, GENERATOR_OUTPUT_BYTES
+from .execution_limits import MAX_GENERATOR_ARGUMENTS, GENERATOR_CPU_MS, GENERATOR_MEMORY_MB, GENERATOR_OUTPUT_BYTES, SOLUTION_OUTPUT_BYTES
 from .stress_search import StressSearch
 from .expectations import expected_tag, evaluate as evaluate_expectations, matches
 from .invocation_scope import selected_testsets
@@ -163,9 +163,9 @@ class Pipeline:
             memory_mb = max(1024, memory_mb * 2 + 256)
         if info["interactive"]:
             actor = self.program(self.doc["interactor"])
-            result = self.sandbox.interactive(program, actor, input_bytes, answer, cpu_ms=cpu_ms, memory_mb=memory_mb)
+            result = self.sandbox.interactive(program, actor, input_bytes, answer, cpu_ms=cpu_ms, memory_mb=memory_mb, output_bytes=SOLUTION_OUTPUT_BYTES)
         else:
-            result = self.sandbox.run(program, input_bytes, cpu_ms=cpu_ms, memory_mb=memory_mb, input_file=info["input_file"], output_file=info["output_file"])
+            result = self.sandbox.run(program, input_bytes, cpu_ms=cpu_ms, memory_mb=memory_mb, input_file=info["input_file"], output_file=info["output_file"], output_bytes=SOLUTION_OUTPUT_BYTES)
         status = result["status"]
         if status != "ok":
             verdict = {"time-limit": "TLE", "memory-limit": "MLE", "output-limit": "OLE", "wall-limit": "IDLENESS_LIMIT" if info["interactive"] else "JUDGE_ERROR"}.get(status, "JUDGE_ERROR")

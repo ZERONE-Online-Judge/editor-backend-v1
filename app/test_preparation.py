@@ -1,7 +1,7 @@
 """Prepare one test with dependency-specific successful-stage reuse."""
 import shlex
 from pathlib import Path
-from .execution_limits import GENERATOR_CPU_MS, GENERATOR_MEMORY_MB, GENERATOR_OUTPUT_BYTES
+from .execution_limits import GENERATOR_CPU_MS, GENERATOR_MEMORY_MB, GENERATOR_OUTPUT_BYTES, SOLUTION_OUTPUT_BYTES
 from .preparation_cache import content_hash
 from .sandbox import SandboxError
 from .storage import read_blob
@@ -62,7 +62,7 @@ def prepare_test(p, test, set_name, mode, frozen, main):
     info = p.doc["info"]
     main_dependencies = {"program": program(main, True), "input": sha,
                          "info": {key: info[key] for key in ("interactive", "input_file", "output_file", "time_limit_ms", "memory_limit_mb")},
-                         "relaxed_limits": bool(getattr(p, "remote_judging", False))}
+                         "output_bytes": SOLUTION_OUTPUT_BYTES, "relaxed_limits": bool(getattr(p, "remote_judging", False))}
     if info["interactive"]:
         main_dependencies.update(interactor=program(p.doc["interactor"]), answer=test["answer_sha"])
     if frozen:

@@ -82,10 +82,12 @@ class VerificationProgress:
         with self.lock:
             target = self.rows[name]
             target["state"] = "running"
-            target["cases"] = sorted([case for case in target["cases"] if case["testset"] != set_name] + cases, key=lambda case: (case["testset"], case["index"]))
+            merged = {(case["testset"], case["index"]): case for case in target["cases"]}
+            merged.update({(case["testset"], case["index"]): case for case in cases})
+            target["cases"] = sorted(merged.values(), key=lambda case: (case["testset"], case["index"]))
             target["completed_tests"] = sum(case["index"] > 0 for case in target["cases"])
             if record:
-                target["judge_runs"] = [value for value in target["judge_runs"] if value["testset"] != set_name] + [record]
+                target["judge_runs"] = [value for value in target["judge_runs"] if value["id"] != record["id"]] + [record]
             self.publish(True)
 
     def finish_solution(self, result):

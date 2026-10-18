@@ -1,3 +1,4 @@
+from .file_limits import MAX_FILE_BYTES
 import re
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator, model_serializer
@@ -81,7 +82,7 @@ class SourceFile(Strict):
     attach_to_build: bool | None = None
     entry_class: str = Field(default="", pattern=r"^(?:[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)?$")
     sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
-    size: int = Field(ge=0, le=16777216)
+    size: int = Field(ge=0, le=MAX_FILE_BYTES)
     roles: list[Literal["validator", "checker", "generator", "interactor"]] = Field(default_factory=list, max_length=4)
 
     @model_serializer(mode="wrap")

@@ -215,7 +215,7 @@ def checked_archive(content):
                 raise ValueError("Unsafe archive path")
             names.add(entry.filename)
             if entry.file_size > settings.max_upload_bytes:
-                raise ValueError("An archive entry exceeds 16MiB")
+                raise ValueError(f"개별 파일은 {settings.max_upload_bytes / 1024**2:g}MiB 이하여야 합니다.")
             total += entry.file_size
             if total > settings.max_uncompressed_archive_bytes:
                 raise ValueError("Uncompressed archive limit exceeded")

@@ -320,3 +320,14 @@ manager. Problem deletion and moving between sharing scopes remain owner-only.
 `delivery_id`는 ZOJ 메일 큐 접수 영수증이며 실제 SMTP 발송 완료와 다릅니다.
 메일 발송 상태는 ZOJ 서비스 관리의 이메일 로그에서 확인합니다.
 로컬 로그인 모드에서는 메일을 보내지 않고 이벤트 ID만 로그에 남깁니다.
+
+### Large testcase files
+
+Individual uploads and package entries support up to 128 MiB. Set
+`EDITOR_MAX_UPLOAD_BYTES` to a lower positive value to reduce this limit.
+Package ZIP uploads remain bounded at 2 GiB by default. Generators and
+solution/reference output support 128 MiB; compiler artifacts and result
+previews retain their separate limits. Large final-verification suites are
+split into bounded 512 MiB requests without dropping cases. This requires
+ZOJ API and judge agent 0.2.27 or later before updating Editor workers.
+Participant submission output limits are unchanged.

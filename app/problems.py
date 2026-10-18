@@ -1,6 +1,10 @@
 import copy
 import json
 import re
+import tempfile
+from fastapi.responses import FileResponse
+from starlette.concurrency import run_in_threadpool
+from .file_limits import file_limit_message
 from fastapi import APIRouter, Depends, Request, Response
 from pydantic import Field
 from sqlalchemy import select, update
@@ -15,7 +19,7 @@ from .domain import authorize, cautions, document_hash, fail, references, three_
 from .config import get_settings
 from .execution_limits import public_limits
 from .schema import Document, Strict, empty_document
-from .storage import put_blob, read_blob
+from .storage import put_blob, put_blob_file, blob_path, read_blob
 from .prepared_results import pending_preparations
 
 router = APIRouter(prefix="/api/problems", tags=["problems"])
@@ -236,12 +240,15 @@ async def upload_blob(problem_id: str, request: Request, user: User = Depends(cu
     _, access = authorize(db, problem_id, user)
     if not editing(access):
         fail("forbidden", "업로드 권한이 필요합니다.", 403)
-    content = bytearray()
-    async for chunk in request.stream():
-        content.extend(chunk)
-        if len(content) > 16 * 1024 * 1024:
-            fail("too_large", "파일은 16MiB 이하로 올려 주세요.", 413)
-    result = put_blob(db, problem_id, bytes(content))
+    limit = get_settings().max_upload_bytes
+    with tempfile.TemporaryFile("w+b") as source:
+        size = 0
+        async for chunk in request.stream():
+            size += len(chunk)
+            if size > limit:
+                fail("too_large", file_limit_message(limit), 413)
+            await run_in_threadpool(source.write, chunk)
+        result = await run_in_threadpool(put_blob_file, db, problem_id, source)
     db.commit()
     return result
 
@@ -251,7 +258,7 @@ def download_blob(problem_id: str, sha: str, user: User = Depends(current_user),
     authorize(db, problem_id, user)
     if not db.get(Blob, (problem_id, sha)):
         fail("not_found", "파일을 찾을 수 없습니다.", 404)
-    return Response(read_blob(sha), media_type="application/octet-stream", headers={"Content-Disposition": "attachment", "X-Content-Type-Options": "nosniff"})
+    return FileResponse(blob_path(sha), media_type="application/octet-stream", headers={"Content-Disposition": "attachment", "X-Content-Type-Options": "nosniff"})
 
 
 @router.get("/{problem_id}/revisions")

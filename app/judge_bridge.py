@@ -20,7 +20,7 @@ from .execution_limits import public_limits
 from .domain import fail
 from .parallel import execution_budget
 from .sandbox import SandboxError, VENDOR
-from .storage import read_blob
+from .storage import read_blob, blob_path
 from .invocation_scope import selected_testsets
 from .zoj import remote
 from .judge_requests import request_with_retry
@@ -92,14 +92,19 @@ def compatible(doc, options, kind):
              suggested_backend="editor")
 
 
-def archive(pipeline, name, set_name, tests, attempt):
+# Keep requests bounded even when a suite contains hundreds of large cases.
+MAX_JUDGE_ARCHIVE_BYTES = 512 * 1024**2
+MAX_JUDGE_CONTENT_BYTES = 512 * 1024**2 - 4 * 1024**2
+
+
+def judge_files(pipeline, name):
     source = pipeline.doc["solutions"][name]
-    blobs = {source["sha256"]: read_blob(source["sha256"])}
-    resources = []
-    resource_names = set()
-    def resource(filename, value, role):
-        sha = hashlib.sha256(value).hexdigest()
-        blobs[sha] = value
+    blobs = {source["sha256"]: blob_path(source["sha256"])}
+    resources, resource_names = [], set()
+    def resource(filename, path, role):
+        with path.open("rb") as stream:
+            sha = hashlib.file_digest(stream, "sha256").hexdigest()
+        blobs[sha] = path
         resources.append({"name": filename, "role": role, "sha256": sha})
         resource_names.add(filename)
     checker = pipeline.doc["checker"]
@@ -108,18 +113,47 @@ def archive(pipeline, name, set_name, tests, attempt):
         checker_name = "std-" + filename
         while checker_name in pipeline.doc["files"]:
             checker_name = "_" + checker_name
-        resource(checker_name, (VENDOR / filename).read_bytes(), "checker")
+        resource(checker_name, VENDOR / filename, "checker")
     else:
-        resource(checker, read_blob(pipeline.doc["files"][checker]["sha256"]), "checker")
-    resource("testlib.h", (VENDOR / "testlib.h").read_bytes(), "package-resource")
+        resource(checker, blob_path(pipeline.doc["files"][checker]["sha256"]), "checker")
+    resource("testlib.h", VENDOR / "testlib.h", "package-resource")
     for filename, f in pipeline.doc["files"].items():
         if (f["kind"] == "resource" or f["kind"] == "aux" and f.get("attach_to_build") is not False) and filename not in resource_names:
-            resource(filename, read_blob(f["sha256"]), "package-resource")
+            resource(filename, blob_path(f["sha256"]), "package-resource")
+    return blobs, resources
+
+
+def testcase_batches(pipeline, name, tests):
+    base, _ = judge_files(pipeline, name)
+    base_size = sum(path.stat().st_size for path in base.values())
+    limit = MAX_JUDGE_CONTENT_BYTES
+    known, size, batch = set(base), base_size, []
+    for test in tests:
+        hashes = {test["input_sha"], test["answer_sha"]}
+        extra = sum(blob_path(sha).stat().st_size for sha in hashes - known)
+        if batch and size + extra > limit:
+            yield batch
+            known, size, batch = set(base), base_size, []
+            extra = sum(blob_path(sha).stat().st_size for sha in hashes - known)
+        if size + extra > limit:
+            raise SandboxError("테스트 하나와 공용 실행 자료의 합계가 채점 묶음 한도를 초과합니다. 불필요한 실행 리소스를 제외하세요.")
+        known.update(hashes)
+        size += extra
+        batch.append(test)
+    if batch:
+        yield batch
+
+
+def archive(pipeline, name, set_name, tests, attempt):
+    source = pipeline.doc["solutions"][name]
+    blobs, resources = judge_files(pipeline, name)
     cases = []
     for t in tests:
         for sha in (t["input_sha"], t["answer_sha"]):
-            blobs[sha] = read_blob(sha)
+            blobs[sha] = blob_path(sha)
         cases.append({"index": t["index"], "input_sha": t["input_sha"], "answer_sha": t["answer_sha"]})
+    if sum(path.stat().st_size for path in blobs.values()) > MAX_JUDGE_CONTENT_BYTES:
+        raise SandboxError("ZOJ 채점 묶음의 원본 자료 한도를 초과했습니다.")
     operation = hashlib.sha256(json.dumps([pipeline.job.id, name, set_name, [t["index"] for t in tests], attempt], separators=(",", ":")).encode()).hexdigest()[:32]
     manifest = {"format": "zoj-editor-judge-v1", "operation_id": operation,
                 "collect_all_results": True,
@@ -128,22 +162,25 @@ def archive(pipeline, name, set_name, tests, attempt):
                 "time_limit_ms": pipeline.doc["info"]["time_limit_ms"], "memory_limit_mb": pipeline.doc["info"]["memory_limit_mb"],
                 "resources": resources, "testcases": cases}
     path = pipeline.sandbox.root / (operation + ".judge.zip")
-    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
-        def write(filename, content):
-            entry = zipfile.ZipInfo(filename, date_time=(1980, 1, 1, 0, 0, 0))
+    try:
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+            entry = zipfile.ZipInfo("manifest.json", date_time=(1980, 1, 1, 0, 0, 0))
             entry.compress_type = zipfile.ZIP_DEFLATED
-            z.writestr(entry, content)
-        write("manifest.json", json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode())
-        for sha, content in sorted(blobs.items()):
-            write("blobs/" + sha, content)
-    if path.stat().st_size > min(get_settings().max_archive_bytes, 128 * 1024**2) or sum(map(len, blobs.values())) > 256 * 1024**2:
-        path.unlink()
-        raise SandboxError("ZOJ 채점 자료는 ZIP 128MiB·전체 원본 256MiB 이하여야 합니다.")
-    digest = hashlib.sha256()
-    with path.open("rb") as f:
-        while part := f.read(1048576):
-            digest.update(part)
-    return path, digest.hexdigest()
+            z.writestr(entry, json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode())
+            for sha, content_path in sorted(blobs.items()):
+                entry = zipfile.ZipInfo("blobs/" + sha, date_time=(1980, 1, 1, 0, 0, 0))
+                entry.compress_type = zipfile.ZIP_DEFLATED
+                with content_path.open("rb") as source_file, z.open(entry, "w", force_zip64=True) as destination:
+                    import shutil
+                    shutil.copyfileobj(source_file, destination, 1024**2)
+        if path.stat().st_size > min(get_settings().max_archive_bytes, MAX_JUDGE_ARCHIVE_BYTES):
+            raise SandboxError("ZOJ 채점 자료는 묶음당 ZIP 512MiB 이하여야 합니다.")
+        with path.open("rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        return path, digest
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
 
 
 def run_batch(pipeline, user, name, set_name, tests, attempt, cancellation):
@@ -244,12 +281,12 @@ def verify_solution(pipeline, user, name, cancellation):
         if set_name not in sets:
             continue
         remaining = [t for t in tests if (pipeline.job.kind == "package" or not pipeline.job.options["test_indices"] or t["index"] in pipeline.job.options["test_indices"]) and expected_tag(source, set_name, t.get("group", ""), pipeline.doc["testsets"])[0] != "NR"]
-        if remaining:
-            record = run_batch(pipeline, user, name, set_name, remaining, 0, cancellation)
+        for batch in testcase_batches(pipeline, name, remaining):
+            record = run_batch(pipeline, user, name, set_name, batch, 0, cancellation)
             records.append({key: value for key, value in record.items() if key not in {"cases", "testcase_results"}})
             verdict = VERDICTS[record["status"]]
             observed = record.get("cases", [])
-            set_complete = bool(record.get("full_suite_complete")) and {case["index"] for case in observed} == {test["index"] for test in remaining}
+            set_complete = bool(record.get("full_suite_complete")) and {case["index"] for case in observed} == {test["index"] for test in batch}
             complete = complete and set_complete
             cases.extend(observed)
             if not set_complete and verdict in {"CE", "JUDGE_ERROR"}:

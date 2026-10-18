@@ -45,6 +45,7 @@ def add(archive, job, report):
         sandbox=sandbox.replace(original,'from .support import ')
     archive.writestr('replay/engine/sandbox.py',sandbox)
     archive.write(ROOT/'app/parallel.py','replay/engine/parallel.py')
+    archive.write(ROOT/'app/execution_protocol.py','replay/engine/execution_protocol.py')
     archive.write(ROOT/'app/resources.py','replay/engine/resources.py')
     expectations=(ROOT/'app/expectations.py').read_text().replace('from .domain import expanded_tests','from .support import expanded_tests')
     archive.writestr('replay/engine/expectations.py',expectations)

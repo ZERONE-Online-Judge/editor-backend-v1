@@ -151,7 +151,7 @@ def build_zoj_package(job, testsets):
                     "revision": job.revision, "document_hash": job.document_hash, "blobs": dict(mappings)}
         encoded_snapshot = json.dumps(snapshot, ensure_ascii=False).encode()
         if len(encoded_snapshot) > get_settings().max_upload_bytes:
-            raise ValueError("Editor 작업 자료가 개별 파일 16MiB 한도를 초과했습니다.")
+            raise ValueError(f"Editor 작업 자료가 개별 파일 {get_settings().max_upload_bytes / 1024**2:g}MiB 한도를 초과했습니다.")
         # The snapshot includes editorials and solution metadata; it is never a
         # public statement attachment, even when some statements are published.
         asset("editor-project.json", encoded_snapshot, "package-files/package-resource")

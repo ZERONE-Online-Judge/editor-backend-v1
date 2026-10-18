@@ -1,5 +1,11 @@
 name: Physical Judge Integration Check
-on: workflow_dispatch
+on:
+  workflow_dispatch:
+    inputs:
+      large_files:
+        description: Verify 48 MiB generated input and reference output
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -13,4 +19,9 @@ jobs:
         with:
           persist-credentials: false
       - name: Verify the deployed worker and physical ZOJ judges
-        run: bash deploy/check-judge.sh
+        env:
+          CHECK_LARGE_FILES: ${{ inputs.large_files }}
+        run: |
+          args=()
+          if [[ "$CHECK_LARGE_FILES" == true ]]; then args+=(--large-files); fi
+          bash deploy/check-judge.sh "${args[@]}"

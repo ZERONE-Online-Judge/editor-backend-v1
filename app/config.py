@@ -1,3 +1,4 @@
+from .file_limits import MAX_FILE_BYTES
 from pathlib import Path
 from functools import lru_cache
 from pydantic import Field, SecretStr, field_validator, model_validator
@@ -35,7 +36,7 @@ class Settings(BaseSettings):
     judge_request_retry_seconds: float = Field(default=120, ge=1, le=600)
     max_project_bytes: int = 8 * 1024 * 1024 * 1024
     max_uncompressed_archive_bytes: int = 16 * 1024 * 1024 * 1024
-    max_upload_bytes: int = 16 * 1024 * 1024
+    max_upload_bytes: int = Field(default=MAX_FILE_BYTES, ge=1, le=MAX_FILE_BYTES)
     max_archive_bytes: int = Field(default=2 * 1024 * 1024 * 1024, ge=1)
     zoj_api_url: str = ""
     zoj_public_origin: str = "https://zoj.kr"

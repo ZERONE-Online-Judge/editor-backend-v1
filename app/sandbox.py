@@ -16,6 +16,7 @@ from .config import get_settings
 from .db import uid
 from .schema import safe_name
 from .storage import read_blob
+from .execution_protocol import MAX_FILES_BYTES
 
 VENDOR = Path(__file__).resolve().parent.parent / "vendor" / "testlib"
 
@@ -114,16 +115,18 @@ class Sandbox:
                 raise SandboxError("심볼릭 링크는 실행 자료로 사용할 수 없습니다.")
             if path.is_file() and path.name != ".editor-job.json":
                 total += path.stat().st_size
-                if total > 64 * 1024 * 1024:
-                    raise SandboxError("한 실행의 입력·소스·리소스 합계는 64MiB 이하여야 합니다.")
+                if total > MAX_FILES_BYTES:
+                    raise SandboxError("한 실행의 입력·소스·리소스 합계는 512MiB 이하여야 합니다.")
                 files[str(path.relative_to(folder))] = {"base64": base64.b64encode(path.read_bytes()).decode("ascii"), "executable": bool(path.stat().st_mode & 0o111)}
-        payload = json.dumps({"config": config, "files": files}).encode()
         if self.agent_transport:
             result = self.agent_transport.execute(config, files, "renderer" if image == self.settings.render_image else "runtime")
             return self.restore_result(folder, result, compile_language)
+        payload = json.dumps({"config": config, "files": files}).encode()
+        # JSON/base64 belongs to the trusted supervisor, not the user process.
+        overhead_mb = 256 + (total * 4 + output_bytes * 3) // 1024**2
         argv = ["docker", "run", "-i", "--name", name, "--network=none", "--read-only", "--cap-drop=ALL",
                 "--cap-add=SETUID", "--cap-add=SETGID", "--cap-add=CHOWN", "--cap-add=KILL", "--cap-add=DAC_OVERRIDE", "--security-opt=no-new-privileges",
-                "--pids-limit=128", "--cpus=1", f"--memory={memory_mb + 256}m", f"--memory-swap={memory_mb + 256}m",
+                "--pids-limit=128", "--cpus=1", f"--memory={memory_mb + overhead_mb}m", f"--memory-swap={memory_mb + overhead_mb}m",
                 "--ulimit", "nofile=256:256", "--ulimit", "core=0:0", "--tmpfs", "/tmp:rw,nosuid,nodev,size=128m,mode=1777",
                 "--volume", "/work", "--workdir=/work", self.resolve_image(image or self.settings.runner_image)]
         process = None
@@ -273,7 +276,7 @@ class Sandbox:
         result = self.execute(folder, [*command, *args], stdin, cpu_ms, memory_mb, output_bytes, output_file=output_file)
         return result
 
-    def interactive(self, program, actor, stdin, answer=b"", cpu_ms=1000, memory_mb=256):
+    def interactive(self, program, actor, stdin, answer=b"", cpu_ms=1000, memory_mb=256, output_bytes=1048576):
         folder = self.new_folder()
         solution_dir, interactor_dir = folder / "solution", folder / "interactor"
         solution_dir.mkdir()
@@ -287,6 +290,6 @@ class Sandbox:
             command[1:1] = [f"-Xms{memory_mb}m", f"-Xmx{memory_mb}m"]
         elif program.language in {"java17", "java8"}:
             command.insert(1, f"-Xmx{max(4, memory_mb - 64)}m")
-        result = self.execute(folder, command, cpu_ms=cpu_ms, memory_mb=memory_mb,
+        result = self.execute(folder, command, cpu_ms=cpu_ms, memory_mb=memory_mb, output_bytes=output_bytes,
             interactive={"interactive": True, "interactor_command": [*actor.command, "input", "transcript", "answer"]})
         return result
