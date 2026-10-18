@@ -116,3 +116,13 @@ def test_progress_keeps_prior_large_batches(problem, tmp_path):
     progress.batch('main.cpp', 'tests', [{'testset':'tests','index':2,'verdict':'WA'}])
     assert [case['index'] for case in progress.rows['main.cpp']['cases']] == [1, 2]
     assert len(progress.rows['main.cpp']['judge_runs']) == 2
+
+
+def test_stress_retains_one_maximum_input_answer_and_actual_output():
+    from app.stress_search import StressSearch, EvidenceLimitReached
+    search = object.__new__(StressSearch)
+    search.stats = {'evidence_bytes': 0}
+    search.reserve(3 * MAX_FILE_BYTES)
+    assert search.stats['evidence_bytes'] == 3 * MAX_FILE_BYTES
+    with pytest.raises(EvidenceLimitReached):
+        search.reserve(2 * MAX_FILE_BYTES)
