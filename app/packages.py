@@ -8,15 +8,16 @@ import tempfile
 import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path, PurePosixPath
+from typing import Literal
 from fastapi import APIRouter, Depends, Request, Response
 from starlette.concurrency import run_in_threadpool
 from pydantic import Field
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 from .auth import current_user
 from .config import get_settings
-from .db import Access, Blob, Collection, Job, Problem, Revision, User, now, session_dependency
-from .domain import authorize, fail, references, validate_document
+from .db import Access, Blob, Collection, Job, Problem, Revision, User, WorkingCopy, now, session_dependency
+from .domain import authorize, document_hash, fail, references, validate_document
 from .schema import Document, Strict, empty_document, safe_name
 from .storage import put_blob, read_blob
 from .sandbox import VENDOR
@@ -327,7 +328,60 @@ def restore_package(content, values, folder_id, user, db):
     report.update(files=len(problem.document["files"]), solutions=len(problem.document["solutions"]),
                   tests=sum(len(ts["tests"]) for ts in problem.document["testsets"].values()),
                   statement_languages=list(problem.document["statements"]))
-    return {"id": problem.id, "name": problem.document["info"]["name"], "import_report": report}
+    from .import_compatibility import language_plan
+    report["zoj_compatibility"] = language_plan(problem.document)
+    return {"id": problem.id, "name": problem.document["info"]["name"], "import_report": report,
+            "document_hash": document_hash(problem.document)}
+
+
+class ImportLanguageChange(Strict):
+    kind: Literal["solution", "checker"]
+    name: str = Field(min_length=1, max_length=200)
+    language: str = Field(min_length=1, max_length=20)
+
+
+class ImportLanguageSettings(Strict):
+    document_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    changes: list[ImportLanguageChange] = Field(min_length=1, max_length=400)
+
+
+@router.post("/problems/{problem_id}/import-language-settings")
+def apply_import_languages(problem_id: str, values: ImportLanguageSettings, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
+    from .import_compatibility import language_plan
+    from .permissions import require
+    problem, access = authorize(db, problem_id, user)
+    for change in values.changes:
+        require(access, "edit_solutions" if change.kind == "solution" else "edit_files")
+    wc = db.get(WorkingCopy, (problem_id, user.id))
+    if (problem.revision != 0 or document_hash(problem.document) != values.document_hash
+            or wc and (wc.base_revision != 0 or wc.document != wc.base_document)):
+        fail("import_changed", "문제에 새 변경이 있습니다. 문제를 열어 현재 언어 설정을 확인하세요.", 409)
+    plan = {(row["kind"], row["name"]): row["to_language"] for row in language_plan(problem.document)["changes"]}
+    seen = set()
+    doc = copy.deepcopy(problem.document)
+    for change in values.changes:
+        key = (change.kind, change.name)
+        if key in seen or not plan.get(key) or plan[key] != change.language:
+            fail("invalid_import_language", "가져오기에서 제안한 언어 설정만 선택할 수 있습니다.")
+        seen.add(key)
+        doc["solutions" if change.kind == "solution" else "files"][change.name]["language"] = change.language
+    doc = validate_document(db, problem_id, doc)
+    updated = db.execute(update(Problem).where(Problem.id == problem_id, Problem.revision == 0)
+        .values(document=doc, revision=1, updated_at=now()))
+    if not updated.rowcount:
+        db.rollback()
+        fail("import_changed", "문제에 새 변경이 있습니다. 문제를 열어 현재 언어 설정을 확인하세요.", 409)
+    if wc:
+        updated_wc = db.execute(update(WorkingCopy).where(WorkingCopy.problem_id == problem_id,
+            WorkingCopy.user_id == user.id, WorkingCopy.version == wc.version).values(document=doc,
+                base_document=doc, base_revision=1, version=wc.version + 1, updated_at=now()))
+        if not updated_wc.rowcount:
+            db.rollback()
+            fail("import_changed", "작업 사본이 변경되었습니다. 문제를 열어 현재 설정을 확인하세요.", 409)
+    db.add(Revision(problem_id=problem_id, number=1, author_id=user.id,
+        message="ZOJ 채점기 호환 언어 설정", document=copy.deepcopy(doc)))
+    db.commit()
+    return {"revision": 1, "applied": len(seen)}
 
 
 @router.get("/problems/{problem_id}/packages/{job_id}")
