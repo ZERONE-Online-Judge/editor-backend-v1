@@ -80,15 +80,29 @@ def compatible(doc, options, kind):
             unsupported.append({"name":name,"language":s["language"],"label":labels.get(s["language"],s["language"])})
         if s["tag"] == "PE" or "PE" in s.get("extra_tags", {}).values() or any("PE" in tags.values() for tags in s.get("group_tags", {}).values()):
             issues.append(f"{name}: PE 기대 판정은 Editor 격리 실행을 선택해 검증하세요.")
+    unsupported_checker = None
     checker = doc["files"].get(doc["checker"])
     if checker and checker["language"] not in {"cpp17", "c99", "python3"}:
-        issues.append("ZOJ checker는 C++17·C99·Python 소스로 검증하세요.")
+        label = labels.get(checker["language"], checker["language"])
+        unsupported_checker = {"name": doc["checker"], "language": checker["language"], "label": label,
+            "supported_languages": [labels[key] for key in ("cpp17", "c99", "python3")]}
+        issues.append(f"Checker {doc['checker']}의 현재 언어는 {label}입니다. ZOJ Checker는 C++17·C99·Python 3.13을 지원합니다.")
     if unsupported or issues:
         issues = list(dict.fromkeys(issues))
-        message = f"풀이 {len(unsupported)}개의 언어 표준이 ZOJ 실제 채점기와 호환되지 않습니다." if unsupported else "선택한 문제 설정은 ZOJ 실제 채점기에서 지원하지 않습니다."
+        if unsupported_checker and not unsupported and len(issues) == 1:
+            message = f"Checker {unsupported_checker['name']}의 {unsupported_checker['label']} 설정으로는 ZOJ 실제 채점을 시작할 수 없습니다."
+        else:
+            message = f"풀이 {len(unsupported)}개의 언어 표준이 ZOJ 실제 채점기와 호환되지 않습니다." if unsupported else "선택한 문제 설정은 ZOJ 실제 채점기에서 지원하지 않습니다."
+        guidance = []
+        if unsupported_checker:
+            guidance.append("‘Checker 파일 언어 설정’에서 해당 파일의 언어를 지원 표준으로 변경하고 저장한 뒤 검증을 다시 시작하세요. 코드를 해당 표준으로 컴파일할 수 있는지도 확인하세요.")
+        if unsupported:
+            guidance.append("‘풀이 언어 설정’에서 지원하지 않는 풀이의 언어를 변경하세요.")
+        guidance.append("현재 언어를 유지하려면 에이전트 격리 실행을 선택하세요. 언어 표준을 자동으로 바꾸지 않습니다.")
         fail("judge_incompatible", message, 400, issues=issues, unsupported_solutions=unsupported,
+             unsupported_checker=unsupported_checker,
              supported_languages=[{"language":key,"label":labels[key]} for key in LANGUAGES],
-             guidance="지원 언어로 풀이 설정을 변경하거나 에이전트 격리 실행을 선택하세요. 언어 표준을 자동으로 바꾸지 않습니다.",
+             guidance=" ".join(guidance),
              suggested_backend="editor")
 
 

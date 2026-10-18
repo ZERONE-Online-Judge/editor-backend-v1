@@ -212,3 +212,42 @@ def test_language_diagnostics_group_files_and_respect_selected_scope(problem,tmp
     assert not detail['issues']
     bridge.compatible(p.doc,{**p.job.options,'solutions':['main.cpp']},'verify')
     assert all(s['language']=='cpp20' for name,s in p.doc['solutions'].items() if name.startswith('wrong-'))
+
+
+@pytest.mark.parametrize('language', ['cpp20', 'c17', 'java8', 'pypy3', 'kotlin'])
+def test_checker_language_error_identifies_the_file_and_its_settings(problem, tmp_path, language):
+    p = fixture_data(problem, tmp_path)
+    p.doc['checker'] = 'custom-check.cpp'
+    p.doc['files']['custom-check.cpp'] = {'name': 'custom-check.cpp', 'language': language}
+    with pytest.raises(HTTPException) as error:
+        bridge.compatible(p.doc, p.job.options, 'verify')
+    detail = error.value.detail
+    checker = detail['unsupported_checker']
+    assert checker['name'] == 'custom-check.cpp' and checker['language'] == language
+    assert checker['supported_languages'] == ['C++17', 'C99', 'Python 3.13']
+    assert not detail['unsupported_solutions']
+    assert 'custom-check.cpp' in detail['message'] and checker['label'] in detail['message']
+    assert 'Checker 파일 언어 설정' in detail['guidance']
+    assert '풀이 언어 설정' not in detail['guidance']
+    assert p.doc['files']['custom-check.cpp']['language'] == language
+
+
+@pytest.mark.parametrize('language', ['cpp17', 'c99', 'python3'])
+def test_supported_checker_languages_do_not_block_cpp17_solutions(problem, tmp_path, language):
+    p = fixture_data(problem, tmp_path)
+    p.doc['checker'] = 'custom-check'
+    p.doc['files']['custom-check'] = {'name': 'custom-check', 'language': language}
+    bridge.compatible(p.doc, p.job.options, 'verify')
+
+
+def test_mixed_solution_and_checker_errors_keep_both_actions(problem, tmp_path):
+    p = fixture_data(problem, tmp_path)
+    p.doc['checker'] = 'check.cpp'
+    p.doc['files']['check.cpp'] = {'name': 'check.cpp', 'language': 'cpp20'}
+    p.doc['solutions']['main.cpp']['language'] = 'cpp20'
+    with pytest.raises(HTTPException) as error:
+        bridge.compatible(p.doc, p.job.options, 'verify')
+    detail = error.value.detail
+    assert detail['unsupported_checker']['name'] == 'check.cpp'
+    assert detail['unsupported_solutions'][0]['name'] == 'main.cpp'
+    assert 'Checker 파일 언어 설정' in detail['guidance'] and '풀이 언어 설정' in detail['guidance']
