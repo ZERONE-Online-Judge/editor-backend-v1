@@ -32,13 +32,14 @@ class StressResults:
 
     def case(self, name, verdict, actual, comment, content, answer, packet):
         with self.p.result_lock:
-            inp, ans, output = self.blobs(content, answer, actual["output"])
+            inp, ans, output = self.blobs(content, answer, actual.get("actual_output", actual["output"]))
             row = {"testset": self.search.options["testset"], "index": packet["iteration"],
                    "iteration": packet["iteration"], "seed": packet["seed"], "command": packet["command"],
                    "pattern_name": packet["pattern"]["name"], "range_values": packet["draws"],
                    "verdict": verdict, "cpu_ms": actual.get("cpu_ms"), "wall_ms": actual.get("wall_ms"),
                    "memory_kb": actual.get("memory_kb"), "comment": comment[:2048],
-                   "input_sha": inp, "answer_sha": ans, "actual_sha": output}
+                   "input_sha": inp, "answer_sha": ans, "actual_sha": output,
+                   **{key:actual[key] for key in ("output_truncated", "output_size", "output_total_bytes", "output_error") if key in actual}}
             solution = self.rows[name]
             solution["cases"].append(row)
             self.summary["executions"] += 1

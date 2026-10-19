@@ -20,7 +20,7 @@ def prepare_problem(problem):
         db.commit()
 
 
-def test_real_all_testsets_preserves_scope_and_reuses_preparation(owner, problem):
+def test_legacy_all_testsets_preserves_scope_and_reuses_preparation(owner, problem, queue_legacy_job):
     with SessionLocal() as db:
         row = db.get(Problem, problem)
         doc = populate(db, row)
@@ -33,7 +33,7 @@ def test_real_all_testsets_preserves_scope_and_reuses_preparation(owner, problem
         db.commit()
     state = owner.get(f'/api/problems/{problem}').json()
     def execute():
-        request = owner.post(f'/api/problems/{problem}/jobs', json={
+        request = queue_legacy_job(owner, problem, {
             'kind': 'verify', 'version': state['version'], 'reuse': False,
             'options': {'execution_backend': 'editor', 'all_testsets': True}})
         assert request.status_code == 202, request.text
@@ -55,7 +55,7 @@ def test_real_all_testsets_preserves_scope_and_reuses_preparation(owner, problem
     assert all(c['cpu_ms'] is not None and c['memory_kb'] is not None for c in wrong['cases'])
 
 
-def test_real_prepared_inputs_are_reused_but_solutions_are_measured_again(owner, problem, monkeypatch):
+def test_legacy_preparation_is_reused_but_solutions_are_measured_again(owner, problem, monkeypatch, queue_legacy_job):
     import json
     from collections import Counter
     from pathlib import Path
@@ -75,7 +75,7 @@ def test_real_prepared_inputs_are_reused_but_solutions_are_measured_again(owner,
     monkeypatch.setattr(Sandbox, 'run', measured)
     state = owner.get(f'/api/problems/{problem}').json()
     def execute(kind):
-        request = owner.post(f'/api/problems/{problem}/jobs', json={
+        request = queue_legacy_job(owner, problem, {
             'kind':kind, 'version':state['version'], 'reuse':False, 'options':{'execution_backend':'editor'}})
         assert request.status_code == 202, request.text
         process_job(claim_job())

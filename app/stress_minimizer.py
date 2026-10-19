@@ -72,7 +72,7 @@ class CounterexampleMinimizer:
     def verdict(self, name, content, answer):
         verdict, actual = self.p.run_solution(name, content, answer)
         checked = {"stderr": actual["stderr"]}
-        if verdict == "AC":
+        if verdict == "AC" and not actual.get("judged_by_zoj"):
             verdict, checked = self.p.checker(content, actual["output"], answer)
         if verdict == "JUDGE_ERROR":
             raise SandboxError("축소 후보를 검사하는 checker 또는 실행 환경에 오류가 발생했습니다.\n" + checked["stderr"])
@@ -101,7 +101,7 @@ class CounterexampleMinimizer:
                 if repeated != verdict:
                     return False
             findings.append(({**original, "comment": checked["stderr"], "cpu_ms": actual.get("cpu_ms"),
-                              "memory_kb": actual.get("memory_kb")}, actual["output"]))
+                              "memory_kb": actual.get("memory_kb"), "output_truncated":actual.get("output_truncated",False), "output_total_bytes":actual.get("output_total_bytes")}, actual["output"]))
         required = len(content) + len(reference["output"]) + sum(len(output) for _, output in findings)
         if required > self.budget:
             self.metadata["status"] = "evidence_limit"

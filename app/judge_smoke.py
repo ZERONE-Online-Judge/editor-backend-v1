@@ -20,7 +20,7 @@ def main():
     parser.add_argument('--temporary-fixture', action='store_true', required=True)
     parser.add_argument('--large-files', action='store_true')
     args = parser.parse_args()
-    if get_settings().judge_backend != 'zoj':
+    if not get_settings().zoj_api_url:
         raise SystemExit('Configure ZOJ judging before running this check.')
     fixture_id = uuid4().hex
     job_id = None

@@ -68,14 +68,14 @@ finally:
 
 @pytest.mark.sandbox
 @pytest.mark.skipif(os.environ.get('RUN_SANDBOX_TESTS')!='1',reason='Real runtime required')
-def test_real_linux_export_runs_offline_cli_with_frozen_judging_engine(owner,problem,tmp_path):
+def test_legacy_linux_export_runs_offline_cli_with_frozen_engine(owner,problem,tmp_path,queue_legacy_job):
     with SessionLocal() as db:
         row=db.get(Problem,problem)
         row.document=populate(db,row)
         db.get(Revision,(problem,0)).document=copy.deepcopy(row.document)
         db.commit()
     state=owner.get(f'/api/problems/{problem}').json()
-    response=owner.post(f'/api/problems/{problem}/jobs',json={'kind':'package','version':state['version'],'options':{'export_format':'linux','execution_backend':'editor'}})
+    response=queue_legacy_job(owner,problem,{'kind':'package','version':state['version'],'options':{'export_format':'linux','execution_backend':'editor'}})
     assert response.status_code==202,response.text
     process_job(claim_job())
     job=owner.get(f'/api/problems/{problem}/jobs/{response.json()["id"]}').json()

@@ -287,17 +287,20 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
         if options["minimize"] and doc["info"]["interactive"]:
             fail("invalid_stress_minimize", "자동 축소는 비인터랙티브 입력에서 사용할 수 있습니다.")
         options["stress_configuration"] = stress_configuration(doc, options)
-    if values.kind == "package" and options["export_format"] == "linux" and not archive_only:
-        if options["execution_backend"] not in {None, "editor"}:
-            fail("invalid_replay_backend", "Linux 재현 패키지는 Editor 격리 실행을 선택하세요. ZOJ 대회 채점기의 언어별 보정을 재현했다고 표시하지 않습니다.")
-        options["execution_backend"] = "editor"
-    options["execution_backend"] = options["execution_backend"] or get_settings().judge_backend
-    if values.kind not in {"verify", "package"} or (values.kind == "package" and not options["verify"]):
+    if values.kind in {"verify", "stress"} or (values.kind == "package" and not archive_only):
+        if options["execution_backend"] == "editor":
+            fail("judge_backend_required", "풀이 검증과 스트레스 테스트는 ZOJ 실제 채점기에서만 실행할 수 있습니다.")
+        options["execution_backend"] = "zoj"
+    else:
         options["execution_backend"] = "editor"
     if options["execution_backend"] == "zoj":
         from .judge_bridge import compatible, capabilities
         compatible(doc, options, values.kind)
         options["judge_revision"] = capabilities(user)["runtime_revision"]
+        from .language_limits import effective_limits, exported_limits
+        options["judging_policy"] = {"version":1, "time_limit_ms":doc["info"]["time_limit_ms"],
+            "memory_limit_mb":doc["info"]["memory_limit_mb"], "language_resource_limits":exported_limits(doc.get("language_resource_limits")),
+            "effective_limits":{language:effective_limits(doc["info"]["time_limit_ms"],doc["info"]["memory_limit_mb"],language,doc.get("language_resource_limits",{}).get(language)) for language in ("cpp17","c99","python3","pypy3","java8","kotlin")}}
     options["execution_transport"] = "archive" if archive_only else get_settings().execution_transport
     if options["execution_transport"] == "agent":
         from .judge_bridge import capabilities

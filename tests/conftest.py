@@ -62,3 +62,32 @@ def problem(owner):
     response = owner.post("/api/problems", json={"name": "두 수의 합", "slug": "a-plus-b"})
     assert response.status_code == 201, response.text
     return response.json()["id"]
+
+
+@pytest.fixture(autouse=True)
+def judge_capabilities_transport(monkeypatch):
+    """Unit tests negotiate a judge protocol without contacting production."""
+    from app import judge_bridge
+    real_remote = judge_bridge.remote
+    def remote(method, path, *args, **kwargs):
+        if method == "GET" and path == "/api/editor/judge/capabilities":
+            return {"backend":"zoj", "runtime_revision":"test-judge-v1", "online_nodes":1,
+                    "execution":{"protocol":"editor-execute-v1","runtime_revision":"test-execution-v1","online_nodes":1}}
+        return real_remote(method, path, *args, **kwargs)
+    monkeypatch.setattr(judge_bridge, "remote", remote)
+
+
+@pytest.fixture
+def queue_legacy_job():
+    """Old queued jobs may finish locally; the public API cannot create them."""
+    from app.db import Job
+    def enqueue(client, problem_id, payload):
+        payload = {**payload, "options": {**payload.get("options", {}), "execution_backend": None}}
+        response = client.post(f"/api/problems/{problem_id}/jobs", json=payload)
+        assert response.status_code == 202, response.text
+        with SessionLocal() as db:
+            job = db.get(Job, response.json()["id"])
+            job.options = {**job.options, "execution_backend": "editor"}
+            db.commit()
+        return response
+    return enqueue

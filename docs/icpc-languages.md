@@ -21,12 +21,31 @@ We additionally set `-XX:ActiveProcessorCount=1` for the single-CPU sandbox.
 The jar packaging differs from ICPC's class-directory + kotlin launcher;
 the compiler version, JVM, standard library and runtime flags are fixed.
 
-These new languages use the problem's base CPU time and total memory limit
-without a language multiplier, as in the referenced ICPC environment. ZOJ's
-explicit per-language problem overrides still take precedence. JVM/PyPy/JIT
-memory counts toward the total sandbox limit; heap size is not extra memory.
-Editor isolated execution uses raw problem limits. Existing CPython/Java
-language corrections in the ZOJ contest judge are retained.
+ZOJ online solution verification, stress comparisons, and verified package
+exports always use the ZOJ judge queue. There is no online Editor-isolated
+judging fallback. Generation, validators, answer preparation, and rendering
+remain production tasks on authorized agents. Stress reference answers are
+prepared first, then the reference and candidates are actually judged; only
+the real ZOJ measurements are shown as judging time and memory.
+
+Unspecified language limits use the contest policy:
+
+| Language | CPU limit | Total memory limit |
+| --- | --- | --- |
+| C/C++ | base | base |
+| CPython | base * 3 + 2000 ms | base * 2 + 32 MiB |
+| PyPy | base * 3 + 2000 ms | base * 2 + 128 MiB |
+| Java/Kotlin | base * 2 + 1000 ms | base * 2 + 16 MiB |
+
+Document.language_resource_limits stores optional per-language time_limit_ms,
+memory_limit_mb and disable_auto_adjustment. An explicit field wins. With
+correction disabled, missing fields follow the current base limit. Otherwise
+missing fields use the policy above. The empty map is omitted for old-document
+hash compatibility. Editing requires edit_info; committed reviewer invocations
+use the settings saved in that revision. Packages and judge snapshots translate
+Editor python3 to ZOJ python313 and preserve all selected values and flags.
+Offline replay uses the same numeric policy but a distinct execution runtime;
+it is not proof of contest timing equivalence.
 
 Only updated agents advertising `judge-icpc-languages-v1` claim new-language
 judging jobs. Editor tools require `editor-icpc-languages-v1`, advertised only

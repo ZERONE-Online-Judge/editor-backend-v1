@@ -9,6 +9,16 @@ class Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class LanguageResourceLimit(Strict):
+    time_limit_ms: int | None = Field(default=None, ge=100, le=10000, strict=True)
+    memory_limit_mb: int | None = Field(default=None, ge=16, le=1024, strict=True)
+    disable_auto_adjustment: bool = Field(default=False, strict=True)
+
+    @model_serializer(mode="wrap")
+    def serialize(self, handler):
+        return {key:value for key,value in handler(self).items() if value is not None and (key != "disable_auto_adjustment" or value)}
+
+
 class Info(Strict):
     name: str = Field(min_length=1, max_length=200)
     input_file: str = Field(default="stdin", min_length=1, max_length=64)
@@ -216,6 +226,7 @@ class TranslationReview(Strict):
 
 
 class Document(Strict):
+    language_resource_limits: dict[Literal["cpp17", "python3", "c99", "java8", "pypy3", "kotlin"], LanguageResourceLimit] = Field(default_factory=dict, max_length=6)
     info: Info
     common_statement: str = Field(default="", max_length=262144)
     common_tutorial: str = Field(default="", max_length=262144)
@@ -236,7 +247,8 @@ class Document(Strict):
     @model_serializer(mode="wrap")
     def serialize(self, handler):
         value=handler(self)
-        for key in ("common_statement","common_tutorial","translation_source","translation_reviews"):
+        value["language_resource_limits"] = {key:limits for key,limits in value["language_resource_limits"].items() if limits}
+        for key in ("common_statement","common_tutorial","translation_source","translation_reviews","language_resource_limits"):
             if not value[key]: value.pop(key)
         return value
 

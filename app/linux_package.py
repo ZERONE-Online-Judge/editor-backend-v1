@@ -31,7 +31,7 @@ def add(archive, job, report):
     runtime=report.get('preparation_runtime') or report.get('runtime',{})
     metadata={'format':'zoj-linux-replay-v1','revision':job.revision,'document_hash':job.document_hash,
               'runtime':runtime,'measured_environment':report.get('replay_environment'),
-              'execution_runs':report.get('execution_runs',[]),'judging_limits':'Editor raw CPU and peak memory; ZOJ contest language corrections are not applied',
+              'execution_runs':report.get('execution_runs',[]),'verification_runtime':report.get('runtime',{}),'judging_limits':'ZOJ language limits including explicit overrides and disabled correction; offline execution has a distinct runtime',
               'verified_at_export':bool(report.get('verified',False))}
     archive.writestr('replay/environment.json',json.dumps(metadata,ensure_ascii=False,indent=2))
     archive.writestr('replay/original-results.json',json.dumps({k:report.get(k) for k in ['solutions','test_matrix','verified','unit_tests']},ensure_ascii=False))
@@ -44,6 +44,7 @@ def add(archive, job, report):
         assert original in sandbox
         sandbox=sandbox.replace(original,'from .support import ')
     archive.writestr('replay/engine/sandbox.py',sandbox)
+    archive.write(ROOT/'app/language_limits.py','replay/engine/language_limits.py')
     archive.write(ROOT/'app/parallel.py','replay/engine/parallel.py')
     archive.write(ROOT/'app/execution_protocol.py','replay/engine/execution_protocol.py')
     archive.write(ROOT/'app/resources.py','replay/engine/resources.py')

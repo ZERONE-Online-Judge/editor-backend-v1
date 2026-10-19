@@ -54,7 +54,8 @@ class Pipeline:
                     self.result["execution_runs"] = self.result["execution_runs"][-2000:]
                     self.publish(copy.deepcopy(self.result))
             self.sandbox.agent_transport.on_result = record_execution
-        self.remote_judging = job.options.get("execution_backend") == "zoj" and job.kind in {"verify", "package"}
+        self.remote_judging = job.options.get("execution_backend") == "zoj" and job.kind in {"verify", "package", "stress"}
+        self.stress_judge_budget = threading.BoundedSemaphore(get_settings().judge_concurrency)
         self.result["runtime"] = {"backend": "zoj", "runtime_revision": job.options.get("judge_revision")} if self.remote_judging else runtime
         if self.remote_judging:
             self.result["preparation_runtime"] = runtime
@@ -152,7 +153,11 @@ class Pipeline:
             verdict = "AC" if raw >= maximum - 1e-8 else "PARTIAL" if raw > 0 else "WA"
         return verdict, result
 
-    def run_solution(self, name, input_bytes, answer=b"", preparation=False):
+    def run_solution(self, name, input_bytes, answer=None, preparation=False):
+        if self.remote_judging and self.job.kind == "stress" and not preparation:
+            from .stress_judging import run
+            return run(self, name, input_bytes, answer)
+        answer = answer if answer is not None else b""
         info = self.doc["info"]
         program = self.program(name, True)
         cpu_ms, memory_mb = info["time_limit_ms"], info["memory_limit_mb"]

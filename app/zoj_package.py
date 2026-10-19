@@ -1,3 +1,4 @@
+from .language_limits import exported_limits
 """ZOJ problem ZIP v1 adapter. Do not silently change judging semantics."""
 import copy
 import hashlib
@@ -168,7 +169,7 @@ def build_zoj_package(job, testsets):
             return "<!--ZOJ_META:" + json.dumps(meta, ensure_ascii=False).replace("-->", "\\u002d\\u002d>") + "-->\n" + rewrite(item["legend"])
         manifest["problem"] = {"problem_code": "A", "title": statement["name"] or doc["info"]["name"],
             "statement": statement_text(statement), "editorial": rewrite(statement["tutorial"]), "time_limit_ms": doc["info"]["time_limit_ms"],
-            "memory_limit_mb": doc["info"]["memory_limit_mb"], "language_resource_limits": {}, "display_order": 1}
+            "memory_limit_mb": doc["info"]["memory_limit_mb"], "language_resource_limits": exported_limits(doc.get("language_resource_limits")), "display_order": 1}
         # Expose translations through ZOJ's native fields, separate from the
         # private Editor snapshot. Single-language Korean archives stay unchanged.
         language_codes = {name: statement_language_code(name) for name in doc["statements"]}

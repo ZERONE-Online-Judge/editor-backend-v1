@@ -172,10 +172,10 @@ def test_job_backend_and_real_judge_revision_invalidate_cached_results(owner, pr
     assert b.status_code == 202 and b.json()['id'] != a.json()['id']
     request['options']['execution_backend'] = 'editor'
     c = owner.post(f'/api/problems/{problem}/jobs', json=request)
-    assert c.status_code == 202 and c.json()['id'] not in {a.json()['id'], b.json()['id']}
+    assert c.status_code == 400 and c.json()['error']['code'] == 'judge_backend_required'
 
 
-def test_unsupported_features_require_explicit_editor_backend(problem, tmp_path):
+def test_unsupported_features_cannot_fall_back_to_isolated_judging(problem, tmp_path):
     p = fixture_data(problem, tmp_path)
     p.doc['solutions']['main.cpp']['language'] = 'cpp20'
     with pytest.raises(HTTPException) as error:
@@ -208,7 +208,7 @@ def test_language_diagnostics_group_files_and_respect_selected_scope(problem,tmp
     assert len(detail['unsupported_solutions'])==7
     assert all(row['label']=='C++20' for row in detail['unsupported_solutions'])
     assert '7개' in detail['message'] and 'wrong-0' not in detail['message']
-    assert len(detail['supported_languages'])==6 and detail['suggested_backend']=='editor'
+    assert len(detail['supported_languages'])==6 and detail['suggested_backend']=='zoj'
     assert not detail['issues']
     bridge.compatible(p.doc,{**p.job.options,'solutions':['main.cpp']},'verify')
     assert all(s['language']=='cpp20' for name,s in p.doc['solutions'].items() if name.startswith('wrong-'))

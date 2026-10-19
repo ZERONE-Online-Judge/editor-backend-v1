@@ -83,7 +83,7 @@ def collect(search):
                     buffered += len(output)
                 output = outputs[output_sha]
                 result["comparisons"].append((candidate, verdict,
-                    {"output": output, "cpu_ms": actual.get("cpu_ms"), "wall_ms": actual.get("wall_ms"), "memory_kb": actual.get("memory_kb")},
+                    {**actual, "output": output},
                     {"stderr": checked["stderr"]}))
                 if verdict == "JUDGE_ERROR":
                     raise SandboxError("checker 또는 격리 실행 환경의 오류입니다.\n" + checked["stderr"])

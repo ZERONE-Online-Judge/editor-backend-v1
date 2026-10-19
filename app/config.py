@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     job_timeout_seconds: int = Field(default=1800, ge=1, le=86400)
     stress_max_seconds: int = Field(default=1800, ge=1, le=86400)
     runtime_revision: str = "editor-runtime-0.2.0-icpc"
+    # Retain old environment compatibility; new online judging is always ZOJ.
     judge_backend: Literal["editor", "zoj"] = "editor"
     judge_concurrency: int = 3
     judge_request_retry_seconds: float = Field(default=120, ge=1, le=600)

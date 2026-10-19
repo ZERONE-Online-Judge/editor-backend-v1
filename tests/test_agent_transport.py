@@ -123,7 +123,7 @@ def native_agent(agent_mode,monkeypatch,tmp_path):
 
 @pytest.mark.sandbox
 @pytest.mark.parametrize('kind',['prepare','verify','validator-tests','checker-tests','stress','package','render'])
-def test_complete_editor_workflows_execute_on_actual_agent_runtime(owner,problem,native_agent,kind):
+def test_legacy_editor_workflows_execute_on_actual_agent_runtime(owner,problem,native_agent,kind,queue_legacy_job):
     with SessionLocal() as db:
         row=db.get(Problem,problem);row.document=populate(db,row)
         if kind == 'checker-tests':
@@ -138,7 +138,7 @@ def test_complete_editor_workflows_execute_on_actual_agent_runtime(owner,problem
     options={'execution_backend':'editor'}
     if kind=='prepare':options['auto_apply']=True
     if kind=='stress':options.update(generator='gen {seed}',reference='main.cpp',candidate='wrong.py',iterations=2)
-    created=owner.post(f'/api/problems/{problem}/jobs',json={'kind':kind,'version':state['version'],'options':options})
+    created=queue_legacy_job(owner,problem,{'kind':kind,'version':state['version'],'options':options})
     assert created.status_code==202,created.text
     process_job(claim_job())
     job=owner.get(f'/api/problems/{problem}/jobs/{created.json()["id"]}').json()

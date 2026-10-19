@@ -22,6 +22,7 @@ from .parallel import execution_budget
 from .sandbox import SandboxError, VENDOR
 from .storage import read_blob, blob_path
 from .invocation_scope import selected_testsets
+from .language_limits import exported_limits
 from .zoj import remote
 from .judge_requests import request_with_retry
 
@@ -43,7 +44,7 @@ def capabilities(user):
 @router.get("/execution-environment")
 def environment(user: User = Depends(current_user), db: Session = Depends(session_dependency)):
     settings = get_settings()
-    result = {"default_backend": settings.judge_backend, "zoj_configured": bool(settings.zoj_api_url), "zoj": None, "execution_transport": settings.execution_transport}
+    result = {"default_backend": "zoj", "zoj_configured": bool(settings.zoj_api_url), "zoj": None, "execution_transport": settings.execution_transport}
     result["limits"] = public_limits(settings)
     counts = dict(db.execute(select(Job.status, func.count()).where(Job.status.in_(["running", "queued"])).group_by(Job.status)).all())
     result["capacity"] = {"running_jobs": counts.get("running", 0), "queued_jobs": counts.get("queued", 0)}
@@ -62,15 +63,17 @@ def compatible(doc, options, kind):
     if info["interactive"] or info["input_file"] != "stdin" or info["output_file"] != "stdout":
         issues.append("현재 ZOJ 채점기는 표준 입출력의 비대화형 문제를 지원합니다.")
     if info["points_enabled"]:
-        issues.append("부분 점수는 Editor 격리 실행을 선택해 검증하세요.")
+        issues.append("ZOJ 실제 채점은 부분 점수 검증을 지원하지 않습니다.")
     if not 100 <= info["time_limit_ms"] <= 10000 or not 16 <= info["memory_limit_mb"] <= 1024:
         issues.append("ZOJ 문제 제한 범위는 100~10,000ms, 16~1,024MiB입니다.")
     if any(f.get("compile_with_solution") for f in doc["files"].values()):
-        issues.append("grader와 결합하는 풀이는 Editor 격리 실행으로 검증하세요.")
+        issues.append("ZOJ 실제 채점은 grader 결합 풀이를 지원하지 않습니다.")
     if any(f.get("resource_policy") for f in doc["files"].values()):
-        issues.append("언어·대상별 리소스 정책은 Editor 격리 실행으로 검증하세요. 에이전트 전송 모드에서는 같은 채점 노드가 격리 실행을 처리합니다.")
+        issues.append("ZOJ 실제 채점은 언어·대상별 리소스 정책을 지원하지 않습니다.")
     unsupported = []
     selected = list(doc["solutions"]) if kind == "package" else options["solutions"] or list(doc["solutions"])
+    if kind == "stress":
+        selected = list(dict.fromkeys([options["reference"] or next((name for name,source in doc["solutions"].items() if source["tag"] == "MA"), ""), *options["candidates"]]))
     labels = {"cpp17":"C++17", "cpp20":"C++20", "c17":"C17", "c99":"C99", "python3":"Python 3.13", "java17":"Java 17", "java8":"Java 8", "pypy3":"PyPy 3.9 (7.3.15)", "kotlin":"Kotlin 1.9.24"}
     for name in dict.fromkeys(selected):
         s = doc["solutions"][name]
@@ -79,7 +82,7 @@ def compatible(doc, options, kind):
         if s["language"] not in LANGUAGES:
             unsupported.append({"name":name,"language":s["language"],"label":labels.get(s["language"],s["language"])})
         if s["tag"] == "PE" or "PE" in s.get("extra_tags", {}).values() or any("PE" in tags.values() for tags in s.get("group_tags", {}).values()):
-            issues.append(f"{name}: PE 기대 판정은 Editor 격리 실행을 선택해 검증하세요.")
+            issues.append(f"{name}: ZOJ 실제 채점은 PE 기대 판정을 지원하지 않습니다.")
     unsupported_checker = None
     checker = doc["files"].get(doc["checker"])
     if checker and checker["language"] not in {"cpp17", "c99", "python3"}:
@@ -98,12 +101,12 @@ def compatible(doc, options, kind):
             guidance.append("‘Checker 파일 언어 설정’에서 해당 파일의 언어를 지원 표준으로 변경하고 저장한 뒤 검증을 다시 시작하세요. 코드를 해당 표준으로 컴파일할 수 있는지도 확인하세요.")
         if unsupported:
             guidance.append("‘풀이 언어 설정’에서 지원하지 않는 풀이의 언어를 변경하세요.")
-        guidance.append("현재 언어를 유지하려면 에이전트 격리 실행을 선택하세요. 언어 표준을 자동으로 바꾸지 않습니다.")
+        guidance.append("지원하는 언어·문제 설정으로 수정한 뒤 검증하세요. 언어 표준을 자동으로 바꾸지 않습니다.")
         fail("judge_incompatible", message, 400, issues=issues, unsupported_solutions=unsupported,
              unsupported_checker=unsupported_checker,
              supported_languages=[{"language":key,"label":labels[key]} for key in LANGUAGES],
              guidance=" ".join(guidance),
-             suggested_backend="editor")
+             suggested_backend="zoj")
 
 
 # Keep requests bounded even when a suite contains hundreds of large cases.
@@ -174,6 +177,7 @@ def archive(pipeline, name, set_name, tests, attempt):
                 "project_id": pipeline.job.problem_id, "context_hash": pipeline.job.document_hash,
                 "source": {"name": name, "language": LANGUAGES[source["language"]], "sha256": source["sha256"]},
                 "time_limit_ms": pipeline.doc["info"]["time_limit_ms"], "memory_limit_mb": pipeline.doc["info"]["memory_limit_mb"],
+                "language_resource_limits": exported_limits(pipeline.doc.get("language_resource_limits")),
                 "resources": resources, "testcases": cases}
     path = pipeline.sandbox.root / (operation + ".judge.zip")
     try:

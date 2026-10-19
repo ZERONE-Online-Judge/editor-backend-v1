@@ -8,6 +8,7 @@ from pathlib import Path
 from engine import support
 from engine.sandbox import Sandbox, SandboxError, VENDOR
 from engine.expectations import evaluate, expected_tag
+from engine.language_limits import effective_limits
 
 
 def replay(args):
@@ -75,7 +76,8 @@ def replay(args):
                     for test in tests:
                         if expected_tag(source,set_name,test.get('group',''),doc['testsets'])[0]=='NR': continue
                         inp,answer=support.read_blob(test['input_sha']),support.read_blob(test['answer_sha'])
-                        limits={'cpu_ms':info['time_limit_ms'],'memory_mb':info['memory_limit_mb']}
+                        policy=effective_limits(info['time_limit_ms'],info['memory_limit_mb'],source['language'],doc.get('language_resource_limits',{}).get(source['language']))
+                        limits={'cpu_ms':policy['time_limit_ms'],'memory_mb':policy['memory_limit_mb']}
                         if info['interactive']:
                             actual=sandbox.interactive(solution,program(doc['interactor']),inp,answer,**limits)
                         else:

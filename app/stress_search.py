@@ -58,7 +58,7 @@ class StressSearch:
     def compare(self, candidate, content, answer):
         verdict, actual = self.p.run_solution(candidate, content, answer)
         checked = {"stderr": actual["stderr"]}
-        if verdict == "AC":
+        if verdict == "AC" and not actual.get("judged_by_zoj"):
             verdict, checked = self.p.checker(content, actual["output"], answer)
         return verdict, actual, checked
 
@@ -78,7 +78,8 @@ class StressSearch:
             pattern_stats["counterexample_inputs"] += 1
         finding = {"solution": candidate, "tag": summary["tag"], "verdict": verdict,
                    "actual_sha": hashlib.sha256(wrong["output"]).hexdigest(), "comment": checked["stderr"][:2048],
-                   "cpu_ms": wrong.get("cpu_ms"), "wall_ms": wrong.get("wall_ms"), "memory_kb": wrong.get("memory_kb")}
+                   "cpu_ms": wrong.get("cpu_ms"), "wall_ms": wrong.get("wall_ms"), "memory_kb": wrong.get("memory_kb"),
+                   **{key:wrong[key] for key in ("output_truncated","output_total_bytes") if key in wrong}}
         example["findings"].append(finding)
         summary["counterexamples"] += 1
         pattern_stats["findings"] += 1

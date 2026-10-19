@@ -80,7 +80,7 @@ def job_allowed(access, job):
     return job.options.get("snapshot", "working_copy") != "working_copy" or editing(access)
 
 
-FIELDS = {"info": "edit_info", "statements": "edit_statements", "common_statement": "edit_statements",
+FIELDS = {"info": "edit_info", "language_resource_limits": "edit_info", "statements": "edit_statements", "common_statement": "edit_statements",
     "common_tutorial": "edit_statements", "translation_source": "edit_statements", "translation_reviews": "edit_statements",
     "files": "edit_files", "checker": "edit_files", "validator": "edit_files", "extra_validators": "edit_files",
     "interactor": "edit_files", "validator_tests": "edit_files", "checker_tests": "edit_files",
