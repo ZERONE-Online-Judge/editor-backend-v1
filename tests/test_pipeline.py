@@ -1,3 +1,7 @@
+"""Real Docker checks for preparation and historical queued/offline judging.
+
+New online ZOJ-only requests are covered by the bridge and physical checks.
+"""
 import os
 import copy
 import time
@@ -162,7 +166,7 @@ def test_real_display_samples_are_checked_without_replacing_judge_data(owner, pr
     assert sample['statement_output']=='5 \n\n'
 
 
-def test_real_solution_expected_tle_only_in_large_group(owner, problem):
+def test_real_solution_expected_tle_only_in_large_group(owner, problem, queue_legacy_job):
     with SessionLocal() as db:
         row = db.get(Problem, problem)
         doc = populate(db, row)
@@ -178,7 +182,7 @@ def test_real_solution_expected_tle_only_in_large_group(owner, problem):
         db.get(Revision, (problem, 0)).document = copy.deepcopy(doc)
         db.commit()
     state = owner.get(f'/api/problems/{problem}').json()
-    request = owner.post(f'/api/problems/{problem}/jobs', json={'kind':'verify','version':state['version'], 'options':{'solutions':['small.cpp']}})
+    request = queue_legacy_job(owner, problem, {'kind':'verify','version':state['version'], 'options':{'solutions':['small.cpp']}})
     assert request.status_code == 202, request.text
     process_job(claim_job())
     job = owner.get(f'/api/problems/{problem}/jobs/{request.json()["id"]}').json()
@@ -189,10 +193,10 @@ def test_real_solution_expected_tle_only_in_large_group(owner, problem):
     assert [(scope['group'],scope['tag'],scope['matched']) for scope in result['expectations']] == [('small','OK',True),('large','TL',True)]
 
 
-def test_real_checker_validator_main_wrong_solution_and_package_roundtrip(owner,problem):
+def test_real_checker_validator_main_wrong_solution_and_package_roundtrip(owner,problem, queue_legacy_job):
     prepare_problem(problem)
     state=owner.get(f'/api/problems/{problem}').json()
-    response=owner.post(f'/api/problems/{problem}/jobs',json={'kind':'package','version':state['version']})
+    response=queue_legacy_job(owner, problem, {'kind':'package','version':state['version']})
     assert response.status_code==202,response.text
     created=response.json()
     claimed=claim_job()
@@ -213,10 +217,10 @@ def test_real_checker_validator_main_wrong_solution_and_package_roundtrip(owner,
     assert len(document['testsets']['tests']['tests'])==3
 
 
-def test_stress_counterexample_validated_and_persisted(owner,problem):
+def test_stress_counterexample_validated_and_persisted(owner,problem, queue_legacy_job):
     prepare_problem(problem)
     state=owner.get(f'/api/problems/{problem}').json()
-    result=owner.post(f'/api/problems/{problem}/jobs',json={'kind':'stress','version':state['version'],'options':{'generator':'gen {seed}','reference':'main.cpp','candidate':'wrong.py','iterations':3}})
+    result=queue_legacy_job(owner, problem, {'kind':'stress','version':state['version'],'options':{'generator':'gen {seed}','reference':'main.cpp','candidate':'wrong.py','iterations':3}})
     assert result.status_code==202,result.text
     process_job(claim_job())
     job=owner.get(f'/api/problems/{problem}/jobs/{result.json()["id"]}').json()
@@ -239,10 +243,10 @@ def test_korean_math_pdf_is_rendered_offline(owner,problem):
     assert html.status_code==200 and b'data:font/' in html.content
 
 
-def test_real_verified_zoj_zip_can_restore_editor_project(owner,problem):
+def test_real_verified_zoj_zip_can_restore_editor_project(owner,problem, queue_legacy_job):
     prepare_problem(problem)
     state=owner.get(f'/api/problems/{problem}').json()
-    created=owner.post(f'/api/problems/{problem}/jobs',json={'kind':'package','version':state['version'],'options':{'export_format':'zoj','statement_language':'korean'}})
+    created=queue_legacy_job(owner, problem, {'kind':'package','version':state['version'],'options':{'export_format':'zoj','statement_language':'korean'}})
     assert created.status_code==202,created.text
     process_job(claim_job())
     job=owner.get(f'/api/problems/{problem}/jobs/{created.json()["id"]}').json()
@@ -260,7 +264,7 @@ def test_real_verified_zoj_zip_can_restore_editor_project(owner,problem):
         Path(os.environ['ZOJ_COMPAT_ARTIFACT']).write_bytes(archive.content)
 
 
-def test_real_generation_auto_apply_and_role_package_roundtrip(owner, problem):
+def test_real_generation_auto_apply_and_role_package_roundtrip(owner, problem, queue_legacy_job):
     prepare_problem(problem)
     state = owner.get(f"/api/problems/{problem}").json()
     state["document"]["files"]["validator.cpp"]["roles"] = ["validator"]
@@ -282,7 +286,7 @@ def test_real_generation_auto_apply_and_role_package_roundtrip(owner, problem):
     assert state["pending_preparations"] == []
     assert owner.post(f"/api/problems/{problem}/commit", json={"version": state["version"], "message": "생성 결과 반영"}).status_code == 200
     state = owner.get(f"/api/problems/{problem}").json()
-    created = owner.post(f"/api/problems/{problem}/jobs", json={"kind": "package", "version": state["version"]})
+    created = queue_legacy_job(owner, problem, {"kind": "package", "version": state["version"]})
     assert created.status_code == 202, created.text
     process_job(claim_job())
     archive = owner.get(f"/api/problems/{problem}/packages/{created.json()['id']}")
@@ -299,7 +303,7 @@ def test_real_generation_auto_apply_and_role_package_roundtrip(owner, problem):
     assert [t['command'] for t in doc['testsets']['tests']['tests'].values() if t['command']] == ['gen 10', 'gen 11', 'gen 12']
 
 
-def test_real_stress_shares_inputs_and_collects_multiple_solution_failures(owner, problem):
+def test_real_stress_shares_inputs_and_collects_multiple_solution_failures(owner, problem, queue_legacy_job):
     prepare_problem(problem)
     state = owner.get(f"/api/problems/{problem}").json()
     duplicate = copy.deepcopy(state["document"]["solutions"]["wrong.py"])
@@ -308,7 +312,7 @@ def test_real_stress_shares_inputs_and_collects_multiple_solution_failures(owner
     passing = {**state["document"]["solutions"]["main.cpp"], "name": "passing.cpp", "tag": "OK"}
     state["document"]["solutions"]["passing.cpp"] = passing
     saved = owner.put(f"/api/problems/{problem}/working-copy", json={"version": state["version"], "document": state["document"]})
-    requested = owner.post(f"/api/problems/{problem}/jobs", json={"kind": "stress", "version": saved.json()["version"], "options": {
+    requested = queue_legacy_job(owner, problem, {"kind": "stress", "version": saved.json()["version"], "options": {
         "generator": "gen {seed}", "reference": "main.cpp", "candidates": ["wrong.py", "wrong2.py", "passing.cpp"],
         "iterations": 3, "stop_on_first": False, "counterexample_limit": 5,
     }})
@@ -330,7 +334,7 @@ def test_real_stress_shares_inputs_and_collects_multiple_solution_failures(owner
                for case in rows["passing.cpp"]["cases"])
 
 
-def test_real_stress_duration_stops_an_active_program(owner, problem):
+def test_real_stress_duration_stops_an_active_program(owner, problem, queue_legacy_job):
     prepare_problem(problem)
     state = owner.get(f"/api/problems/{problem}").json()
     with SessionLocal() as db:
@@ -339,7 +343,7 @@ def test_real_stress_duration_stops_an_active_program(owner, problem):
     state["document"]["solutions"]["slow.py"] = {"name": "slow.py", "kind": "source", "language": "python3", "tag": "TL", "extra_tags": {}, **blob}
     state["document"]["info"]["time_limit_ms"] = 15000
     saved = owner.put(f"/api/problems/{problem}/working-copy", json={"version": state["version"], "document": state["document"]})
-    requested = owner.post(f"/api/problems/{problem}/jobs", json={"kind": "stress", "version": saved.json()["version"], "options": {
+    requested = queue_legacy_job(owner, problem, {"kind": "stress", "version": saved.json()["version"], "options": {
         "generator": "gen {seed}", "reference": "main.cpp", "candidate": "slow.py", "iterations": 1000,
         "duration_seconds": 2, "stop_on_first": False, "counterexample_limit": 5,
     }})
@@ -353,7 +357,7 @@ def test_real_stress_duration_stops_an_active_program(owner, problem):
     assert elapsed < 8, elapsed
 
 
-def test_real_range_patterns_reduce_and_register_validator_approved_array_counterexamples(owner, problem):
+def test_real_range_patterns_reduce_and_register_validator_approved_array_counterexamples(owner, problem, queue_legacy_job):
     from app.storage import read_blob
     with SessionLocal() as db:
         row = db.get(Problem, problem)
@@ -372,7 +376,7 @@ def test_real_range_patterns_reduce_and_register_validator_approved_array_counte
         db.get(Revision, (problem, 0)).document = copy.deepcopy(doc)
         db.commit()
     state = owner.get(f'/api/problems/{problem}').json()
-    requested = owner.post(f'/api/problems/{problem}/jobs', json={'kind': 'stress', 'version': state['version'], 'options': {
+    requested = queue_legacy_job(owner, problem, {'kind': 'stress', 'version': state['version'], 'options': {
         'patterns': [{'name': 'short', 'command': 'gen [4..8] {seed}'}, {'name': 'long', 'command': 'gen [9..12] {seed}'}],
         'candidates': ['wrong.py'], 'iterations': 2, 'stop_on_first': False, 'counterexample_limit': 5,
         'group': 'small', 'minimize': True, 'minimize_seconds': 20,

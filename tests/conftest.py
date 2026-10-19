@@ -80,14 +80,26 @@ def judge_capabilities_transport(monkeypatch):
 @pytest.fixture
 def queue_legacy_job():
     """Old queued jobs may finish locally; the public API cannot create them."""
-    from app.db import Job
+    import copy
+    from httpx import Response
+    from app.config import get_settings
+    from app.db import Job, Problem
+    from app.jobs import JobRequest, job_json
     def enqueue(client, problem_id, payload):
-        payload = {**payload, "options": {**payload.get("options", {}), "execution_backend": None}}
-        response = client.post(f"/api/problems/{problem_id}/jobs", json=payload)
-        assert response.status_code == 202, response.text
+        state = client.get(f"/api/problems/{problem_id}").json()
+        request = JobRequest.model_validate(payload)
+        assert request.version == state['version']
+        options = request.options.model_dump()
+        options.update(execution_backend='editor', snapshot='working_copy',
+                       runtime_revision=get_settings().runtime_revision,
+                       execution_transport=get_settings().execution_transport)
+        options['candidates'] = options['candidates'] or ([options['candidate']] if options['candidate'] else [])
         with SessionLocal() as db:
-            job = db.get(Job, response.json()["id"])
-            job.options = {**job.options, "execution_backend": "editor"}
+            problem = db.get(Problem, problem_id)
+            job = Job(problem_id=problem_id, user_id=problem.owner_id, kind=request.kind,
+                      document=copy.deepcopy(state['document']), document_hash=state['document_hash'],
+                      workspace_version=state['version'], revision=problem.revision, options=options)
+            db.add(job)
             db.commit()
-        return response
+            return Response(202, json=job_json(job))
     return enqueue

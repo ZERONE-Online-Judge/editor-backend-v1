@@ -106,3 +106,22 @@ def test_stress_and_minimizer_never_run_the_editor_checker_after_real_judging():
     minimizer=object.__new__(Minimizer);minimizer.p=p
     assert minimizer.verdict("main",b"1 2",b"3")[0]=="AC"
     assert calls==[]
+
+
+def test_legacy_fixture_creates_only_historical_queue_rows(owner,problem,tmp_path,queue_legacy_job):
+    from app.db import Job
+    p=fixture_data(problem,tmp_path)
+    p.doc['info']['time_limit_ms']=15000
+    with SessionLocal() as db:
+        db.get(Problem,problem).document=copy.deepcopy(p.doc)
+        db.commit()
+    state=owner.get(f'/api/problems/{problem}').json()
+    payload={'kind':'stress','version':state['version'],'options':{'generator':'gen {seed}','candidate':'wrong.py','execution_backend':'editor'}}
+    assert owner.post(f'/api/problems/{problem}/jobs',json=payload).status_code==400
+    response=queue_legacy_job(owner,problem,payload)
+    assert response.status_code==202
+    with SessionLocal() as db:
+        job=db.get(Job,response.json()['id'])
+        assert job.options['execution_backend']=='editor'
+        assert job.options['candidates']==['wrong.py']
+        assert job.document['info']['time_limit_ms']==15000
