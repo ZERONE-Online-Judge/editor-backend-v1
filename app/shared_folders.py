@@ -1,7 +1,7 @@
 """Account-bound invitations and workspace membership administration."""
 from typing import Literal
 from fastapi import APIRouter, Depends
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 from .auth import current_user
@@ -113,18 +113,42 @@ def members(workspace_id: str, user: User = Depends(current_user), db: Session =
 
 
 class Invite(Strict):
-    email: str = Field(min_length=3, max_length=254)
+    # Keep email for older clients; new clients can also invite by account tag.
+    email: str | None = Field(default=None, min_length=3, max_length=254)
+    login: str | None = Field(default=None, min_length=1, max_length=254)
     role: Role = "VIEWER"
     permissions: list[Permission] | None = Field(default=None, max_length=16)
 
     @field_validator("email")
     @classmethod
     def email_address(cls, value):
+        if value is None:
+            return value
         import re
         value = value.strip().lower()
         if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", value):
             raise ValueError("Enter an email address")
         return value
+
+    @field_validator("login")
+    @classmethod
+    def account_identifier(cls, value):
+        if value is None:
+            return value
+        import re
+        value = value.strip()
+        if re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", value):
+            return value.lower()
+        handle = value.removeprefix("@")
+        if not re.fullmatch(r"[a-zA-Z][a-zA-Z0-9_-]{2,39}", handle):
+            raise ValueError("이메일 또는 @editor-아이디를 입력하세요.")
+        return handle
+
+    @model_validator(mode="after")
+    def one_recipient(self):
+        if (self.email is None) == (self.login is None):
+            raise ValueError("초대할 이메일 또는 아이디를 하나만 입력하세요.")
+        return self
 
 
 @router.post("/{workspace_id}/invitations", status_code=201)
@@ -132,23 +156,31 @@ def invite(workspace_id: str, values: Invite, user: User = Depends(current_user)
     space_access(db, user, workspace_id, admin=True, lock=True)
     requested = set(values.permissions) if values.permissions is not None else grants(values, folder=True)
     delegate(workspace_access(db, workspace_id, user.id), requested, folder=True)
-    target = db.scalar(select(User).where(func.lower(User.email) == values.email))
+    recipient = values.email if values.email is not None else values.login
+    if "@" in recipient:
+        email = recipient
+        target = db.scalar(select(User).where(func.lower(User.email) == email))
+    else:
+        target = db.scalar(select(User).where(User.handle == recipient))
+        if not target:
+            fail("user_not_found", "해당 Editor 아이디를 찾을 수 없습니다. @아이디를 확인하거나 이메일로 초대하세요.", 404)
+        email = target.email.lower()
     if target and workspace_role(db, workspace_id, target.id):
         fail("already_member", "이미 구성원입니다. 구성원 목록에서 권한을 변경하세요.", 409)
-    row = db.scalar(select(WorkspaceInvitation).where(WorkspaceInvitation.workspace_id == workspace_id, WorkspaceInvitation.email == values.email))
+    row = db.scalar(select(WorkspaceInvitation).where(WorkspaceInvitation.workspace_id == workspace_id, WorkspaceInvitation.email == email))
     notify = not row or row.status != "pending" or row.expires_at <= now() or bool(requested - grants(row, folder=True))
     if not row and db.scalar(select(func.count()).select_from(WorkspaceInvitation).where(WorkspaceInvitation.workspace_id == workspace_id,
             WorkspaceInvitation.status == "pending", WorkspaceInvitation.expires_at > now())) >= 200:
         fail("too_many_invitations", "대기 중인 초대는 최대 200개입니다.")
     if not row:
-        row = WorkspaceInvitation(workspace_id=workspace_id, email=values.email, role=values.role, inviter_id=user.id, expires_at=now()+7*86400)
+        row = WorkspaceInvitation(workspace_id=workspace_id, email=email, role=values.role, inviter_id=user.id, expires_at=now()+7*86400)
         db.add(row)
     row.permissions = stored(requested)
     row.role, row.inviter_id, row.status, row.created_at, row.expires_at = "CUSTOM" if values.permissions is not None else values.role, user.id, "pending", now(), now()+7*86400
     if notify:
         db.flush()
         enqueue_access_mail(db, kind="folder_invitation", resource_id=workspace_id,
-            resource_name=db.get(Folder, workspace_id).name, email=values.email,
+            resource_name=db.get(Folder, workspace_id).name, email=email,
             actor=user, permissions=requested, invitation_id=row.id, expires_at=row.expires_at)
     db.commit()
     return {"id": row.id, "expires_at": row.expires_at}

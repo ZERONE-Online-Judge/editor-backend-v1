@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends
-from pydantic import Field
+from pydantic import Field, field_validator
 from typing import Literal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -29,6 +29,14 @@ class SetAccess(Strict):
     permissions: list[Permission] | None = Field(default=None, max_length=16)
     reviewer: bool = False
     translator: bool = False
+
+    @field_validator("login")
+    @classmethod
+    def account_identifier(cls, value):
+        value = value.strip().removeprefix("@")
+        if not value:
+            raise ValueError("이메일 또는 Editor 아이디를 입력하세요.")
+        return value
 
 
 @router.put("/problems/{problem_id}/accesses")
