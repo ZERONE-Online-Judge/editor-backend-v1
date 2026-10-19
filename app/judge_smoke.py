@@ -19,9 +19,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--temporary-fixture', action='store_true', required=True)
     parser.add_argument('--large-files', action='store_true')
+    parser.add_argument('--language-policy', action='store_true')
     args = parser.parse_args()
     if not get_settings().zoj_api_url:
         raise SystemExit('Configure ZOJ judging before running this check.')
+    if args.language_policy:
+        if args.large_files:
+            parser.error('Choose one physical check at a time.')
+        from .language_policy_smoke import run
+        return run()
     fixture_id = uuid4().hex
     job_id = None
     try:
