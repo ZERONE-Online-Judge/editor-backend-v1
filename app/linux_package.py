@@ -18,7 +18,7 @@ try:
  for line in open('/proc/cpuinfo'):
   if line.startswith(('model name','Hardware')): cpu=line.split(':',1)[1].strip();break
 except OSError: pass
-print(json.dumps({'machine':platform.machine(),'kernel':platform.release(),'cpu':cpu,'python':platform.python_version(),'gcc':version(['g++','--version']),'java':version(['java','-version']),'pypy':version(['pypy3','--version']),'kotlin':version(['kotlinc','-version']),'kotlin_jvm':version(['/usr/local/lib/icpc-jdk/bin/java','-version']),'sandbox_cpu_quota':1}))
+print(json.dumps({'machine':platform.machine(),'kernel':platform.release(),'cpu':cpu,'python':platform.python_version(),'gcc':version(['g++','--version']),'java':version(['java','-version']),'pypy':version(['pypy3','--version']),'kotlin':version(['kotlinc','-version']),'kotlin_jvm':version(['/usr/local/lib/zoj-jdk/bin/java','-version']),'sandbox_cpu_quota':1}))
 '''
     result=sandbox.execute(sandbox.new_folder(),['python3','-c',script],cpu_ms=10000,memory_mb=512,output_bytes=16384)
     if result['status']!='ok' or result['exit_code']!=0:
@@ -48,9 +48,10 @@ def add(archive, job, report):
     archive.write(ROOT/'app/parallel.py','replay/engine/parallel.py')
     archive.write(ROOT/'app/execution_protocol.py','replay/engine/execution_protocol.py')
     archive.write(ROOT/'app/resources.py','replay/engine/resources.py')
+    archive.write(ROOT/'app/runtime_policy.py','replay/engine/runtime_policy.py')
     expectations=(ROOT/'app/expectations.py').read_text().replace('from .domain import expanded_tests','from .support import expanded_tests')
     archive.writestr('replay/engine/expectations.py',expectations)
-    for name in ['Dockerfile','execute.py','launch.c','install-icpc-runtimes.sh']:
+    for name in ['Dockerfile','execute.py','launch.c','install-zoj-runtimes.sh']:
         archive.write(ROOT/'runner'/name,'replay/runtime/'+name)
     for path in (ROOT/'vendor/testlib').iterdir():
         if path.is_file(): archive.write(path,'replay/vendor/testlib/'+path.name)
