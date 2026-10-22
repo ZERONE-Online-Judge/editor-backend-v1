@@ -124,11 +124,12 @@ def test_runtime_image_stays_pinned_after_tag_changes(problem):
         subprocess.run(['docker','image','rm',label],check=True,capture_output=True)
 
 
-def test_zoj_preparation_supports_python313_c99_and_java8(problem):
+def test_zoj_preparation_uses_matching_python311_runtimes(problem):
     sandbox = Sandbox()
     try:
         for name, language, code in [
-            ('modern.py', 'python3', 'type Number = int\nprint(42)\n'),
+            ('modern.py', 'python3', 'import sys,tomllib\nassert sys.version_info[:3] == (3,11,17)\nprint(42)\n'),
+            ('jit.py', 'pypy3', 'import sys,tomllib\nassert sys.version_info[:3] == (3,11,17)\nprint(42)\n'),
             ('sum.c', 'c99', '#include <stdio.h>\nint main(void){puts("42");}\n'),
             ('Main.java', 'java8', 'public class Main{public static void main(String[] args){System.out.println(42);}}'),
         ]:
