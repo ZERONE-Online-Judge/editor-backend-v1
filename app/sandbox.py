@@ -17,6 +17,7 @@ from .db import uid
 from .schema import safe_name
 from .storage import read_blob
 from .execution_protocol import MAX_FILES_BYTES
+from .runtime_policy import JAVA, JAVAC, PYTHON, with_runtime_limits
 
 VENDOR = Path(__file__).resolve().parent.parent / "vendor" / "testlib"
 
@@ -219,16 +220,16 @@ class Sandbox:
             if actual_name != name:
                 (folder / actual_name).write_bytes(read_blob(source["sha256"]))
             units = [r["name"] for r in resources if is_solution and r.get("compile_with_solution") and r["language"] in {"java17", "java8"} and r["name"] != actual_name]
-            argv = ["javac", "-J-XX:ActiveProcessorCount=1", "--release", "8" if language == "java8" else "17", "-d", ".", actual_name, *units]
+            argv = [JAVAC, "-encoding", "UTF-8", "-J-XX:ActiveProcessorCount=1", "--release", "8" if language == "java8" else "17", "-d", ".", actual_name, *units]
             package = re.search(r"^\s*package\s+([A-Za-z_][A-Za-z0-9_.]*)\s*;", text, re.M)
             entry = source.get("entry_class") or (package.group(1) + "." if package else "") + classname
-            cmd = ["java", "-XX:ActiveProcessorCount=1", "-XX:+UseSerialGC", "-Xss1m", entry]
+            cmd = [JAVA, entry]
         elif language == "kotlin":
             units = [r["name"] for r in resources if is_solution and r.get("compile_with_solution") and r["language"] == "kotlin" and r["name"] != name]
             argv = ["kotlinc", "-J-Xmx512m", "-J-XX:ActiveProcessorCount=1", name, *units, "-include-runtime", "-d", "program.jar"]
-            cmd = ["/usr/local/lib/icpc-jdk/bin/java", "-Dfile.encoding=UTF-8", "-XX:ActiveProcessorCount=1", "-XX:+UseSerialGC", "-Xss64m", "-jar", "program.jar"]
+            cmd = [JAVA, "-jar", "program.jar"]
         elif language in {"python3", "pypy3"}:
-            interpreter = "pypy3" if language == "pypy3" else "python3"
+            interpreter = "/usr/local/bin/pypy3" if language == "pypy3" else PYTHON
             argv = [interpreter, "-m", "py_compile", name]
             cmd = [interpreter, name]
         else:
@@ -268,11 +269,7 @@ class Sandbox:
             (folder / safe_name(name)).write_bytes(content)
         if input_file != "stdin":
             (folder / safe_name(input_file)).write_bytes(stdin)
-        command = list(program.command)
-        if program.language == "kotlin":
-            command[1:1] = [f"-Xms{memory_mb}m", f"-Xmx{memory_mb}m"]
-        elif program.language in {"java17", "java8"}:
-            command.insert(1, f"-Xmx{max(4, memory_mb - 64)}m")
+        command = with_runtime_limits(program.command, memory_mb)
         result = self.execute(folder, [*command, *args], stdin, cpu_ms, memory_mb, output_bytes, output_file=output_file)
         return result
 
@@ -285,11 +282,7 @@ class Sandbox:
         self.copy_program(actor, interactor_dir)
         (interactor_dir / "input").write_bytes(stdin)
         (interactor_dir / "answer").write_bytes(answer)
-        command = list(program.command)
-        if program.language == "kotlin":
-            command[1:1] = [f"-Xms{memory_mb}m", f"-Xmx{memory_mb}m"]
-        elif program.language in {"java17", "java8"}:
-            command.insert(1, f"-Xmx{max(4, memory_mb - 64)}m")
+        command = with_runtime_limits(program.command, memory_mb)
         result = self.execute(folder, command, cpu_ms=cpu_ms, memory_mb=memory_mb, output_bytes=output_bytes,
-            interactive={"interactive": True, "interactor_command": [*actor.command, "input", "transcript", "answer"]})
+            interactive={"interactive": True, "interactor_command": [*with_runtime_limits(actor.command, memory_mb), "input", "transcript", "answer"]})
         return result

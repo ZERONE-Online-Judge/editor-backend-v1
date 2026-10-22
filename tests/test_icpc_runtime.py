@@ -20,7 +20,7 @@ def test_actual_icpc_runtime_accepts_output_and_enforces_limits(problem, name, l
         assert result['status']=='ok' and result['exit_code']==0,result
         assert result['output']==b'42\n' and result['cpu_ms']>0 and result['memory_kb']>0
         # Compilation artifacts must survive a separate execution container.
-        assert (program.artifacts/'program.jar').is_file() if language=='kotlin' else program.command[0]=='pypy3'
+        assert (program.artifacts/'program.jar').is_file() if language=='kotlin' else program.command[0]=='/usr/local/bin/pypy3'
         program=sandbox.compile(source(problem,'Loop'+('.kt' if language=='kotlin' else '.py'),loop,language),[])
         result=sandbox.run(program,cpu_ms=350,memory_mb=256)
         assert result['status']=='time-limit',result

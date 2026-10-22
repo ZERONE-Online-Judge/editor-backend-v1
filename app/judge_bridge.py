@@ -27,7 +27,7 @@ from .zoj import remote
 from .judge_requests import request_with_retry
 
 router = APIRouter(prefix="/api", tags=["judge environment"])
-LANGUAGES = {"cpp17": "cpp17", "python3": "python313", "c99": "c99", "java8": "java8", "pypy3": "pypy3", "kotlin": "kotlin"}
+LANGUAGES = {"cpp17": "cpp17", "python3": "python311", "c99": "c99", "java8": "java8", "pypy3": "pypy3", "kotlin": "kotlin"}
 VERDICTS = {"accepted": "AC", "wrong_answer": "WA", "compile_error": "CE", "runtime_error": "RE",
             "time_limit_exceeded": "TLE", "memory_limit_exceeded": "MLE", "output_limit_exceeded": "OLE",
             "system_error": "JUDGE_ERROR", "cancelled": "JUDGE_ERROR"}
@@ -74,7 +74,7 @@ def compatible(doc, options, kind):
     selected = list(doc["solutions"]) if kind == "package" else options["solutions"] or list(doc["solutions"])
     if kind == "stress":
         selected = list(dict.fromkeys([options["reference"] or next((name for name,source in doc["solutions"].items() if source["tag"] == "MA"), ""), *options["candidates"]]))
-    labels = {"cpp17":"C++17", "cpp20":"C++20", "c17":"C17", "c99":"C99", "python3":"Python 3.13", "java17":"Java 17", "java8":"Java 8", "pypy3":"PyPy 3.9 (7.3.15)", "kotlin":"Kotlin 1.9.24"}
+    labels = {"cpp17":"C++17", "cpp20":"C++20", "c17":"C17", "c99":"C99", "python3":"Python 3.11", "java17":"Java 17", "java8":"Java 8", "pypy3":"PyPy 3.11 (8.0.1)", "kotlin":"Kotlin 1.9.24"}
     for name in dict.fromkeys(selected):
         s = doc["solutions"][name]
         if s["tag"] == "NR":

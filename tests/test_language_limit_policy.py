@@ -26,7 +26,7 @@ def test_document_preserves_optional_limits_and_old_hash_shape():
     assert "language_resource_limits" not in Document(info={"name":"sum"},language_resource_limits={"pypy3":{}}).model_dump()
     old["language_resource_limits"]={"python3":{"time_limit_ms":700,"disable_auto_adjustment":True}}
     assert Document.model_validate(old).model_dump()["language_resource_limits"]==old["language_resource_limits"]
-    assert exported_limits(old["language_resource_limits"])=={"python313":{"time_limit_ms":700,"disable_auto_adjustment":True}}
+    assert exported_limits(old["language_resource_limits"])=={"python311":{"time_limit_ms":700,"disable_auto_adjustment":True}}
     old["language_resource_limits"]["python3"]["disable_auto_adjustment"]="false"
     with pytest.raises(ValidationError): Document.model_validate(old)
 

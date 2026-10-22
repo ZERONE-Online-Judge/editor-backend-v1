@@ -224,7 +224,7 @@ def test_checker_language_error_identifies_the_file_and_its_settings(problem, tm
     detail = error.value.detail
     checker = detail['unsupported_checker']
     assert checker['name'] == 'custom-check.cpp' and checker['language'] == language
-    assert checker['supported_languages'] == ['C++17', 'C99', 'Python 3.13']
+    assert checker['supported_languages'] == ['C++17', 'C99', 'Python 3.11']
     assert not detail['unsupported_solutions']
     assert 'custom-check.cpp' in detail['message'] and checker['label'] in detail['message']
     assert 'Checker 파일 언어 설정' in detail['guidance']
