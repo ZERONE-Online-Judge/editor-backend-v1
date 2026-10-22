@@ -150,3 +150,17 @@ def test_java_compiler_cache_does_not_change_language_standard(problem):
             sandbox.compile(source(problem, 'Main.java', code, 'java8'), [])
     finally:
         sandbox.close()
+
+
+def test_pypy_fatal_memory_exit_is_memory_limit(problem):
+    sandbox = Sandbox()
+    try:
+        # Reproduce PyPy's low-level OOM diagnostic and abort exit, which
+        # differs from a catchable Python MemoryError traceback.
+        code = 'import os\nos.write(2,b"Fatal RPython error: out of memory\\n")\nos.abort()\n'
+        program = sandbox.compile(source(problem, 'fatal.py', code, 'pypy3'), [])
+        result = sandbox.run(program, memory_mb=256)
+        assert result['status'] == 'memory-limit', result
+        assert result['exit_code'] != 0
+    finally:
+        sandbox.close()
