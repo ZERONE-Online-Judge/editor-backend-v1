@@ -125,7 +125,8 @@ def main():
         if seen != set(expected) or result.get('mismatches') != ([] if args.large_files else ['broken.cpp']) or result['runtime']['backend'] != 'zoj' or result['preparation_runtime']['backend'] not in {'editor', 'agent'}:
             raise RuntimeError('The complete mixed-language verification result was inconsistent.')
         progress = result.get('verification_progress', {})
-        if (progress.get('current'), progress.get('total'), progress.get('percent'), progress.get('completed_solutions')) != ((2, 2, 100, 2) if args.large_files else (21, 24, 87, 8)):
+        judging = progress.get('judging', progress)
+        if (judging.get('current'), judging.get('total'), judging.get('percent'), progress.get('completed_solutions')) != ((2, 2, 100, 2) if args.large_files else (21, 24, 87, 8)):
             raise RuntimeError('Confirmed progress must exclude the unexecuted compile-error tests.')
         print('Physical judge integration verified; temporary Editor fixture will be removed.', flush=True)
     finally:

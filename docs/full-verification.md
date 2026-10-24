@@ -29,10 +29,21 @@ to accommodate bounded base64 output without relaxing its source IP rules.
 
 ## Progress and shared results
 
-`verification_progress` contains phase, current/total testcase pairs, integer
-percentage, and solution completion counts. NR scopes are excluded from the
-testcase denominator. Preparation is a separate phase; percentages measure
-confirmed solution/testcase outcomes rather than estimated elapsed time.
+`verification_progress` contains phase, combined current/total work units,
+integer percentage, and solution completion counts. Each selected test has
+input, validator, answer, checker, and ready steps, plus a sample step for
+custom display samples. Ready is confirmed after duplicate checking and blob
+storage. Successful stored or cached preparation counts too; failed steps do
+not. Each confirmed solution/testcase outcome is one further work unit.
+
+Nested `preparation` and `judging` counters expose each part independently.
+Preparation also includes per-stage counters. Each `testsets` entry has the
+same combined counters and nested preparation/judging breakdown. NR scopes
+are excluded only from judging; preparation still runs for selected tests.
+Percentages measure completed work, not estimated elapsed time. They do not
+reset when preparation hands over to judging, and compile errors cannot
+complete unexecuted testcase units. Old records without nested counters keep
+their original judging-only meaning.
 
 All requested solutions appear immediately. Their queued/running/completed
 state is independent, so a slow earlier solution does not hide later results.

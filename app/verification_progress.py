@@ -1,4 +1,4 @@
-"""Publish confirmed testcase outcomes without waiting for other solutions."""
+"""Publish confirmed preparation steps and testcase outcomes."""
 import copy
 import math
 import threading
@@ -7,6 +7,14 @@ import time
 from .domain import expanded_tests
 from .expectations import expected_tag
 from .invocation_scope import selected_testsets
+
+
+def counter(total):
+    return {"current": 0, "total": total, "percent": 0}
+
+
+def update_counter(value, current):
+    value.update(current=current, percent=min(100, math.floor(100 * current / value["total"])) if value["total"] else 0)
 
 
 class VerificationProgress:
@@ -18,6 +26,14 @@ class VerificationProgress:
         sets = selected_testsets(pipeline.doc, pipeline.job.options, pipeline.job.kind)
         indices = pipeline.job.options.get("test_indices", []) if pipeline.job.kind != "package" else []
         self.planned = {name: [test for test in expanded_tests(pipeline.doc["testsets"][name]) if not indices or test["index"] in indices] for name in sets}
+        self.preparation_plan = {}
+        self.preparation_done = set()
+        for set_name, tests in self.planned.items():
+            for test in tests:
+                stages = {"input", "validator", "answer", "checker", "ready"}
+                if test.get("sample") and (test.get("statement_input") is not None or test.get("statement_output") is not None):
+                    stages.add("sample")
+                self.preparation_plan[set_name, test["index"]] = stages
         rows = []
         set_totals = dict.fromkeys(sets, 0)
         for name in selected:
@@ -32,8 +48,16 @@ class VerificationProgress:
                          "cases": [], "judge_runs": [], "state": "queued", "completed_tests": 0, "total_tests": total})
         pipeline.result["solutions"] = rows
         self.rows = {row["name"]: row for row in rows}
-        pipeline.result["verification_progress"] = {"phase": "preparing", "current": 0, "total": sum(self.total.values()), "percent": 0,
-            "testsets": {name: {"current": 0, "total": total, "percent": 0} for name, total in set_totals.items()}}
+        preparation_totals = {name: sum(len(stages) for (set_name, _), stages in self.preparation_plan.items() if set_name == name) for name in sets}
+        preparation = counter(sum(preparation_totals.values()))
+        preparation["stages"] = {stage: counter(sum(stage in stages for stages in self.preparation_plan.values()))
+                                 for stage in ("input", "validator", "answer", "checker", "sample", "ready")}
+        pipeline.result["verification_progress"] = {
+            **counter(preparation["total"] + sum(self.total.values())), "phase": "preparing",
+            "preparation": preparation, "judging": counter(sum(self.total.values())),
+            "testsets": {name: {**counter(preparation_totals[name] + total),
+                                "preparation": counter(preparation_totals[name]), "judging": counter(total)}
+                         for name, total in set_totals.items()}}
         self.publish(True)
 
     def publish(self, force=False):
@@ -46,15 +70,31 @@ class VerificationProgress:
                 current += len(confirmed)
                 for name, _ in confirmed:
                     counts[name] += 1
-            progress.update(current=current, completed_solutions=sum(row["state"] == "completed" for row in self.rows.values()), total_solutions=len(self.rows))
-            progress["percent"] = min(100, math.floor(100 * current / progress["total"])) if progress["total"] else (100 if progress["phase"] == "complete" else 0)
+            update_counter(progress["judging"], current)
+            update_counter(progress, progress["preparation"]["current"] + current)
+            if not progress["total"] and progress["phase"] == "complete":
+                progress["percent"] = 100
+            progress.update(completed_solutions=sum(row["state"] == "completed" for row in self.rows.values()), total_solutions=len(self.rows))
             for name, scoped in progress["testsets"].items():
-                count = counts[name]
-                scoped.update(current=count, percent=min(100, math.floor(100 * count / scoped["total"])) if scoped["total"] else 0)
+                update_counter(scoped["judging"], counts[name])
+                update_counter(scoped, scoped["preparation"]["current"] + counts[name])
             self.pipeline.result["progress"] = progress["percent"]
             if force or time.monotonic() - self.last_publish >= 1:
                 self.pipeline.publish(copy.deepcopy(self.pipeline.result))
                 self.last_publish = time.monotonic()
+
+    def preparation_step(self, set_name, index, stage):
+        """Count successful, selected work once, including stored/cache results."""
+        with self.lock:
+            key = (set_name, index, stage)
+            if stage not in self.preparation_plan.get((set_name, index), ()) or key in self.preparation_done:
+                return
+            self.preparation_done.add(key)
+            progress = self.pipeline.result["verification_progress"]
+            preparation = progress["preparation"]
+            for value in (preparation, preparation["stages"][stage], progress["testsets"][set_name]["preparation"]):
+                update_counter(value, value["current"] + 1)
+            self.publish(preparation["current"] in {1, preparation["total"]})
 
     def begin(self):
         with self.lock:

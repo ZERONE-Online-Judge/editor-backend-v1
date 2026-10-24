@@ -70,6 +70,8 @@ def test_repeat_skips_all_preparation_but_rejudges_every_case(document, make_pip
     second.verify()
     assert calls == {'checker':3, 'judge':3}
     assert second.result['preparation_cache']['reused'] == {'input':1, 'validator':3, 'answer':3, 'checker':3, 'sample':0}
+    assert second.result['verification_progress']['preparation']['current'] == 15
+    assert second.result['verification_progress']['percent'] == 100
     assert all(row['main_cpu_ms'] is None for row in second.result['testsets']['tests'])
     assert [c['cpu_ms'] for c in second.result['solutions'][0]['cases']] != [999] * 3
     assert first.result['testsets']['tests'][2]['input_sha'] == second.result['testsets']['tests'][2]['input_sha']
@@ -89,7 +91,9 @@ def test_all_sets_reuses_each_preparation_scope_but_rejudges_every_case(document
     assert not any(repeated.result['preparation_cache']['executed'].values())
     assert repeated.result['preparation_cache']['reused']['validator'] == 6
     assert repeated.result['verified']
-    assert repeated.result['verification_progress']['total'] == 6
+    assert repeated.result['verification_progress']['total'] == 36
+    assert repeated.result['verification_progress']['preparation']['current'] == 30
+    assert repeated.result['verification_progress']['judging']['total'] == 6
     assert {(case['testset'], case['index']) for case in repeated.result['solutions'][0]['cases']} == {
         (name, index) for name in ['tests', 'samples'] for index in [1, 2, 3]}
 
@@ -256,3 +260,17 @@ def test_force_prepare_option_is_only_available_for_verification(owner, problem)
         'kind':'prepare', 'version':0, 'options':{'force_prepare':True}})
     assert response.status_code == 400
     assert response.json()['error']['code'] == 'invalid_options'
+
+
+def test_committed_inputs_answers_and_custom_samples_count_in_preparation_progress(document, make_pipeline):
+    test = document['testsets']['tests']['tests']['1']
+    test.update(statement_input='2 3\n', statement_output='42\n', verify_statement_io=True)
+    p, calls = make_pipeline(document, options={'snapshot': 'committed'})
+    p.verify()
+    progress = p.result['verification_progress']
+    assert calls['input'] == 0
+    assert progress['preparation']['current'] == progress['preparation']['total'] == 16
+    assert progress['preparation']['stages']['input']['current'] == 3
+    assert progress['preparation']['stages']['answer']['current'] == 3
+    assert progress['preparation']['stages']['sample']['current'] == 1
+    assert progress['current'] == progress['total'] == 19 and progress['percent'] == 100
