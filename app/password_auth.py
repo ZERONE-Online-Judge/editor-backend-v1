@@ -7,6 +7,7 @@ from .db import session_dependency
 from .schema import Strict
 from . import shared_auth
 from .password_policy import validate_password
+from .auth_redirect import require_central_login
 
 router = APIRouter(prefix="/api/auth/password", tags=["shared passwords"])
 
@@ -74,6 +75,7 @@ def login(
     response: Response,
     db: Session = Depends(session_dependency),
 ):
+    require_central_login()
     return shared_auth.finish(
         request,
         response,

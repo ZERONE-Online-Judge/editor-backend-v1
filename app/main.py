@@ -48,6 +48,8 @@ def health():
 
 
 app.include_router(auth.router)
+from . import auth_redirect
+app.include_router(auth_redirect.router)
 from . import password_auth
 app.include_router(password_auth.router)
 app.include_router(folders.router)
