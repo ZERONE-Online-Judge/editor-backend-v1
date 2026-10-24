@@ -31,7 +31,7 @@ class VerificationProgress:
         for set_name, tests in self.planned.items():
             for test in tests:
                 stages = {"input", "validator", "answer", "checker", "ready"}
-                if test.get("sample") and (test.get("statement_input") is not None or test.get("statement_output") is not None):
+                if test.get("sample") and test.get("verify_statement_io", True) and (test.get("statement_input") is not None or test.get("statement_output") is not None):
                     stages.add("sample")
                 self.preparation_plan[set_name, test["index"]] = stages
         rows = []
@@ -94,7 +94,8 @@ class VerificationProgress:
             preparation = progress["preparation"]
             for value in (preparation, preparation["stages"][stage], progress["testsets"][set_name]["preparation"]):
                 update_counter(value, value["current"] + 1)
-            self.publish(preparation["current"] in {1, preparation["total"]})
+            stage_count = preparation["stages"][stage]
+            self.publish(preparation["current"] == preparation["total"] or stage_count["current"] in {1, stage_count["total"]})
 
     def begin(self):
         with self.lock:
