@@ -232,8 +232,10 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
         fail("invalid_options", "부분 생성 모드는 테스트 준비에서만 사용하세요.")
     if values.kind == "prepare":
         sets = [doc["testsets"][name] for name in selected_testsets(doc, options, values.kind)]
-        if (options["test_indices"] or options["prepare_mode"] != "full") and any(config["script"].strip() for config in sets):
-            fail("materialize_first", "전체 입력·정답을 생성하고 반영하여 생성 규칙을 등록 테스트로 확정한 뒤 부분 작업을 실행하세요.")
+        if (options["test_indices"] or options["prepare_mode"] in {"validate", "answers"}) and any(config["script"].strip() for config in sets):
+            fail("materialize_first", "전체 생성 결과를 반영하여 생성 규칙을 등록 테스트로 확정한 뒤 부분 작업을 실행하세요.")
+        if options["prepare_mode"] in {"inputs", "validate"} and not any(expanded_tests(config) for config in sets):
+            fail("empty_scope", "검사할 등록 입력이나 생성 스크립트를 먼저 추가하세요.")
         if options["test_indices"]:
             available = {test["index"] for test in expanded_tests(doc["testsets"][options["testset"]])}
             if set(options["test_indices"]) - available:
