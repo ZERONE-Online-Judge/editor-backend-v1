@@ -34,3 +34,14 @@ def test_script_groups_must_exist_and_be_enabled():
     config={'tests':{},'script':'group missing\ngen 1 > $','groups':{},'groups_enabled':False}
     with pytest.raises(HTTPException) as error: expanded_tests(config)
     assert error.value.detail['code']=='invalid_script_group'
+
+
+@pytest.mark.parametrize('source, expected', [
+    ('gen 100', '생성 명령 끝에'),
+    ('# comment\ngen 100 > wrong', '2행: > 뒤에는'),
+    ('gen "unclosed > $', '1행: 인자를 감싼 따옴표'),
+])
+def test_script_syntax_errors_explain_where_and_how_to_fix(source, expected):
+    with pytest.raises(HTTPException) as error:
+        parse_script(source)
+    assert expected in error.value.detail['message']

@@ -9,6 +9,7 @@ from .domain import cautions, document_hash, expanded_tests
 from .statements import effective, translation_status
 from .storage import blob_path
 from .constraint_bounds import statement_bounds, validator_bounds
+from .job_errors import exception_message
 
 _CACHE = OrderedDict()
 _LOCK = Lock()
@@ -98,7 +99,7 @@ def build(doc, jobs=()):
         # Parsing failure is a report item; never imply that invalid DSL was checked.
         from fastapi import HTTPException
         if not isinstance(error, HTTPException): raise
-        add('INVALID_GENERATION_SCRIPT','error','tests','생성 스크립트를 해석할 수 없습니다.','tests',str(error.detail))
+        add('INVALID_GENERATION_SCRIPT','error','tests','생성 스크립트를 해석할 수 없습니다.','tests',exception_message(error))
     constraint_checks(doc, all_tests, add)
     for language, status in translation_status(doc).items():
         if status in {'stale','modified','unreviewed'}:
