@@ -10,6 +10,8 @@ def fixture_job(owner, problem, *, auto=False, result_changed=True):
     state = owner.get(f"/api/problems/{problem}").json()
     inp = owner.post(f"/api/problems/{problem}/blobs", content=b"1 2\n").json()["sha256"]
     ans = owner.post(f"/api/problems/{problem}/blobs", content=b"3\n").json()["sha256"]
+    main = owner.post(f"/api/problems/{problem}/blobs", content=b"print(3)\n").json()["sha256"]
+    state["document"]["solutions"]["main.py"] = {"name": "main.py", "language": "python3", "tag": "MA", "sha256": main, "size": 9}
     test = {"index": 1, "input_sha": inp, "answer_sha": None if result_changed else ans,
             "command": "", "group": "", "points": 0, "description": "예제", "sample": True}
     state["document"]["testsets"]["tests"]["tests"] = {"fixture": test}
@@ -169,3 +171,49 @@ def test_role_metadata_preserves_legacy_hashes_and_accepts_multiple_roles(owner,
     assert owner.get(f"/api/problems/{problem}").json()["document"]["files"]["tool.cpp"]["roles"] == ["validator", "generator"]
     doc["files"]["tool.cpp"]["kind"] = "resource"
     assert owner.put(f"/api/problems/{problem}/working-copy", json={"version": response.json()["version"], "document": doc}).status_code == 422
+
+
+def test_discard_preserves_copy_history_and_preview_but_prevents_apply_or_reuse(owner, problem):
+    job, result, version = fixture_job(owner, problem)
+    complete(job, result)
+    before = owner.get(f'/api/problems/{problem}').json()
+    path = f"/api/problems/{problem}/jobs/{job['id']}"
+    discarded = owner.post(path + '/discard')
+    assert discarded.status_code == 200, discarded.text
+    assert owner.post(path + '/discard').json() == discarded.json()
+    after = owner.get(f'/api/problems/{problem}').json()
+    assert after['document'] == before['document'] and after['version'] == version
+    assert after['pending_preparations'] == []
+    saved = owner.get(path).json()
+    assert saved['discarded_at'] and saved['result'] == result
+    assert owner.get(f'/api/problems/{problem}/jobs?page=1').json()['items'][0]['discarded_at']
+    assert owner.post(path+'/apply', json={'version':version}).json()['error']['code'] == 'result_discarded'
+    again = owner.post(f'/api/problems/{problem}/jobs', json={'kind':'prepare','version':version})
+    assert again.status_code == 202 and again.json()['id'] != job['id']
+
+
+def test_discard_is_personal_requires_write_and_accepts_stale_results(owner, problem, clients):
+    job, result, version = fixture_job(owner, problem)
+    owner.post(f'/api/problems/{problem}/commit', json={'version':version,'message':'Share'})
+    complete(job, result)
+    writer = clients('discard-writer')
+    owner.put(f'/api/problems/{problem}/accesses', json={'login':'discard-writer','role':'WRITE'})
+    writer.get(f'/api/problems/{problem}')
+    path = f"/api/problems/{problem}/jobs/{job['id']}"
+    assert writer.post(path+'/discard').status_code == 200
+    assert owner.get(path).json()['discarded_at'] is None
+    owner.put(f'/api/problems/{problem}/accesses', json={'login':'discard-writer','role':'READ'})
+    assert writer.post(path+'/discard').status_code == 403
+    state = owner.get(f'/api/problems/{problem}').json()
+    state['document']['info']['name'] = 'New edits'
+    owner.put(f'/api/problems/{problem}/working-copy', json={'version':version,'document':state['document']})
+    assert owner.post(path+'/discard').status_code == 200
+
+
+def test_applied_or_incomplete_results_cannot_be_discarded(owner, problem):
+    job, result, version = fixture_job(owner, problem)
+    path = f"/api/problems/{problem}/jobs/{job['id']}"
+    assert owner.post(path+'/discard').status_code == 400
+    complete(job, result)
+    assert owner.post(path+'/apply', json={'version':version}).status_code == 200
+    assert owner.post(path+'/discard').json()['error']['code'] == 'already_applied'

@@ -22,7 +22,7 @@ from test_judge_requests import clock
 @pytest.fixture
 def agent_mode(monkeypatch):
     monkeypatch.setattr(get_settings(),'execution_transport','agent')
-    caps={'backend':'zoj','runtime_revision':'test-judge-v1','execution':{'protocol':'editor-execute-v1','online_nodes':1,'runtime_revision':'test-executor-v1'}}
+    caps={'reference_output_protocol':'editor-reference-output-v1','reference_output_online_nodes':1,'backend':'zoj','runtime_revision':'test-judge-v1','execution':{'protocol':'editor-execute-v1','online_nodes':1,'runtime_revision':'test-executor-v1'}}
     monkeypatch.setattr(judge_bridge,'remote',lambda *args,**kwargs:copy.deepcopy(caps))
     return caps
 

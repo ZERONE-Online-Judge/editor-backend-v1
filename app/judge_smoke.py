@@ -20,9 +20,13 @@ def main():
     parser.add_argument('--temporary-fixture', action='store_true', required=True)
     parser.add_argument('--large-files', action='store_true')
     parser.add_argument('--language-policy', action='store_true')
+    parser.add_argument('--native-reference', action='store_true')
     args = parser.parse_args()
     if not get_settings().zoj_api_url:
         raise SystemExit('Configure ZOJ judging before running this check.')
+    if args.native_reference:
+        from .reference_output_smoke import run
+        return run()
     if args.language_policy:
         if args.large_files:
             parser.error('Choose one physical check at a time.')

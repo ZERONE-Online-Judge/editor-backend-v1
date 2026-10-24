@@ -29,6 +29,7 @@ def policy_digest():
     return digest({name: content_hash((root / name).read_bytes()) for name in (
         "pipeline.py", "sandbox.py", "resources.py", "statement_samples.py",
         "test_preparation.py", "preparation_cache.py", "execution_limits.py",
+        "reference_generation.py", "agent_sandbox.py",
     )})
 
 

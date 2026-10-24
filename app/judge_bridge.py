@@ -179,6 +179,8 @@ def archive(pipeline, name, set_name, tests, attempt):
                 "time_limit_ms": pipeline.doc["info"]["time_limit_ms"], "memory_limit_mb": pipeline.doc["info"]["memory_limit_mb"],
                 "language_resource_limits": exported_limits(pipeline.doc.get("language_resource_limits")),
                 "resources": resources, "testcases": cases}
+    if getattr(pipeline, "reference_output", False):
+        manifest["reference_output"] = True
     path = pipeline.sandbox.root / (operation + ".judge.zip")
     try:
         with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:

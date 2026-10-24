@@ -2,7 +2,7 @@
 import copy
 from sqlalchemy import select, update
 from sqlalchemy.orm import load_only
-from .db import Job, JobApplication, WorkingCopy, now
+from .db import Job, JobApplication, JobDiscard, WorkingCopy, now
 from .domain import authorize, document_hash, fail, validate_document, workspace
 
 
@@ -14,8 +14,9 @@ def application_json(row):
 def pending_preparations(db, problem_id, user_id, current_hash):
     rows = db.scalars(select(Job).options(load_only(Job.id, Job.document_hash, Job.created_at))
         .outerjoin(JobApplication, (JobApplication.job_id == Job.id) & (JobApplication.user_id == user_id))
+        .outerjoin(JobDiscard, (JobDiscard.job_id == Job.id) & (JobDiscard.user_id == user_id))
         .where(Job.problem_id == problem_id, Job.user_id == user_id, Job.kind == "prepare",
-               Job.status == "completed", JobApplication.job_id.is_(None))
+               Job.status == "completed", JobApplication.job_id.is_(None), JobDiscard.job_id.is_(None))
         .order_by(Job.created_at.desc())).all()
     return [{"id": row.id, "created_at": row.created_at,
              "stale": row.document_hash != current_hash} for row in rows]
@@ -30,6 +31,8 @@ def apply_prepared_results(db, job, user, version):
     previous = db.get(JobApplication, (job.id, user.id))
     if previous:
         return {"version": wc.version, "application": application_json(previous)}
+    if db.get(JobDiscard, (job.id, user.id)):
+        fail("result_discarded", "버린 생성 결과는 반영할 수 없습니다. 입력·정답 생성을 다시 요청하세요.", 409)
     if wc.version != version:
         fail("workspace_changed", "다른 창에서 변경되었습니다. 최신 작업 사본을 불러오세요.", 409)
     if job.document_hash != document_hash(wc.document):
@@ -58,3 +61,20 @@ def apply_prepared_results(db, job, user, version):
     db.add(record)
     db.commit()
     return {"version": next_version, "application": application_json(record)}
+
+
+def discard_prepared_results(db, job, user):
+    problem, _ = authorize(db, job.problem_id, user, permission="edit_tests")
+    wc = workspace(db, problem, user)
+    db.refresh(wc, with_for_update=True)
+    if job.kind != "prepare" or job.status != "completed":
+        fail("not_ready", "완료된 입력·정답 생성 결과만 버릴 수 있습니다.")
+    if db.get(JobApplication, (job.id, user.id)):
+        fail("already_applied", "이미 사본에 반영한 결과입니다. 반영된 자료는 테스트에서 수정해 주세요.", 409)
+    previous = db.get(JobDiscard, (job.id, user.id))
+    if previous:
+        return {"discarded_at": previous.discarded_at}
+    row = JobDiscard(job_id=job.id, user_id=user.id)
+    db.add(row)
+    db.commit()
+    return {"discarded_at": row.discarded_at}

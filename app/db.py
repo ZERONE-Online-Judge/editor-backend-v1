@@ -210,6 +210,13 @@ class JobApplication(Base):
     document_hash: Mapped[str] = mapped_column(String(64))
 
 
+class JobDiscard(Base):
+    __tablename__ = "job_discards"
+    job_id: Mapped[str] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    discarded_at: Mapped[int] = mapped_column(default=now)
+
+
 class PreparationEntry(Base):
     __tablename__ = "preparation_entries"
     problem_id: Mapped[str] = mapped_column(ForeignKey("problems.id", ondelete="CASCADE"), primary_key=True)

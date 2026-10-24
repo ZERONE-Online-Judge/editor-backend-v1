@@ -72,19 +72,27 @@ def judge_capabilities_transport(monkeypatch):
     def remote(method, path, *args, **kwargs):
         if method == "GET" and path == "/api/editor/judge/capabilities":
             return {"backend":"zoj", "runtime_revision":"test-judge-v1", "online_nodes":1,
+                    "reference_output_protocol":"editor-reference-output-v1", "reference_output_online_nodes":1,
                     "execution":{"protocol":"editor-execute-v1","runtime_revision":"test-execution-v1","online_nodes":1}}
         return real_remote(method, path, *args, **kwargs)
     monkeypatch.setattr(judge_bridge, "remote", remote)
 
 
 @pytest.fixture
-def queue_legacy_job():
-    """Old queued jobs may finish locally; the public API cannot create them."""
+def queue_legacy_job(monkeypatch):
+    """Explicit legacy test double; online workers never execute locally."""
     import copy
     from httpx import Response
     from app.config import get_settings
     from app.db import Job, Problem
     from app.jobs import JobRequest, job_json
+    from app import pipeline
+    # Historical engine tests inject an explicit test double; service workers
+    # never have a local execution path or an admission bypass.
+    monkeypatch.setattr(pipeline, 'require_agent_job', lambda job: None)
+    if get_settings().execution_transport == 'local':
+        from app.sandbox import Sandbox
+        monkeypatch.setattr(pipeline, 'Sandbox', Sandbox)
     def enqueue(client, problem_id, payload):
         state = client.get(f"/api/problems/{problem_id}").json()
         request = JobRequest.model_validate(payload)

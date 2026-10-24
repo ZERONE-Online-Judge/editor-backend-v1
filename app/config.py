@@ -60,7 +60,7 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def validate_production(self):
         if self.execution_transport is None:
-            self.execution_transport = "agent" if self.env == "production" else "local"
+            self.execution_transport = "agent"
         if self.env not in {"development", "test", "production"}:
             raise ValueError("Unknown EDITOR_ENV")
         if self.mail_mode not in {"console", "smtp", "zoj"}:

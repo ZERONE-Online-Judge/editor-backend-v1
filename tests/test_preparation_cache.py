@@ -30,6 +30,7 @@ def make_pipeline(problem, monkeypatch):
         def resolve_image(self, label): return 'image-digest-v1'
         def close(self): pass
     monkeypatch.setattr('app.pipeline.Sandbox', FakeSandbox)
+    monkeypatch.setattr('app.pipeline.require_agent_job', lambda job: None)
     def make(doc, *, kind='verify', options=None, check=lambda: None, problem_id=problem):
         with SessionLocal() as db:
             owner = db.get(Problem, problem_id).owner_id

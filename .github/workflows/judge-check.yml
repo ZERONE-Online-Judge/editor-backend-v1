@@ -6,6 +6,10 @@ on:
         description: Verify 48 MiB generated input and reference output
         type: boolean
         default: false
+      native_reference:
+        description: Compare Main generation and verification for all six languages
+        type: boolean
+        default: false
       language_policy:
         description: Verify language overrides, corrections and ZOJ stress execution
         type: boolean
@@ -25,9 +29,11 @@ jobs:
       - name: Verify the deployed worker and physical ZOJ judges
         env:
           CHECK_LARGE_FILES: ${{ inputs.large_files }}
+          CHECK_NATIVE_REFERENCE: ${{ inputs.native_reference }}
           CHECK_LANGUAGE_POLICY: ${{ inputs.language_policy }}
         run: |
           args=()
           if [[ "$CHECK_LARGE_FILES" == true ]]; then args+=(--large-files); fi
           if [[ "$CHECK_LANGUAGE_POLICY" == true ]]; then args+=(--language-policy); fi
+          if [[ "$CHECK_NATIVE_REFERENCE" == true ]]; then args+=(--native-reference); fi
           bash deploy/check-judge.sh "${args[@]}"

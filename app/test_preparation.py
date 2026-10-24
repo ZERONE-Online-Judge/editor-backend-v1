@@ -62,7 +62,10 @@ def prepare_test(p, test, set_name, mode, frozen, main):
     info = p.doc["info"]
     main_dependencies = {"program": program(main, True), "input": sha,
                          "info": {key: info[key] for key in ("interactive", "input_file", "output_file", "time_limit_ms", "memory_limit_mb")},
-                         "output_bytes": SOLUTION_OUTPUT_BYTES, "relaxed_limits": bool(getattr(p, "remote_judging", False))}
+                         "output_bytes": SOLUTION_OUTPUT_BYTES, "relaxed_limits": bool(getattr(p, "remote_judging", False)),
+                         "native_reference": p.job.options.get("reference_output_protocol"),
+                         "reference_revision": p.job.options.get("reference_revision"),
+                         "language_resource_limits": p.doc.get("language_resource_limits", {})}
     if info["interactive"]:
         main_dependencies.update(interactor=program(p.doc["interactor"]), answer=test["answer_sha"])
     if frozen:
