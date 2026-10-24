@@ -1,5 +1,4 @@
 FROM python:3.13-slim
-COPY --from=docker:28-cli /usr/local/bin/docker /usr/local/bin/docker
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt && groupadd -g 1000 editor && useradd -m -u 1000 -g editor editor

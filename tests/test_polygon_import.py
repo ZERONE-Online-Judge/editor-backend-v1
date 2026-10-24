@@ -258,14 +258,17 @@ def test_real_package_has_no_missing_payloads_or_authoring_sections(owner):
 
 @pytest.mark.sandbox
 @pytest.mark.skipif(not os.environ.get("EDITOR_REAL_POLYGON_PACKAGE") or os.environ.get("RUN_SANDBOX_TESTS") != "1", reason="Opt-in private-package sandbox verification")
-def test_real_imported_programs_compile_and_examples_validate_in_sandbox(owner):
+def test_real_imported_programs_compile_and_examples_validate_in_sandbox(owner, queue_legacy_job):
     from types import SimpleNamespace
     from app.pipeline import Pipeline
     raw = Path(os.environ["EDITOR_REAL_POLYGON_PACKAGE"]).read_bytes()
     doc, _ = imported(owner, raw)
     response = owner.get("/api/problems").json()
     problem_id = response[0]["id"]
-    job = SimpleNamespace(id="polygon-import-check", kind="verify", options={}, document=doc, problem_id=problem_id)
+    from app.db import Problem, SessionLocal
+    with SessionLocal() as db:
+        user_id = db.get(Problem, problem_id).owner_id
+    job = SimpleNamespace(id="polygon-import-check", kind="verify", options={}, document=doc, problem_id=problem_id, user_id=user_id)
     pipeline = Pipeline(job, lambda _: None, lambda: None)
     main = next(name for name, source in doc["solutions"].items() if source["tag"] == "MA")
     results = []

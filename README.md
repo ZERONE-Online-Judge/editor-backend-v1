@@ -142,8 +142,9 @@ EDITOR_DATABASE_URL=sqlite:////tmp/editor-schema.db .venv/bin/alembic check
 [docs/polygon-reference.md](docs/polygon-reference.md)를 확인하세요.
 Codeforces의 비공개 소스나 서비스 계정을 가져오지 않습니다.
 `testlib.h`와 표준 checker는 upstream 원본과 MIT 라이선스를 포함합니다.
-이 문제 제작 서비스의 시간·메모리 수치는 기존 ZOJ 운영 채점 VM에서
-측정한 값이 아닙니다. 최종 제한은 배포 대상 채점 환경에서 재검증하세요.
+온라인 Main 정답 생성과 풀이 검증은 기존 ZOJ 운영 채점 에이전트에서
+같은 언어별 제한 정책으로 실행합니다. 오프라인 재현 패키지의 측정값은
+실제 채점 노드와 다를 수 있습니다.
 
 - `feature/project-folders`: 개인 폴더·하위 폴더·일괄 이동
 - `feature/zoj-publishing`: ZOJ 형식 패키지·권한 확인·문제 전송

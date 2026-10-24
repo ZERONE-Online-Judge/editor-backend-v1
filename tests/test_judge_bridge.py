@@ -160,7 +160,7 @@ def test_job_backend_and_real_judge_revision_invalidate_cached_results(owner, pr
         db.get(Revision, (problem, 0)).document = row.document
         db.commit()
     revision = ['judge-v1']
-    monkeypatch.setattr(bridge, 'capabilities', lambda user: {'runtime_revision': revision[0]})
+    monkeypatch.setattr(bridge, 'capabilities', lambda user: {'runtime_revision': revision[0], 'reference_output_protocol': 'editor-reference-output-v1', 'reference_output_online_nodes': 1, 'execution': {'protocol': 'editor-execute-v1', 'online_nodes': 1, 'runtime_revision': 'execution-v1'}})
     state = owner.get(f'/api/problems/{problem}').json()
     request = {'kind': 'verify', 'version': state['version'], 'options': {'execution_backend': 'zoj'}}
     a = owner.post(f'/api/problems/{problem}/jobs', json=request)

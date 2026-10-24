@@ -10,12 +10,12 @@ from .sandbox import SandboxError
 def run(pipeline, name, content, answer):
     reference = answer is None
     if reference:
-        # Answer production is preparation, not a verdict or a measurement.
-        # The reference is then judged again under the real contest limits.
+        # Produce the answer with the same native resource policy before
+        # comparing it through the problem checker.
         pipeline.event(f"기준 정답 생성 · {name}")
         verdict, prepared = pipeline.run_solution(name, content, preparation=True)
         if verdict != "AC":
-            raise SandboxError(f"기준 정답 생성이 {verdict}로 실패했습니다. ZOJ 판정 전 준비 단계의 오류입니다.")
+            raise SandboxError(f"기준 정답 생성이 {verdict}로 실패했습니다. ZOJ 채점기의 실제 실행 판정입니다.")
         answer = prepared["output"]
     with SessionLocal() as db:
         user = db.get(User, pipeline.job.user_id)

@@ -8,7 +8,8 @@ from pathlib import Path
 from .db import SessionLocal, User
 from .parallel import ordered_work
 from .domain import expanded_tests
-from .sandbox import Sandbox, SandboxError, VENDOR
+from .sandbox import SandboxError, VENDOR
+from .agent_sandbox import AgentSandbox as Sandbox, require_agent_job
 from .storage import put_blob, read_blob
 from .scoring import score_results
 from .execution_limits import MAX_GENERATOR_ARGUMENTS, GENERATOR_CPU_MS, GENERATOR_MEMORY_MB, GENERATOR_OUTPUT_BYTES, SOLUTION_OUTPUT_BYTES
@@ -19,17 +20,16 @@ from .invocation_scope import selected_testsets
 
 class Pipeline:
     def __init__(self, job, publish, check_cancelled):
+        require_agent_job(job)
         self.job = job
         self.doc = job.document
         self.publish = publish
         from .config import get_settings
-        context = None
-        if get_settings().execution_transport == "agent":
-            with SessionLocal() as db:
-                user = db.get(User, job.user_id)
-                if not user:
-                    raise SandboxError("실행 요청 계정을 찾을 수 없습니다.")
-                context = {"email": user.email, "job_kind": job.kind, "runtime_revision": job.options.get("execution_revision", "editor-agent-v1")}
+        with SessionLocal() as db:
+            user = db.get(User, job.user_id)
+            if not user:
+                raise SandboxError("실행 요청 계정을 찾을 수 없습니다.")
+            context = {"email": user.email, "job_kind": job.kind, "runtime_revision": job.options.get("execution_revision", "editor-agent-v1")}
         self.parallelism = min(get_settings().test_parallelism, get_settings().execution_concurrency)
         self.program_lock = threading.RLock()
         self.blob_lock = threading.Lock()
@@ -55,9 +55,10 @@ class Pipeline:
                     self.publish(copy.deepcopy(self.result))
             self.sandbox.agent_transport.on_result = record_execution
         self.remote_judging = job.options.get("execution_backend") == "zoj" and job.kind in {"verify", "package", "stress"}
+        self.native_reference = job.options.get("reference_output_protocol") == "editor-reference-output-v1"
         self.stress_judge_budget = threading.BoundedSemaphore(get_settings().judge_concurrency)
-        self.result["runtime"] = {"backend": "zoj", "runtime_revision": job.options.get("judge_revision")} if self.remote_judging else runtime
-        if self.remote_judging:
+        self.result["runtime"] = {"backend": "zoj", "runtime_revision": job.options.get("judge_revision") or job.options.get("reference_revision")} if self.remote_judging or self.native_reference else runtime
+        if self.remote_judging or self.native_reference:
             self.result["preparation_runtime"] = runtime
         if job.kind in {"prepare", "verify", "package"}:
             from .preparation_cache import PreparationCache
@@ -154,6 +155,9 @@ class Pipeline:
         return verdict, result
 
     def run_solution(self, name, input_bytes, answer=None, preparation=False):
+        if preparation and self.native_reference:
+            from .reference_generation import run
+            return run(self, name, input_bytes)
         if self.remote_judging and self.job.kind == "stress" and not preparation:
             from .stress_judging import run
             return run(self, name, input_bytes, answer)

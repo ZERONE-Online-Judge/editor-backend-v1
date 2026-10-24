@@ -8,7 +8,7 @@ from sqlalchemy import select, update, func, or_
 from sqlalchemy.orm import Session, load_only
 from .config import get_settings
 from .auth import current_user
-from .db import Job, JobApplication, JobComment, Revision, User, WorkingCopy, now, session_dependency
+from .db import Job, JobApplication, JobComment, JobDiscard, Revision, User, WorkingCopy, now, session_dependency
 from .permissions import has, editing, require, job_permission, check_changes, FIELDS
 from .domain import authorize, cautions, document_hash, expanded_tests, fail, parse_script, validate_document, workspace
 from .schema import Strict, SourceFile, Info
@@ -104,7 +104,7 @@ class JobRequest(Strict):
     reuse: bool = True
 
 
-def job_json(job, include_result=True, application=None, requester=None):
+def job_json(job, include_result=True, application=None, requester=None, discarded=None):
     result = readable_result(job.result) if include_result else {"summary": job.result.get("summary", ""), "progress": job.result.get("progress", 0)}
     if include_result and job.kind == "verify" and job.status == "completed":
         from .expectations import refresh_result
@@ -119,6 +119,7 @@ def job_json(job, include_result=True, application=None, requester=None):
             "document_hash": job.document_hash, "workspace_version": job.workspace_version,
             "revision": job.revision, "options": job.options, "created_at": job.created_at, "requested_by": job.user_id,
             "requester": actor_json(requester),
+            "discarded_at": discarded.discarded_at if discarded else None,
             "started_at": job.started_at, "finished_at": job.finished_at,
             "application": application_json(application),
             "result": result}
@@ -290,21 +291,34 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
         if options["minimize"] and doc["info"]["interactive"]:
             fail("invalid_stress_minimize", "자동 축소는 비인터랙티브 입력에서 사용할 수 있습니다.")
         options["stress_configuration"] = stress_configuration(doc, options)
-    if values.kind in {"verify", "stress"} or (values.kind == "package" and not archive_only):
-        if options["execution_backend"] == "editor":
-            fail("judge_backend_required", "풀이 검증과 스트레스 테스트는 ZOJ 실제 채점기에서만 실행할 수 있습니다.")
-        options["execution_backend"] = "zoj"
-    else:
-        options["execution_backend"] = "editor"
-    if options["execution_backend"] == "zoj":
+    if options["execution_backend"] == "editor":
+        fail("judge_backend_required", "모든 생성·채점·검증 작업은 ZOJ 에이전트에서만 실행할 수 있습니다.")
+    options["execution_backend"] = "archive" if archive_only else "zoj"
+    uses_judge = values.kind in {"verify", "stress"} or (values.kind == "package" and not archive_only)
+    uses_reference = uses_judge or (values.kind == "prepare" and options["prepare_mode"] in {"full", "answers"})
+    if uses_reference:
+        from .judge_bridge import compatible, capabilities
+        from .reference_generation import PROTOCOL
+        main = next((name for name, source in doc["solutions"].items() if source["tag"] == "MA"), "")
+        if values.kind == "stress":
+            main = options["reference"] or main
+        if not main:
+            fail("not_ready", "정답을 생성할 Main 풀이를 지정하세요.")
+        compatible(doc, {**options, "solutions": [main]}, "prepare")
+        caps = capabilities(user)
+        if caps.get("reference_output_protocol") != PROTOCOL or caps.get("reference_output_online_nodes", 0) < 1:
+            fail("reference_agents_unavailable", "정답 생성용 ZOJ 채점 에이전트가 준비되지 않았습니다. 잠시 후 다시 요청하세요.", 503)
+        options.update(reference_output_protocol=PROTOCOL, reference_revision=caps["runtime_revision"])
+    if uses_judge:
         from .judge_bridge import compatible, capabilities
         compatible(doc, options, values.kind)
         options["judge_revision"] = capabilities(user)["runtime_revision"]
+    if uses_reference:
         from .language_limits import effective_limits, exported_limits
         options["judging_policy"] = {"version":1, "time_limit_ms":doc["info"]["time_limit_ms"],
             "memory_limit_mb":doc["info"]["memory_limit_mb"], "language_resource_limits":exported_limits(doc.get("language_resource_limits")),
             "effective_limits":{language:effective_limits(doc["info"]["time_limit_ms"],doc["info"]["memory_limit_mb"],language,doc.get("language_resource_limits",{}).get(language)) for language in ("cpp17","c99","python3","pypy3","java8","kotlin")}}
-    options["execution_transport"] = "archive" if archive_only else get_settings().execution_transport
+    options["execution_transport"] = "archive" if archive_only else "agent"
     if options["execution_transport"] == "agent":
         from .judge_bridge import capabilities
         execution = capabilities(user).get("execution", {})
@@ -313,7 +327,8 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
         options["execution_revision"] = execution["runtime_revision"]
     hash_value = document_hash(doc)
     if values.reuse and not options["force_prepare"]:
-        cached = db.scalars(select(Job).where(Job.problem_id == problem_id, Job.document_hash == hash_value, Job.kind == values.kind, Job.status.in_(["queued", "running", "completed"])).order_by(Job.created_at.desc())).all()
+        cached = db.scalars(select(Job).where(Job.problem_id == problem_id, Job.document_hash == hash_value, Job.kind == values.kind, Job.status.in_(["queued", "running", "completed"]),
+            ~select(JobDiscard.job_id).where(JobDiscard.job_id == Job.id, JobDiscard.user_id == user.id).exists()).order_by(Job.created_at.desc())).all()
         for row in cached:
             if row.options == options:
                 return job_json(row, application=db.get(JobApplication, (row.id, user.id)), requester=db.get(User, row.user_id))
@@ -336,8 +351,9 @@ def list_jobs(problem_id: str, user: User = Depends(current_user), db: Session =
               relation: Literal["all", "current", "other"] = "all",
               current_hash: str | None = Query(default=None, pattern=r"^[a-f0-9]{64}$")):
     authorize(db, problem_id, user)
-    query = select(Job, JobApplication, User).join(User, User.id == Job.user_id).outerjoin(JobApplication,
+    query = select(Job, JobApplication, User, JobDiscard).join(User, User.id == Job.user_id).outerjoin(JobApplication,
         (JobApplication.job_id == Job.id) & (JobApplication.user_id == user.id))
+    query = query.outerjoin(JobDiscard, (JobDiscard.job_id == Job.id) & (JobDiscard.user_id == user.id))
     query = query.options(load_only(User.id, User.display_name, User.handle))
     query = query.options(load_only(Job.id, Job.problem_id, Job.user_id, Job.kind, Job.status, Job.document_hash, Job.workspace_version,
             Job.revision, Job.options, Job.created_at, Job.started_at, Job.finished_at, Job.result))
@@ -358,9 +374,9 @@ def list_jobs(problem_id: str, user: User = Depends(current_user), db: Session =
     query = query.order_by(Job.created_at.desc(), Job.id.desc())
     if page is None:
         rows = db.execute(query.limit(100)).all()
-        return [job_json(row, False, applied, requester) for row, applied, requester in rows]
+        return [job_json(row, False, applied, requester, discarded) for row, applied, requester, discarded in rows]
     rows, metadata = page_rows(db, query, page, page_size)
-    return {**metadata, "counts": counts, "items": [job_json(row, False, applied, requester) for row, applied, requester in rows]}
+    return {**metadata, "counts": counts, "items": [job_json(row, False, applied, requester, discarded) for row, applied, requester, discarded in rows]}
 
 
 @router.get("/{problem_id}/jobs/{job_id}")
@@ -369,7 +385,7 @@ def get_job(problem_id: str, job_id: str, user: User = Depends(current_user), db
     row = db.get(Job, job_id)
     if not row or row.problem_id != problem_id:
         fail("not_found", "실행 기록을 찾을 수 없습니다.", 404)
-    return job_json(row, application=db.get(JobApplication, (row.id, user.id)), requester=db.get(User, row.user_id))
+    return job_json(row, application=db.get(JobApplication, (row.id, user.id)), requester=db.get(User, row.user_id), discarded=db.get(JobDiscard, (row.id, user.id)))
 
 
 @router.post("/{problem_id}/jobs/{job_id}/cancel")
@@ -516,3 +532,13 @@ def apply_prepared(problem_id: str, job_id: str, values: ApplyResults, user: Use
     if not row or row.problem_id != problem_id:
         fail("not_found", "실행 기록을 찾을 수 없습니다.", 404)
     return apply_prepared_results(db, row, user, values.version)
+
+
+@router.post("/{problem_id}/jobs/{job_id}/discard")
+def discard_prepared(problem_id: str, job_id: str, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
+    authorize(db, problem_id, user, permission="edit_tests")
+    row = db.get(Job, job_id)
+    if not row or row.problem_id != problem_id:
+        fail("not_found", "실행 기록을 찾을 수 없습니다.", 404)
+    from .prepared_results import discard_prepared_results
+    return discard_prepared_results(db, row, user)
