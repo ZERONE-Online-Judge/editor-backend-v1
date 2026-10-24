@@ -221,6 +221,8 @@ class Pipeline:
                     if answer is not None:
                         row["answer_sha"] = self.blob(answer)
                     prepared.append(row)
+                    if getattr(self, "verification", None):
+                        self.verification.preparation_step(set_name, row["index"], "ready")
             self.result["testsets"][set_name] = prepared
         label = {'inputs':'입력 재생성과 Validator 검사 완료','validate':'저장된 입력 Validator 검사 완료','answers':'저장된 입력의 Main 정답 재생성 완료'}.get(mode, '커밋된 입력·기대 출력 확인 완료' if frozen else '입력 검증과 Main 기대 출력 생성 완료')
         cache = getattr(self, "preparation_cache", None)

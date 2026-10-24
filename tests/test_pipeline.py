@@ -48,7 +48,7 @@ def test_legacy_all_testsets_preserves_scope_and_reuses_preparation(owner, probl
         return job['result']
     cold, warm = execute(), execute()
     assert cold['processed_testsets'] == warm['processed_testsets'] == ['tests', 'samples']
-    assert warm['verification_progress']['current'] == warm['verification_progress']['total'] == 8
+    assert warm['verification_progress']['current'] == warm['verification_progress']['total'] == 28
     assert warm['verification_progress']['percent'] == 100
     assert not any(warm['preparation_cache']['executed'].values())
     wrong = next(s for s in warm['solutions'] if s['name'] == 'wrong.py')

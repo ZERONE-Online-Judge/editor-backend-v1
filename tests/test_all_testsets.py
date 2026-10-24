@@ -183,8 +183,8 @@ def test_local_all_sets_preserves_group_expectations_and_distinct_case_ids(probl
         ("samples", "", "OK", False), ("subtask1", "", "NR", True)]
     assert {(c["testset"], c["index"]) for c in small["cases"]} == {("tests", 1), ("tests", 2), ("samples", 1)}
     progress = p.result["verification_progress"]
-    assert (progress["current"], progress["total"], progress["percent"]) == (7, 7, 100)
-    assert progress["testsets"] == {
+    assert (progress["current"], progress["total"], progress["percent"]) == (27, 27, 100)
+    assert {name: value["judging"] for name, value in progress["testsets"].items()} == {
         "tests": {"current": 4, "total": 4, "percent": 100},
         "samples": {"current": 2, "total": 2, "percent": 100},
         "subtask1": {"current": 1, "total": 1, "percent": 100},
@@ -206,6 +206,9 @@ def test_zoj_all_sets_uses_separate_batches_and_expectations(problem, tmp_path, 
     p.result["testsets"]["samples"] = list(p.doc["testsets"]["samples"]["tests"].values())
     p.publish = lambda *_: None
     p.verification = VerificationProgress(p, ["main.cpp"])
+    for (name, index), stages in p.verification.preparation_plan.items():
+        for stage in stages:
+            p.verification.preparation_step(name, index, stage)
     p.verification.begin()
     calls = []
     original = bridge.archive
@@ -223,4 +226,4 @@ def test_zoj_all_sets_uses_separate_batches_and_expectations(problem, tmp_path, 
     assert result["matched"] is expected_match
     assert len(result["judge_runs"]) == 2 and len(result["cases"]) == 6
     assert p.result["verification_progress"]["percent"] == 100
-    assert all(s["current"] == s["total"] == 3 for s in p.result["verification_progress"]["testsets"].values())
+    assert all(s["judging"]["current"] == s["judging"]["total"] == 3 for s in p.result["verification_progress"]["testsets"].values())

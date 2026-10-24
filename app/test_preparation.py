@@ -9,13 +9,20 @@ from .storage import read_blob
 
 def prepare_test(p, test, set_name, mode, frozen, main):
     cache = getattr(p, "preparation_cache", None)
+    progress = getattr(p, "verification", None)
+    def completed(stage):
+        if progress:
+            progress.preparation_step(set_name, test["index"], stage)
     stages = {}
     def step(stage, dependencies, execute):
         if cache:
             value, reused = cache.step(stage, dependencies, execute)
             stages[stage] = "reused" if reused else "executed"
-            return value
-        return execute()
+        else:
+            value = execute()
+        if stage != "input":
+            completed(stage)
+        return value
     def program(name, solution=False):
         return cache.program(name, solution) if cache else None
     index = test["index"]
@@ -45,6 +52,7 @@ def prepare_test(p, test, set_name, mode, frozen, main):
     sha = content_hash(input_bytes)
     if p.doc["info"]["well_formed"] and (b"\r" in input_bytes or b"\x00" in input_bytes or (input_bytes and not input_bytes.endswith(b"\n"))):
         raise SandboxError(f"{set_name} #{index}: LF 줄바꿈과 마지막 개행을 확인하세요.")
+    completed("input")
     validators = [program(name) for name in [p.doc["validator"], *p.doc["extra_validators"]]] if cache else []
     def validate_input():
         valid, result = p.validator(input_bytes, set_name, test["group"])
@@ -71,6 +79,7 @@ def prepare_test(p, test, set_name, mode, frozen, main):
     if frozen:
         answer = read_blob(test["answer_sha"])
         stages["answer"] = "stored"
+        completed("answer")
     else:
         def generate_answer():
             nonlocal result
