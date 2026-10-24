@@ -166,6 +166,15 @@ def test_preparation_reports_real_steps_before_any_judging_and_keeps_progress_at
         assert progress['judging']['current'] == 0
         return True, {}
     p.validator = validator
+    original = p.run_solution
+    def run(*args, **kwargs):
+        # The worker heartbeat must already see the validator result while
+        # a long reference answer runs, even inside the publish throttle.
+        published = snapshots[-1]['verification_progress']
+        assert published['preparation']['stages']['validator']['current'] == 1
+        assert published['current'] == 2
+        return original(*args, **kwargs)
+    p.run_solution = run
     p.prepare()
     progress = p.result['verification_progress']
     assert progress['preparation']['current'] == progress['preparation']['total'] == 5
@@ -226,7 +235,7 @@ def test_parallel_preparation_counts_each_selected_step_once(problem):
     p.doc['solutions'] = {'main.cpp': {'tag': 'MA'}, 'skip.cpp': {'tag': 'NR'}}
     for testset in p.doc['testsets'].values():
         testset['tests']['2'] = {**testset['tests']['1'], 'index': 2, 'sample': True,
-                                'statement_input': 'example', 'verify_statement_io': False}
+                                'statement_input': 'example', 'verify_statement_io': True}
     p.publish = lambda *_: None
     tracker = VerificationProgress(p, list(p.doc['solutions']))
     planned = [(name, index, stage) for (name, index), stages in tracker.preparation_plan.items() for stage in stages]
@@ -241,3 +250,17 @@ def test_parallel_preparation_counts_each_selected_step_once(problem):
     assert progress['preparation']['stages']['sample']['current'] == 3
     assert all(value['preparation']['current'] == value['preparation']['total'] == 6 for value in progress['testsets'].values())
     assert tracker.rows['skip.cpp']['total_tests'] == 0
+
+
+def test_disabled_display_sample_check_is_not_planned_as_work(problem):
+    p, _ = scoped_pipeline(problem, 'verify', test_indices=[1])
+    p.doc['solutions'] = {'main.cpp': {'tag': 'MA'}}
+    test = p.doc['testsets']['tests']['tests']['1']
+    test.update(sample=True, statement_input='example', verify_statement_io=False)
+    p.publish = lambda *_: None
+    p.verification = VerificationProgress(p, ['main.cpp'])
+    p.prepare()
+    progress = p.result['verification_progress']
+    assert progress['preparation']['current'] == progress['preparation']['total'] == 5
+    assert progress['preparation']['stages']['sample']['total'] == 0
+    assert p.result['testsets']['tests'][0]['statement_io_validation'] == 'NOT_REQUESTED'

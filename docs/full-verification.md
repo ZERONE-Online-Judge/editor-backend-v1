@@ -32,7 +32,7 @@ to accommodate bounded base64 output without relaxing its source IP rules.
 `verification_progress` contains phase, combined current/total work units,
 integer percentage, and solution completion counts. Each selected test has
 input, validator, answer, checker, and ready steps, plus a sample step for
-custom display samples. Ready is confirmed after duplicate checking and blob
+enabled custom display-sample checks. Ready is confirmed after duplicate checking and blob
 storage. Successful stored or cached preparation counts too; failed steps do
 not. Each confirmed solution/testcase outcome is one further work unit.
 
