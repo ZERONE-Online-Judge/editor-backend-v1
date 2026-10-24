@@ -18,6 +18,7 @@ from .prepared_results import application_json, apply_prepared_results, pending_
 from .invocation_scope import selected_testsets
 from .job_errors import readable_result
 from .pagination import actor_json, page_rows, page_number, page_length
+from .job_categories import JobCategory, job_category, category_condition
 
 router = APIRouter(prefix="/api/problems", tags=["execution"])
 
@@ -115,7 +116,7 @@ def job_json(job, include_result=True, application=None, requester=None, discard
     if include_result and job.kind == "stress" and job.status not in {"queued", "running"} and result.get("counterexamples") and "coverage" not in result:
         from .stress import minimum_cover
         result = {**result, "coverage": minimum_cover(result["counterexamples"])}
-    return {"id": job.id, "problem_id": job.problem_id, "kind": job.kind, "status": job.status,
+    return {"id": job.id, "problem_id": job.problem_id, "kind": job.kind, "category": job_category(job), "status": job.status,
             "document_hash": job.document_hash, "workspace_version": job.workspace_version,
             "revision": job.revision, "options": job.options, "created_at": job.created_at, "requested_by": job.user_id,
             "requester": actor_json(requester),
@@ -350,6 +351,7 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
 def list_jobs(problem_id: str, user: User = Depends(current_user), db: Session = Depends(session_dependency),
               page: int | None = page_number(), page_size: int = page_length(),
               kind: Literal["all", "prepare", "verify", "validator-tests", "checker-tests", "stress", "package", "render"] = "all",
+              category: JobCategory = "all",
               relation: Literal["all", "current", "other"] = "all",
               current_hash: str | None = Query(default=None, pattern=r"^[a-f0-9]{64}$")):
     authorize(db, problem_id, user)
@@ -362,6 +364,8 @@ def list_jobs(problem_id: str, user: User = Depends(current_user), db: Session =
     query = query.where(Job.problem_id == problem_id)
     if kind != "all":
         query = query.where(Job.kind == kind)
+    if category != "all":
+        query = query.where(category_condition(category))
     counts = None
     if current_hash:
         source_hash = func.coalesce(Job.options["source_document_hash"].as_string(), Job.document_hash)
