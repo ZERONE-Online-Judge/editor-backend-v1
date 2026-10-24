@@ -116,7 +116,7 @@ def test_legacy_preparation_is_reused_but_solutions_are_measured_again(owner, pr
         }, ensure_ascii=False, indent=2))
 
 
-def test_real_selected_input_and_answer_regeneration_preserves_other_tests(owner,problem):
+def test_real_selected_input_and_answer_regeneration_preserves_other_tests(owner,problem, queue_legacy_job):
     with SessionLocal() as db:
         row=db.get(Problem,problem)
         doc=populate(db,row)
@@ -125,7 +125,7 @@ def test_real_selected_input_and_answer_regeneration_preserves_other_tests(owner
         row.document=doc;db.get(Revision,(problem,0)).document=copy.deepcopy(doc);db.commit()
     state=owner.get(f'/api/problems/{problem}').json()
     def execute(mode,version):
-        response=owner.post(f'/api/problems/{problem}/jobs',json={'kind':'prepare','version':version,'options':{'test_indices':[3],'prepare_mode':mode,'auto_apply':True}})
+        response=queue_legacy_job(owner,problem,{'kind':'prepare','version':version,'options':{'test_indices':[3],'prepare_mode':mode,'auto_apply':True}})
         assert response.status_code==202,response.text
         process_job(claim_job())
         job=owner.get(f'/api/problems/{problem}/jobs/{response.json()["id"]}').json()
@@ -145,7 +145,7 @@ def test_real_selected_input_and_answer_regeneration_preserves_other_tests(owner
     assert not any('컴파일 · gen.cpp' in event['label'] for event in answers['result']['events'])
 
 
-def test_real_display_samples_are_checked_without_replacing_judge_data(owner, problem):
+def test_real_display_samples_are_checked_without_replacing_judge_data(owner, problem, queue_legacy_job):
     with SessionLocal() as db:
         row=db.get(Problem,problem)
         doc=populate(db,row)
@@ -155,7 +155,7 @@ def test_real_display_samples_are_checked_without_replacing_judge_data(owner, pr
         db.get(Revision,(problem,0)).document=copy.deepcopy(doc)
         db.commit()
     state=owner.get(f'/api/problems/{problem}').json()
-    request=owner.post(f'/api/problems/{problem}/jobs',json={'kind':'prepare','version':state['version']})
+    request=queue_legacy_job(owner,problem,{'kind':'prepare','version':state['version']})
     assert request.status_code==202,request.text
     process_job(claim_job())
     job=owner.get(f'/api/problems/{problem}/jobs/{request.json()["id"]}').json()
@@ -229,10 +229,10 @@ def test_stress_counterexample_validated_and_persisted(owner,problem, queue_lega
     assert job['result']['counterexample']['input_sha']
 
 
-def test_korean_math_pdf_is_rendered_offline(owner,problem):
+def test_korean_math_pdf_is_rendered_offline(owner,problem, queue_legacy_job):
     prepare_problem(problem)
     state=owner.get(f'/api/problems/{problem}').json()
-    created=owner.post(f'/api/problems/{problem}/jobs',json={'kind':'render','version':state['version']}).json()
+    created=queue_legacy_job(owner,problem,{'kind':'render','version':state['version']}).json()
     process_job(claim_job())
     row=owner.get(f'/api/problems/{problem}/jobs/{created["id"]}').json()
     assert row['status']=='completed',row
@@ -275,7 +275,7 @@ def test_real_generation_auto_apply_and_role_package_roundtrip(owner, problem, q
     state["document"]["solutions"]["wrong.py"]["extra_tags"] = {"tests": "WA"}
     saved = owner.put(f"/api/problems/{problem}/working-copy", json={"version": state["version"], "document": state["document"]})
     assert saved.status_code == 200, saved.text
-    prepared = owner.post(f"/api/problems/{problem}/jobs", json={"kind": "prepare", "version": saved.json()["version"], "options": {"auto_apply": True}})
+    prepared = queue_legacy_job(owner, problem, {"kind": "prepare", "version": saved.json()["version"], "options": {"auto_apply": True}})
     assert prepared.status_code == 202, prepared.text
     process_job(claim_job())
     result = owner.get(f"/api/problems/{problem}/jobs/{prepared.json()['id']}").json()
