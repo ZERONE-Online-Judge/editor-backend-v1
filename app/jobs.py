@@ -2,9 +2,9 @@ import copy
 import hashlib
 import re
 from typing import Annotated, Literal
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import Field, field_validator
-from sqlalchemy import select, update, func
+from sqlalchemy import select, update, func, or_
 from sqlalchemy.orm import Session, load_only
 from .config import get_settings
 from .auth import current_user
@@ -17,6 +17,7 @@ from .execution_limits import MAX_TESTS_PER_SET, MAX_STRESS_ITERATIONS, MAX_ACTI
 from .prepared_results import application_json, apply_prepared_results, pending_preparations
 from .invocation_scope import selected_testsets
 from .job_errors import readable_result
+from .pagination import actor_json, page_rows, page_number, page_length
 
 router = APIRouter(prefix="/api/problems", tags=["execution"])
 
@@ -103,7 +104,7 @@ class JobRequest(Strict):
     reuse: bool = True
 
 
-def job_json(job, include_result=True, application=None):
+def job_json(job, include_result=True, application=None, requester=None):
     result = readable_result(job.result) if include_result else {"summary": job.result.get("summary", ""), "progress": job.result.get("progress", 0)}
     if include_result and job.kind == "verify" and job.status == "completed":
         from .expectations import refresh_result
@@ -117,6 +118,7 @@ def job_json(job, include_result=True, application=None):
     return {"id": job.id, "problem_id": job.problem_id, "kind": job.kind, "status": job.status,
             "document_hash": job.document_hash, "workspace_version": job.workspace_version,
             "revision": job.revision, "options": job.options, "created_at": job.created_at, "requested_by": job.user_id,
+            "requester": actor_json(requester),
             "started_at": job.started_at, "finished_at": job.finished_at,
             "application": application_json(application),
             "result": result}
@@ -314,7 +316,7 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
         cached = db.scalars(select(Job).where(Job.problem_id == problem_id, Job.document_hash == hash_value, Job.kind == values.kind, Job.status.in_(["queued", "running", "completed"])).order_by(Job.created_at.desc())).all()
         for row in cached:
             if row.options == options:
-                return job_json(row, application=db.get(JobApplication, (row.id, user.id)))
+                return job_json(row, application=db.get(JobApplication, (row.id, user.id)), requester=db.get(User, row.user_id))
     active = db.scalars(select(Job).where(Job.user_id == user.id, Job.status.in_(["queued", "running"]))).all()
     if len(active) >= MAX_ACTIVE_JOBS_PER_USER:
         fail("too_many_jobs", f"동시에 요청할 수 있는 검증 작업은 {MAX_ACTIVE_JOBS_PER_USER}개입니다.", 429)
@@ -324,18 +326,41 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
               workspace_version=wc.version if wc else values.version, revision=revision, options=options)
     db.add(row)
     db.commit()
-    return job_json(row)
+    return job_json(row, requester=user)
 
 
 @router.get("/{problem_id}/jobs")
-def list_jobs(problem_id: str, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
+def list_jobs(problem_id: str, user: User = Depends(current_user), db: Session = Depends(session_dependency),
+              page: int | None = page_number(), page_size: int = page_length(),
+              kind: Literal["all", "prepare", "verify", "validator-tests", "checker-tests", "stress", "package", "render"] = "all",
+              relation: Literal["all", "current", "other"] = "all",
+              current_hash: str | None = Query(default=None, pattern=r"^[a-f0-9]{64}$")):
     authorize(db, problem_id, user)
-    rows = db.execute(select(Job, JobApplication).outerjoin(JobApplication,
+    query = select(Job, JobApplication, User).join(User, User.id == Job.user_id).outerjoin(JobApplication,
         (JobApplication.job_id == Job.id) & (JobApplication.user_id == user.id))
-        .options(load_only(Job.id, Job.problem_id, Job.user_id, Job.kind, Job.status, Job.document_hash, Job.workspace_version,
+    query = query.options(load_only(User.id, User.display_name, User.handle))
+    query = query.options(load_only(Job.id, Job.problem_id, Job.user_id, Job.kind, Job.status, Job.document_hash, Job.workspace_version,
             Job.revision, Job.options, Job.created_at, Job.started_at, Job.finished_at, Job.result))
-        .where(Job.problem_id == problem_id).order_by(Job.created_at.desc()).limit(100))
-    return [job_json(row, False, applied) for row, applied in rows]
+    query = query.where(Job.problem_id == problem_id)
+    if kind != "all":
+        query = query.where(Job.kind == kind)
+    counts = None
+    if current_hash:
+        source_hash = func.coalesce(Job.options["source_document_hash"].as_string(), Job.document_hash)
+        matches = or_(source_hash == current_hash, func.coalesce(JobApplication.document_hash, "") == current_hash)
+        total = db.scalar(select(func.count()).select_from(query.order_by(None).subquery())) or 0
+        current = db.scalar(select(func.count()).select_from(query.where(matches).order_by(None).subquery())) or 0
+        counts = {"all": total, "current": current, "other": total - current}
+        if relation != "all":
+            query = query.where(matches if relation == "current" else ~matches)
+    elif relation != "all":
+        fail("missing_current_hash", "자료 기준 필터에는 현재 저장본 정보가 필요합니다.")
+    query = query.order_by(Job.created_at.desc(), Job.id.desc())
+    if page is None:
+        rows = db.execute(query.limit(100)).all()
+        return [job_json(row, False, applied, requester) for row, applied, requester in rows]
+    rows, metadata = page_rows(db, query, page, page_size)
+    return {**metadata, "counts": counts, "items": [job_json(row, False, applied, requester) for row, applied, requester in rows]}
 
 
 @router.get("/{problem_id}/jobs/{job_id}")
@@ -344,7 +369,7 @@ def get_job(problem_id: str, job_id: str, user: User = Depends(current_user), db
     row = db.get(Job, job_id)
     if not row or row.problem_id != problem_id:
         fail("not_found", "실행 기록을 찾을 수 없습니다.", 404)
-    return job_json(row, application=db.get(JobApplication, (row.id, user.id)))
+    return job_json(row, application=db.get(JobApplication, (row.id, user.id)), requester=db.get(User, row.user_id))
 
 
 @router.post("/{problem_id}/jobs/{job_id}/cancel")
@@ -358,7 +383,7 @@ def cancel_job(problem_id: str, job_id: str, user: User = Depends(current_user),
     db.execute(update(Job).where(Job.id == job_id, Job.status.in_(["queued", "running"])).values(status="cancelled", finished_at=now()))
     db.commit()
     db.refresh(row)
-    return job_json(row)
+    return job_json(row, requester=db.get(User, row.user_id))
 
 
 class InvocationComment(Strict):

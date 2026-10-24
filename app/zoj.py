@@ -17,6 +17,7 @@ from .config import get_settings
 from .db import Job, Publication, User, WorkingCopy, session_dependency
 from .domain import authorize, document_hash, fail
 from .schema import Strict
+from .pagination import actor_json, page_rows, page_number, page_length
 
 router = APIRouter(prefix="/api", tags=["ZOJ publishing"])
 
@@ -82,15 +83,20 @@ class Publish(Strict):
         return value
 
 
-def publication_json(row):
+def publication_json(row, requester=None):
     return {"operation_id": row.operation_id, "job_id": row.job_id, "contest_id": row.contest_id,
-        "division_id": row.division_id, "problem_code": row.problem_code, "created_at": row.created_at, "result": row.result}
+        "division_id": row.division_id, "problem_code": row.problem_code, "created_at": row.created_at, "result": row.result,
+        "requester": actor_json(requester)}
 
 
 @router.get("/problems/{problem_id}/zoj-publications")
-def publications(problem_id: str, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
+def publications(problem_id: str, user: User = Depends(current_user), db: Session = Depends(session_dependency),
+                 page: int | None = page_number(), page_size: int = page_length()):
     authorize(db, problem_id, user)
-    return [publication_json(row) for row in db.scalars(select(Publication).where(Publication.problem_id == problem_id).order_by(Publication.created_at.desc()).limit(100)) if row.result]
+    query = select(Publication, User).join(User, User.id == Publication.user_id).where(Publication.problem_id == problem_id, Publication.result["problem_id"].as_string().is_not(None)).order_by(Publication.created_at.desc(), Publication.operation_id.desc())
+    rows, metadata = page_rows(db, query, page, page_size) if page else (db.execute(query.limit(100)).all(), None)
+    items = [publication_json(row, actor) for row, actor in rows]
+    return {**metadata, "items": items} if metadata else items
 
 
 def verified_package(problem_id, job_id, user, db):
@@ -133,7 +139,7 @@ def publish(problem_id: str, values: Publish, user: User = Depends(current_user)
     row.result = {"problem_id": result["problem_id"], "title": result["title"], "revision": job.revision,
         "url": get_settings().zoj_public_origin.rstrip("/") + f"/operator/contests/{values.contest_id}/problems"}
     db.commit()
-    return publication_json(row)
+    return publication_json(row, db.get(User, row.user_id))
 
 
 class UpdatePreview(Strict):
