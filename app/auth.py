@@ -17,6 +17,7 @@ from .config import get_settings
 from .db import LoginCode, LoginSession, RateLimit, User, now, session_dependency, uid
 from .domain import fail
 from .schema import Strict
+from .auth_redirect import require_central_login
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 COOKIE = "editor_session"
@@ -110,9 +111,7 @@ class RequestCode(Strict):
 
 @router.post('/login-options')
 def login_options(values: RequestCode, request: Request):
-    if get_settings().auth_mode == 'zoj':
-        from .shared_auth import call
-        return call(request,'login-options',{'email':str(values.email)})
+    require_central_login()
     return {'password_available':False}
 
 
@@ -124,10 +123,8 @@ class VerifyCode(RequestCode):
 
 @router.post("/code")
 def request_code(values: RequestCode, request: Request, db: Session = Depends(session_dependency)):
+    require_central_login()
     check_browser_request(request)
-    if get_settings().auth_mode=='zoj':
-        from .shared_auth import call
-        return call(request,'code-request',values.model_dump(mode='json'))
     email = str(values.email).lower()
     rate_limit(db, "request:" + digest(request.client.host), 30, 3600)
     rate_limit(db, "email:" + digest(email), 10, 3600)
@@ -151,10 +148,8 @@ def request_code(values: RequestCode, request: Request, db: Session = Depends(se
 
 @router.post("/verify")
 def verify_code(values: VerifyCode, request: Request, response: Response, db: Session = Depends(session_dependency)):
+    require_central_login()
     check_browser_request(request)
-    if get_settings().auth_mode=='zoj':
-        from .shared_auth import call,finish
-        return finish(request,response,db,call(request,'code-verify',{'email':str(values.email),'code':values.code,'force_new_session':values.force_new_session}))
     email = str(values.email).lower()
     rate_limit(db, "verify:" + digest(request.client.host), 60, 3600)
     row = db.scalar(select(LoginCode).where(LoginCode.email == email).with_for_update())

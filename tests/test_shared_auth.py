@@ -24,7 +24,7 @@ def test_new_password_constraints_reject_before_forwarding(client, central, valu
 
 
 def test_eight_character_password_is_forwarded_without_changing_case(client, central):
-    client.cookies.set('zoj_sso', 'central-refresh-token')
+    client.cookies.set('zoj_sso', 'central-refresh-token', domain='testserver.local', path='/')
     result = client.post('/api/auth/password/confirm', json={'code': '123456', 'new_password': 'Abcdef1!'})
     assert result.status_code == 200
     assert json.loads(central['calls'][-1].content)['new_password'] == 'Abcdef1!'
@@ -128,37 +128,28 @@ def test_central_cookie_links_existing_profile_without_moving_projects(
     assert owner.get("/api/auth/me").status_code == 401
 
 
-def test_password_and_email_login_return_only_profile_and_share_exact_session_lifetime(
-    client, central
-):
-    assert client.post(
-        "/api/auth/login-options", json={"email": "author@example.com"}
-    ).json() == {"password_available": True}
+def test_legacy_login_cannot_bypass_central_passkey_and_new_environment_policy(client, central):
     for route, values in [
-        (
-            "/api/auth/password/login",
-            {"email": "author@example.com", "password": "a long test password"},
-        ),
-        ("/api/auth/verify", {"email": "author@example.com", "code": "123456"}),
+        ('/api/auth/login-options', {'email': 'author@example.com'}),
+        ('/api/auth/code', {'email': 'author@example.com'}),
+        ('/api/auth/password/login', {'email': 'author@example.com', 'password': 'a long test password', 'force_new_session': True}),
+        ('/api/auth/verify', {'email': 'author@example.com', 'code': '123456', 'force_new_session': True}),
     ]:
         result = client.post(route, json=values)
-        assert result.status_code == 200, result.text
-        assert result.json()["account_id"] == central["identity"]["account_id"]
-        assert (
-            "central-refresh-token" not in result.text and "password" not in result.text
-        )
-        cookie = result.headers["set-cookie"]
-        assert (
-            cookie.startswith("zoj_sso=")
-            and "HttpOnly" in cookie
-            and "Max-Age=123456" in cookie
-        )
+        assert result.status_code == 409, result.text
+        assert result.json()['error']['code'] == 'central_login_required'
+        assert result.json()['error']['login_url'] == '/api/auth/redirect'
+        assert 'set-cookie' not in result.headers
+    assert not central['calls']
     with SessionLocal() as db:
         assert db.scalar(select(func.count()).select_from(LoginSession)) == 0
         assert db.scalar(select(func.count()).select_from(LoginCode)) == 0
-    assert client.post("/api/auth/logout").status_code == 200
-    assert client.get("/api/auth/me").status_code == 401
-    assert "zoj_sso" not in client.cookies
+    # A passkey-created canonical session uses exactly the same SSO resolver.
+    client.cookies.set('zoj_sso', 'central-refresh-token', domain='testserver.local', path='/')
+    assert client.get('/api/auth/me').json()['account_id'] == central['identity']['account_id']
+    assert client.post('/api/auth/logout').status_code == 200
+    assert client.get('/api/auth/me').status_code == 401
+    assert 'zoj_sso' not in client.cookies
 
 
 def test_bridge_misconfiguration_is_not_reported_as_user_logout(client, central):
