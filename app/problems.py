@@ -18,6 +18,7 @@ from .permissions import grants, editing, check_changes, PROBLEM
 from .domain import authorize, cautions, document_hash, fail, references, three_way_merge, validate_document, workspace
 from .config import get_settings
 from .execution_limits import public_limits
+from .pagination import page_rows, page_number, page_length
 from .schema import Document, Strict, empty_document
 from .storage import put_blob, put_blob_file, blob_path, read_blob
 from .prepared_results import pending_preparations
@@ -262,10 +263,13 @@ def download_blob(problem_id: str, sha: str, user: User = Depends(current_user),
 
 
 @router.get("/{problem_id}/revisions")
-def revisions(problem_id: str, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
+def revisions(problem_id: str, user: User = Depends(current_user), db: Session = Depends(session_dependency),
+              page: int | None = page_number(), page_size: int = page_length()):
     authorize(db, problem_id, user)
-    rows = db.scalars(select(Revision).where(Revision.problem_id == problem_id).order_by(Revision.number.desc())).all()
-    return [{"number": r.number, "message": r.message, "minor": r.minor, "author": db.get(User, r.author_id).display_name, "created_at": r.created_at, "hash": document_hash(r.document)} for r in rows]
+    query = select(Revision, User.display_name).join(User, User.id == Revision.author_id).where(Revision.problem_id == problem_id).order_by(Revision.number.desc())
+    rows, metadata = page_rows(db, query, page, page_size) if page else (db.execute(query).all(), None)
+    items = [{"number": r.number, "message": r.message, "minor": r.minor, "author": author, "created_at": r.created_at, "hash": document_hash(r.document)} for r, author in rows]
+    return {**metadata, "items": items} if metadata else items
 
 
 @router.get("/{problem_id}/revisions/{number}")
