@@ -10,6 +10,7 @@ from .config import get_settings
 from .db import Access, Base, Job, LoginCode, LoginSession, RateLimit, SessionLocal, User, engine, now, uid
 from .pipeline import Pipeline
 from .folder_access import effective_access
+from .job_errors import failure_result
 
 logger = logging.getLogger("editor.worker")
 stop_event = threading.Event()
@@ -80,7 +81,7 @@ def process_job(job):
     except Exception as error:
         status = "failed"
         latest = copy.deepcopy(getattr(pipeline, "result", latest))
-        latest = {**latest, "summary": "작업을 완료하지 못했습니다.", "error": str(error)[:32768]}
+        latest = {**latest, **failure_result(error)}
         logger.exception("Editor job %s failed", job.id)
     finally:
         finished.set()

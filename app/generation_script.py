@@ -46,15 +46,24 @@ def parse(source, occupied=()):
             def replace(match):
                 if match[1] not in variables: raise ValueError(f'{number}행: 정의하지 않은 변수 {match[0]}')
                 return str(variables[match[1]])
-            tokens = shlex.split(VARIABLE.sub(replace,payload),comments=True)
+            expanded = VARIABLE.sub(replace,payload)
+            try:
+                tokens = shlex.split(expanded, comments=True)
+            except ValueError:
+                raise ValueError(f'{number}행: 인자를 감싼 따옴표가 닫혔는지 확인해 주세요.') from None
             if not tokens: continue
             if tokens[0] == 'group':
                 if len(tokens)!=2: raise ValueError(f'{number}행: group 그룹명 또는 group - 를 사용하세요.')
                 group = '' if tokens[1]=='-' else tokens[1]
                 continue
-            if tokens.count('>')!=1 or len(tokens)<3 or tokens[-2]!='>': raise ValueError(f'{number}행: generator 인자 > 번호 또는 > $ 형식을 사용하세요.')
+            if tokens.count('>')!=1 or len(tokens)<3 or tokens[-2]!='>':
+                raise ValueError(f'{number}행: 생성 명령 끝에 > 테스트번호 또는 > $를 붙여 주세요. '
+                                 '예: gen 100 > 1 (1번 테스트) 또는 gen 100 > $ (다음 빈 번호). '
+                                 'gen은 등록한 생성기 이름으로 바꿔 주세요.')
             command, destination = tokens[:-2],tokens[-1]
             if any(t in {'|',';','&&','||','<','>>'} for t in command): raise ValueError(f'{number}행: 셸 연산자는 사용할 수 없습니다.')
+            if destination != '$' and not re.fullmatch(r'[0-9]{1,19}', destination):
+                raise ValueError(f'{number}행: > 뒤에는 테스트 번호(양의 정수) 또는 $를 입력해 주세요.')
             index = next((i for i in range(1,MAX_TESTS_PER_SET+1) if i not in used),MAX_TESTS_PER_SET+1) if destination=='$' else int(destination)
             if index<1 or index>MAX_TESTS_PER_SET or index in used: raise ValueError(f'{number}행: 테스트 번호 중복 또는 범위 초과')
             used.add(index)

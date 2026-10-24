@@ -16,6 +16,7 @@ from .storage import put_blob
 from .execution_limits import MAX_TESTS_PER_SET, MAX_STRESS_ITERATIONS, MAX_ACTIVE_JOBS_PER_USER, MAX_STRESS_PATTERNS, MAX_STRESS_COUNTEREXAMPLES, MAX_MINIMIZE_ATTEMPTS, MAX_MINIMIZE_SECONDS
 from .prepared_results import application_json, apply_prepared_results, pending_preparations
 from .invocation_scope import selected_testsets
+from .job_errors import readable_result
 
 router = APIRouter(prefix="/api/problems", tags=["execution"])
 
@@ -103,7 +104,7 @@ class JobRequest(Strict):
 
 
 def job_json(job, include_result=True, application=None):
-    result = job.result if include_result else {"summary": job.result.get("summary", ""), "progress": job.result.get("progress", 0)}
+    result = readable_result(job.result) if include_result else {"summary": job.result.get("summary", ""), "progress": job.result.get("progress", 0)}
     if include_result and job.kind == "verify" and job.status == "completed":
         from .expectations import refresh_result
         result = refresh_result(job.document, result)
