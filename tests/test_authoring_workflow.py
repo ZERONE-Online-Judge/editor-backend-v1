@@ -217,3 +217,66 @@ def test_applied_or_incomplete_results_cannot_be_discarded(owner, problem):
     complete(job, result)
     assert owner.post(path+'/apply', json={'version':version}).status_code == 200
     assert owner.post(path+'/discard').json()['error']['code'] == 'already_applied'
+
+
+@pytest.mark.parametrize("options", [
+    {"prepare_mode": "inputs", "check_only": True, "test_indices": []},
+    {"prepare_mode": "inputs", "test_indices": []},
+    {"prepare_mode": "validate", "test_indices": [1]},
+])
+def test_input_checks_cannot_apply_discard_or_raise_pending_warnings(owner, problem, options):
+    job, result, version = fixture_job(owner, problem)
+    with SessionLocal() as db:
+        row = db.get(Job, job['id'])
+        row.options = options
+        row.status, row.result = 'completed', result
+        db.commit()
+    before = owner.get(f'/api/problems/{problem}').json()
+    path = f'/api/problems/{problem}/jobs/{job["id"]}'
+    assert before['pending_preparations'] == []
+    assert owner.get(f'/api/problems/{problem}/preparation-status').json()['pending_preparations'] == []
+    for action, body in [('apply', {'version': version}), ('discard', {})]:
+        response = owner.post(path + '/' + action, json=body)
+        assert response.status_code == 400
+        assert response.json()['error']['code'] == 'check_only'
+    after = owner.get(f'/api/problems/{problem}').json()
+    assert after['document'] == before['document'] and after['version'] == version
+    assert owner.get(path).json()['application'] is None
+
+
+@pytest.mark.parametrize("options", [
+    {"prepare_mode": "inputs", "test_indices": [1]},
+    {"prepare_mode": "inputs", "test_indices": [], "check_only": False},
+    {"prepare_mode": "answers"}, {"prepare_mode": "full"},
+])
+def test_generation_still_supports_applying_and_pending_results(owner, problem, options):
+    job, result, version = fixture_job(owner, problem)
+    with SessionLocal() as db:
+        row = db.get(Job, job['id'])
+        row.options = options
+        row.status, row.result = 'completed', result
+        db.commit()
+    assert owner.get(f'/api/problems/{problem}/preparation-status').json()['pending_preparations'][0]['id'] == job['id']
+    response = owner.post(f'/api/problems/{problem}/jobs/{job["id"]}/apply', json={'version': version})
+    assert response.status_code == 200, response.text
+
+
+@pytest.mark.parametrize("options", [
+    {"prepare_mode": "inputs", "check_only": True, "auto_apply": True},
+    {"prepare_mode": "validate", "auto_apply": True},
+    {"prepare_mode": "full", "check_only": True},
+])
+def test_check_only_options_reject_materialization(owner, problem, options):
+    _, _, version = fixture_job(owner, problem)
+    response = owner.post(f'/api/problems/{problem}/jobs', json={'kind': 'prepare', 'version': version, 'options': options})
+    assert response.status_code == 400
+    assert response.json()['error']['code'] == 'invalid_options'
+
+
+@pytest.mark.parametrize('mode,indices,expected', [('inputs', [], True), ('inputs', [1], False), ('validate', [1], True), ('full', [], False)])
+def test_existing_clients_receive_explicit_check_only_intent(owner, problem, mode, indices, expected):
+    _, _, version = fixture_job(owner, problem)
+    response = owner.post(f'/api/problems/{problem}/jobs', json={'kind': 'prepare', 'version': version,
+        'options': {'prepare_mode': mode, 'test_indices': indices}})
+    assert response.status_code == 202, response.text
+    assert response.json()['options']['check_only'] is expected

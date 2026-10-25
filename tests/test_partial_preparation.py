@@ -85,11 +85,12 @@ def scripted_copy(owner, problem):
 def test_whole_script_input_check_is_admitted_without_main_and_uses_only_agents(owner,problem,all_sets):
     version=scripted_copy(owner,problem)
     response=owner.post(f'/api/problems/{problem}/jobs',json={
-        'kind':'prepare','version':version,'options':{'prepare_mode':'inputs','all_testsets':all_sets}})
+        'kind':'prepare','version':version,'options':{'prepare_mode':'inputs','all_testsets':all_sets,'check_only':True}})
     assert response.status_code==202,response.text
     options=response.json()['options']
     assert options['execution_backend']=='zoj' and options['execution_transport']=='agent'
     assert options['all_testsets'] is all_sets and options['test_indices']==[]
+    assert options['check_only'] is True
     assert options['auto_apply'] is False and 'reference_output_protocol' not in options
     state=owner.get(f'/api/problems/{problem}').json()
     assert state['version']==version and state['document']['testsets']['tests']['script']=='gen 4 > 4'
