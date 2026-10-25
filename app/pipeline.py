@@ -334,6 +334,9 @@ class Pipeline:
                     if self.job.options["verify"] and not self.result["verified"]:
                         raise SandboxError("풀이 기대 판정이 맞지 않아 검증된 패키지를 생성하지 않았습니다.")
                     overall_verified = self.result.get("verified", False)
+                    self.result['unit_test_totals'] = {
+                        kind: len(self.doc[field]) for kind, field in
+                        [('validator-tests', 'validator_tests'), ('checker-tests', 'checker_tests')]}
                     for kind in ["validator-tests", "checker-tests"]:
                         if self.doc["validator_tests" if kind == "validator-tests" else "checker_tests"]:
                             self.unit_tests(kind)

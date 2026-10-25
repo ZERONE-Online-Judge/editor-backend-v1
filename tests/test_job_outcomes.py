@@ -144,6 +144,16 @@ def test_unverified_packages_are_explicitly_not_checked():
     assert outcome('package', status='failed', result=result)['assessment']['status'] == 'failed'
 
 
+def test_package_export_failure_can_follow_successful_checks_but_legacy_partial_tests_are_unknown():
+    result = {'verified': True, 'solutions': [solution()], 'unit_tests': [{'matched': True}]}
+    assert outcome('package', status='failed', result=result)['assessment']['status'] == 'incomplete'
+    result['unit_test_totals'] = {'validator-tests': 1, 'checker-tests': 1}
+    assert outcome('package', status='failed', result=result)['assessment']['status'] == 'incomplete'
+    result['unit_tests'].append({'matched': True})
+    value = outcome('package', status='failed', result=result)
+    assert value['execution'] == 'failed' and value['assessment']['status'] == 'passed'
+
+
 def test_render_completion_can_include_failed_pdf_generation():
     result = {'statements': {'ko': {'html': 'OK', 'pdf': 'FAILED'}}}
     value = outcome('render', result=result)

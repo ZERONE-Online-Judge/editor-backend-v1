@@ -57,7 +57,9 @@ def verification(job, result):
         return assessment('expectations', 'empty' if result.get('solutions') else 'unknown',
                           'no_targets' if result.get('solutions') else 'missing_evidence')
     # A true worker completion is insufficient: require explicit, complete checks.
-    if passed == total and result.get('verified') is True:
+    interrupted_legacy_package = (job.kind == 'package' and job.status != 'completed'
+                                  and 'unit_test_totals' not in result)
+    if passed == total and result.get('verified') is True and not interrupted_legacy_package:
         return assessment('expectations', 'passed', 'expectations_match', totals=totals)
     return assessment('expectations', 'incomplete', 'incomplete_checks', totals=totals, partial=True)
 
