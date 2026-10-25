@@ -336,3 +336,17 @@ previews retain their separate limits. Large final-verification suites are
 split into bounded 512 MiB requests without dropping cases. This requires
 ZOJ API and judge agent 0.2.27 or later before updating Editor workers.
 Participant submission output limits are unchanged.
+
+### 입력 검사와 생성 결과 반영
+
+입력 검사는 판정과 확인한 입력만 기록하고 작업 사본을 변경하지 않습니다.
+`prepare_mode: inputs`의 전체 입력 검사에는 `check_only: true`를 사용하며,
+`prepare_mode: validate`는 항상 검사 전용입니다. 검사 결과의 반영·버리기 및
+자동 반영 요청은 서버에서 거부하고, 미반영 생성 결과 알림에서도 제외합니다.
+이전 전체 입력 검사 기록에도 같은 정책을 적용합니다.
+
+선택 입력 재생성, 정답 재생성과 전체 입력·정답 생성은 기존처럼 확인 후 반영할
+수 있습니다. API에서 전체 입력만 재생성하여 저장하려면 `check_only: false`를
+명시합니다. 옵션이 없으면 전체 `inputs`는 검사, 선택 번호가 있는 `inputs`는
+재생성으로 해석합니다. 생성 스크립트를 등록 테스트로 확정하는 일은 생성 결과를
+반영할 때만 수행합니다.

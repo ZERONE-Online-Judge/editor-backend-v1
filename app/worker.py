@@ -94,7 +94,8 @@ def process_job(job):
             db.execute(update(Job).where(Job.id == job.id, Job.status == "cancelled", Job.lease == job.lease)
                        .values(result=latest, heartbeat_at=now()))
         db.commit()
-        if updated.rowcount and status == "completed" and job.kind == "prepare" and job.options.get("auto_apply"):
+        from .prepared_results import is_check_only
+        if updated.rowcount and status == "completed" and job.kind == "prepare" and job.options.get("auto_apply") and not is_check_only(job):
             from fastapi import HTTPException
             from .prepared_results import apply_prepared_results
             row = db.get(Job, job.id)

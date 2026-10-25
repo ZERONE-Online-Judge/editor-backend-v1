@@ -58,6 +58,7 @@ class JobOptions(Strict):
     name: str = Field(default="", max_length=120)
     note: str = Field(default="", max_length=8000)
     auto_apply: bool = False
+    check_only: bool | None = None
     force_prepare: bool = False
     execution_backend: Literal["editor", "zoj"] | None = None
     testset: str = "tests"
@@ -204,6 +205,15 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
         fail("invalid_options", "선택 번호는 한 테스트 세트에서 지정하세요.")
     if options["auto_apply"] and values.kind != "prepare":
         fail("invalid_options", "자동 반영은 입력·정답 생성에서만 사용할 수 있습니다.")
+    if options["check_only"] is None:
+        options["check_only"] = values.kind == "prepare" and (
+            options["prepare_mode"] == "validate" or (options["prepare_mode"] == "inputs" and not options["test_indices"]))
+    if options["check_only"] and (values.kind != "prepare" or options["prepare_mode"] not in {"inputs", "validate"}):
+        fail("invalid_options", "검사 전용 옵션은 입력 검사에서만 사용할 수 있습니다.")
+    if values.kind == "prepare" and options["prepare_mode"] == "validate":
+        options["check_only"] = True
+    if options["check_only"] and options["auto_apply"]:
+        fail("invalid_options", "입력 검사는 작업 사본에 자동 반영하지 않습니다.")
     if options["force_prepare"] and values.kind != "verify":
         fail("invalid_options", "준비 결과 재사용 해제는 풀이 검증에서 선택하세요.")
     if values.kind == "package" and options["export_format"] == "zoj":
