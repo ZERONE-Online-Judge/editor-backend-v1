@@ -4,6 +4,7 @@ from pathlib import Path
 from .execution_limits import GENERATOR_CPU_MS, GENERATOR_MEMORY_MB, GENERATOR_OUTPUT_BYTES, SOLUTION_OUTPUT_BYTES
 from .preparation_cache import content_hash
 from .sandbox import SandboxError
+from .job_errors import AssessmentFailure
 from .storage import read_blob
 
 
@@ -51,13 +52,15 @@ def prepare_test(p, test, set_name, mode, frozen, main):
         input_bytes = p.generator(test["command"])
     sha = content_hash(input_bytes)
     if p.doc["info"]["well_formed"] and (b"\r" in input_bytes or b"\x00" in input_bytes or (input_bytes and not input_bytes.endswith(b"\n"))):
-        raise SandboxError(f"{set_name} #{index}: LF 줄바꿈과 마지막 개행을 확인하세요.")
+        raise AssessmentFailure(f"{set_name} #{index}: LF 줄바꿈과 마지막 개행을 확인하세요.", 'input', 'input_format')
     completed("input")
     validators = [program(name) for name in [p.doc["validator"], *p.doc["extra_validators"]]] if cache else []
     def validate_input():
         valid, result = p.validator(input_bytes, set_name, test["group"])
         if not valid:
-            raise SandboxError(f"{set_name} #{index}: 입력 조건 위반\n{result['stderr']}")
+            if result.get('status') == 'ok' and result.get('exit_code', -1) >= 0:
+                raise AssessmentFailure(f"{set_name} #{index}: 입력 조건 위반\n{result['stderr']}", 'input', 'input_rejected')
+            raise SandboxError(f"{set_name} #{index}: Validator 실행 오류\n{result['stderr']}")
         return {"valid": True}
     step("validator", {"input": sha, "programs": validators, "testset": set_name, "group": test["group"]}, validate_input)
     if mode in {"inputs", "validate"}:
@@ -85,6 +88,8 @@ def prepare_test(p, test, set_name, mode, frozen, main):
             nonlocal result
             verdict, result = p.run_solution(main, input_bytes, read_blob(test["answer_sha"]) if info["interactive"] and test["answer_sha"] else b"", preparation=True)
             if verdict != "AC":
+                if verdict != 'JUDGE_ERROR':
+                    raise AssessmentFailure(f"Main 풀이가 {set_name} #{index}에서 {verdict}입니다.\n{result['stderr']}", 'preparation', 'reference_failed')
                 raise SandboxError(f"Main 풀이가 {set_name} #{index}에서 {verdict}입니다.\n{result['stderr']}")
             answer = (read_blob(test["answer_sha"]) if test["answer_sha"] else b"") if info["interactive"] else result["output"]
             return {"blob_sha": p.blob(answer)} if cache else {"answer": answer}
@@ -95,7 +100,9 @@ def prepare_test(p, test, set_name, mode, frozen, main):
     def check_answer():
         check, checked = p.checker(input_bytes, answer, answer, test["points"])
         if check != "AC":
-            raise SandboxError(f"checker가 Main 출력을 거부했습니다.\n{checked['stderr']}")
+            if check != 'JUDGE_ERROR':
+                raise AssessmentFailure(f"checker가 Main 출력을 거부했습니다.\n{checked['stderr']}", 'preparation', 'reference_rejected')
+            raise SandboxError(f"Checker 실행 오류로 Main 출력을 확인하지 못했습니다.\n{checked['stderr']}")
         return {"accepted": True}
     step("checker", checker_dependencies, check_answer)
     row = {**test, "input_sha": test["input_sha"] if frozen else None, "answer_sha": test["answer_sha"] if frozen else None,

@@ -2,6 +2,14 @@
 import ast
 import re
 from fastapi import HTTPException
+from .sandbox import SandboxError
+
+
+class AssessmentFailure(SandboxError):
+    """A confirmed content/check failure, distinct from unavailable evidence."""
+    def __init__(self, message, kind, code):
+        super().__init__(message)
+        self.assessment = {"kind": kind, "code": code}
 
 
 def exception_message(error):
@@ -18,6 +26,8 @@ def exception_message(error):
 def failure_result(error):
     result = {"summary": "작업을 완료하지 못했습니다.",
               "error": exception_message(error)[:32768]}
+    if isinstance(error, AssessmentFailure):
+        result["assessment_failure"] = error.assessment
     if isinstance(error, HTTPException) and isinstance(error.detail, dict):
         code = error.detail.get("code")
         if isinstance(code, str):
