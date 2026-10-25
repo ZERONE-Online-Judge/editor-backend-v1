@@ -106,18 +106,23 @@ class JobRequest(Strict):
     reuse: bool = True
 
 
-def job_json(job, include_result=True, application=None, requester=None, discarded=None):
-    result = readable_result(job.result) if include_result else {"summary": job.result.get("summary", ""), "progress": job.result.get("progress", 0)}
-    if include_result and job.kind == "verify" and job.status == "completed":
+def job_json(job, include_result=True, application=None, requester=None, discarded=None, legacy_document=None):
+    from .job_outcomes import needs_expectation_snapshot, summarize
+    result = readable_result(job.result)
+    if needs_expectation_snapshot(job) and (include_result or legacy_document is not None):
         from .expectations import refresh_result
-        result = refresh_result(job.document, result)
+        result = refresh_result(job.document if include_result else legacy_document, result)
     if include_result and job.status not in {"queued", "running"} and result.get("solutions") and "test_matrix" not in result:
         from .test_matrix import analyze
         result = {**result, "test_matrix": analyze(job.document, result)}
     if include_result and job.kind == "stress" and job.status not in {"queued", "running"} and result.get("counterexamples") and "coverage" not in result:
         from .stress import minimum_cover
         result = {**result, "coverage": minimum_cover(result["counterexamples"])}
+    outcome = summarize(job, result)
+    if not include_result:
+        result = {"summary": result.get("summary", ""), "progress": result.get("progress", 0)}
     return {"id": job.id, "problem_id": job.problem_id, "kind": job.kind, "category": job_category(job), "status": job.status,
+            "outcome": outcome,
             "document_hash": job.document_hash, "workspace_version": job.workspace_version,
             "revision": job.revision, "options": job.options, "created_at": job.created_at, "requested_by": job.user_id,
             "requester": actor_json(requester),
@@ -388,11 +393,19 @@ def list_jobs(problem_id: str, user: User = Depends(current_user), db: Session =
     elif relation != "all":
         fail("missing_current_hash", "자료 기준 필터에는 현재 저장본 정보가 필요합니다.")
     query = query.order_by(Job.created_at.desc(), Job.id.desc())
+    def serialize(rows):
+        from .job_outcomes import needs_expectation_snapshot
+        legacy_ids = [row.id for row, *_ in rows if needs_expectation_snapshot(row)]
+        # Legacy expectations use their request snapshot, never the current copy.
+        # Batch the deferred snapshots rather than loading one per history row.
+        documents = dict(db.execute(select(Job.id, Job.document).where(Job.id.in_(legacy_ids))).all()) if legacy_ids else {}
+        return [job_json(row, False, applied, requester, discarded, legacy_document=documents.get(row.id))
+                for row, applied, requester, discarded in rows]
     if page is None:
         rows = db.execute(query.limit(100)).all()
-        return [job_json(row, False, applied, requester, discarded) for row, applied, requester, discarded in rows]
+        return serialize(rows)
     rows, metadata = page_rows(db, query, page, page_size)
-    return {**metadata, "counts": counts, "items": [job_json(row, False, applied, requester, discarded) for row, applied, requester, discarded in rows]}
+    return {**metadata, "counts": counts, "items": serialize(rows)}
 
 
 @router.get("/{problem_id}/jobs/{job_id}")

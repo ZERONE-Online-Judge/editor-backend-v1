@@ -200,6 +200,10 @@ class Pipeline:
         self.result["prepare_mode"] = mode
         frozen = self.job.kind == "verify" and self.job.options.get("snapshot") == "committed"
         selected = selected_testsets(self.doc, self.job.options, self.job.kind)
+        indices = self.job.options.get('test_indices') if self.job.kind in {'verify', 'prepare'} else []
+        self.result['preparation_total'] = sum(
+            sum(not indices or test['index'] in indices for test in expanded_tests(self.doc['testsets'][name]))
+            for name in selected)
         self.result["processed_testsets"] = selected
         for set_name in selected:
             testset = self.doc["testsets"][set_name]
@@ -214,7 +218,8 @@ class Pipeline:
             with self.work(prepare_case, chosen) as results:
                 for row, sha, input_bytes, answer in results:
                     if sha in seen and not self.doc["info"]["skip_duplicate_validation"]:
-                        raise SandboxError(f"{set_name} #{row['index']}: 중복된 입력입니다.")
+                        from .job_errors import AssessmentFailure
+                        raise AssessmentFailure(f"{set_name} #{row['index']}: 중복된 입력입니다.", 'input', 'input_duplicate')
                     seen.add(sha)
                     if input_bytes is not None:
                         row["input_sha"] = self.blob(input_bytes)
@@ -294,6 +299,7 @@ class Pipeline:
 
     def unit_tests(self, kind):
         tests = self.doc["validator_tests" if kind == "validator-tests" else "checker_tests"]
+        self.result.setdefault('unit_test_totals', {})[kind] = len(tests)
         def component_case(item):
             key, test = item
             self.event(f"구성요소 테스트 · #{key}")

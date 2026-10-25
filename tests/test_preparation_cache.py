@@ -148,13 +148,23 @@ def test_successful_explicit_preparation_seeds_later_verification(document, make
 
 def test_failed_validation_and_failed_main_are_never_cached(document, make_pipeline):
     p, _ = make_pipeline(document, options={'test_indices':[1]})
-    p.validator = lambda *args: (False, {'stderr':'invalid'})
-    with pytest.raises(SandboxError, match='입력 조건 위반'): p.prepare()
+    p.validator = lambda *args: (False, {'status':'ok', 'exit_code':1, 'stderr':'invalid'})
+    with pytest.raises(SandboxError, match='입력 조건 위반') as rejected: p.prepare()
+    from app.job_errors import failure_result
+    assert failure_result(rejected.value)['assessment_failure']['code'] == 'input_rejected'
     second, calls = make_pipeline(document, options={'test_indices':[1]})
     second.run_solution = lambda *args, **kwargs: ('TLE', {'stderr':'timeout'})
     with pytest.raises(SandboxError, match='TLE'): second.prepare()
     third, calls = make_pipeline(document, options={'test_indices':[1]}); third.prepare()
     assert calls == {'answer':1, 'checker':1}
+
+
+def test_validator_execution_failure_does_not_claim_input_is_invalid(document, make_pipeline):
+    from app.job_errors import failure_result
+    p, _ = make_pipeline(document, options={'test_indices':[1]})
+    p.validator = lambda *args: (False, {'status':'timeout', 'exit_code':-1, 'stderr':'timed out'})
+    with pytest.raises(SandboxError, match='Validator 실행 오류') as unavailable: p.prepare()
+    assert 'assessment_failure' not in failure_result(unavailable.value)
 
 
 def test_missing_or_corrupt_output_is_rebuilt(document, make_pipeline):
