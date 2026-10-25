@@ -1,0 +1,16 @@
+[Unit]
+Description=Back up Editor database, working copies and problem files
+After=docker.service local-fs.target
+RequiresMountsFor=/srv/zoj-editor-backup
+
+[Service]
+Type=oneshot
+UMask=0077
+ExecStart=/usr/local/sbin/zoj-editor-backup backup
+TimeoutStartSec=1800
+Nice=10
+IOSchedulingClass=idle
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=full
+NoNewPrivileges=yes

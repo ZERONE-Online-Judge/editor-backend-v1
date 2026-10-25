@@ -128,6 +128,11 @@ API/워커를 재생성합니다. 동일 자료의 이전 환경 검증 결과�
 
 ## 업데이트와 복구
 
+Editor 전용 300 GiB 디스크의 정기 백업·암호화·보관 정책·실제 복구 검사는
+[자동 백업 운영 안내](../docs/backups.md)를 따릅니다. 설치는
+`deploy/backup/install.sh`로 진행하며, 저장된 미커밋 작업 사본도 포함합니다.
+아래 수동 백업은 자동 백업 구성을 대신하지 않습니다.
+
 ```sh
 docker compose --profile images build
 docker compose stop worker
