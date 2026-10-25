@@ -13,7 +13,12 @@ jobs:
         with:
           python-version: '3.13'
       - run: pip install -r requirements.txt
-      - run: python -m compileall -q app runner
+      - name: Install the backup integration test dependency
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends restic
+      - run: python -m compileall -q app runner deploy/backup
+      - run: bash -n deploy/backup/install.sh
       - run: pytest -q
       - name: Validate schema migration
         run: |

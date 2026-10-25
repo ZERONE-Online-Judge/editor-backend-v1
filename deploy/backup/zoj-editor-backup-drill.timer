@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Editor restore rehearsal
+
+[Timer]
+OnCalendar=*-*-* 03:20:00 Asia/Seoul
+RandomizedDelaySec=60
+Persistent=true
+Unit=zoj-editor-backup-drill.service
+
+[Install]
+WantedBy=timers.target

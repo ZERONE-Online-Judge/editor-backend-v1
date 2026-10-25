@@ -1,0 +1,16 @@
+[Unit]
+Description=Check Editor backup data and apply retention
+After=docker.service local-fs.target
+RequiresMountsFor=/srv/zoj-editor-backup
+
+[Service]
+Type=oneshot
+UMask=0077
+ExecStart=/usr/local/sbin/zoj-editor-backup maintain
+TimeoutStartSec=7200
+Nice=10
+IOSchedulingClass=idle
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=full
+NoNewPrivileges=yes

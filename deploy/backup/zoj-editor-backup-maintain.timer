@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Editor backup integrity and retention check
+
+[Timer]
+OnCalendar=*-*-* 04:20:00 Asia/Seoul
+RandomizedDelaySec=60
+Persistent=true
+Unit=zoj-editor-backup-maintain.service
+
+[Install]
+WantedBy=timers.target
