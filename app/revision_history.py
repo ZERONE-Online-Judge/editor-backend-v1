@@ -126,6 +126,12 @@ def compact_diff(db, problem_id, change):
             lines.append({"kind": "hunk" if line.startswith("@@") else "add" if line.startswith("+") else "remove" if line.startswith("-") else "same",
                           "text": line[:240]})
             cut |= len(line) > 240
+        if not lines and old != new and not cut:
+            def endings(text):
+                crlf = text.count("\r\n")
+                return f"줄바꿈: CRLF {crlf}개 · LF {text.count(chr(10)) - crlf}개 · CR {text.count(chr(13)) - crlf}개 · 마지막 개행 {'있음' if text.endswith((chr(10), chr(13))) else '없음'}"
+            lines = [{"kind": "remove", "text": "- " + endings(old)},
+                     {"kind": "add", "text": "+ " + endings(new)}]
     return {k: change[k] for k in ("path", "label", "kind")} | {
         "content_label": content_label, "lines": lines, "truncated": cut,
         "binary": binary, "unavailable": unavailable,

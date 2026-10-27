@@ -147,3 +147,13 @@ def test_test_changes_use_test_numbers_instead_of_internal_keys():
     after["testsets"]["tests"]["tests"]["internal-key"]["input_sha"] = "b"
     row = changes(before, after)[0]
     assert row["path"] == "testsets/tests/tests/2" and row["label"] == "tests #2"
+
+
+def test_preview_explains_line_ending_only_changes(owner, problem):
+    old = file(owner, problem, b"int main() {}\r\n")
+    commit(owner, problem, lambda d: d["files"].update({"main.cpp": old}))
+    new = file(owner, problem, b"int main() {}")
+    commit(owner, problem, lambda d: d["files"].update({"main.cpp": new}))
+    lines = preview(owner, problem, 1, 2).json()["changes"]["items"][0]["lines"]
+    assert lines[0]["kind"] == "remove" and "CRLF 1개" in lines[0]["text"]
+    assert lines[1]["kind"] == "add" and "마지막 개행 없음" in lines[1]["text"]
