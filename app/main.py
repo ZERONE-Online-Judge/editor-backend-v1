@@ -2,7 +2,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
-from . import shared_folders, auth, collaboration, downloads, jobs, problems, packages, folders, zoj, library, revision_updates
+from . import shared_folders, auth, collaboration, downloads, jobs, problems, packages, folders, zoj, library, revision_updates, revision_history
 from .config import get_settings
 from . import judge_bridge
 from .db import Base, engine
@@ -56,6 +56,7 @@ app.include_router(folders.router)
 app.include_router(shared_folders.router)
 app.include_router(problems.router)
 app.include_router(revision_updates.router)
+app.include_router(revision_history.router)
 app.include_router(downloads.router)
 app.include_router(collaboration.router)
 app.include_router(jobs.router)
