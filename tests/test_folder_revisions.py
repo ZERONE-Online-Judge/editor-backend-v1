@@ -136,6 +136,7 @@ def test_initial_and_cumulative_preview_are_bounded_and_validate_ranges(owner, p
     assert data["changes"]["total"] == 1 and "변경 6" in str(data["changes"])
     assert preview(owner, problem, 7, 0).status_code == 400
     assert preview(owner, problem, 0, 999).status_code == 404
+    assert preview(owner, problem, 0, 2 ** 80).status_code == 404
     assert preview(owner, problem, -2, 1).status_code == 422
     assert preview(owner, problem, 7, 7).json()["changes"]["total"] == 0
 

@@ -139,6 +139,8 @@ def revision_preview(problem_id: str, from_revision: int = Query(ge=-1), to_revi
     target = problem.revision if to_revision is None else to_revision
     if from_revision > target:
         fail("invalid_revision_range", "비교할 리비전의 순서를 확인하세요.")
+    if target > problem.revision:
+        fail("not_found", "리비전을 찾을 수 없습니다.", 404)
     after = db.get(Revision, (problem_id, target))
     before = db.get(Revision, (problem_id, from_revision)) if from_revision >= 0 else None
     if not after or (from_revision >= 0 and not before):
