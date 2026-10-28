@@ -300,3 +300,15 @@ def test_editor_restore_survives_zoj_reexported_file_paths(owner,problem):
     assert response.status_code==201,response.text
     restored=owner.get('/api/problems/'+response.json()['id']).json()['document']
     assert len(restored['testsets']['tests']['tests'])==3 and restored['solutions']['wrong.py']['tag']=='WA'
+
+
+def test_destination_list_uses_authenticated_user_and_validated_id(owner, client, monkeypatch):
+    contest_id=str(uuid.uuid4()); calls=[]
+    def remote(method,path,user):
+        calls.append((method,path,user.email)); return {"problems":[]}
+    monkeypatch.setattr(zoj,'remote',remote)
+    path=f'/api/zoj/contests/{contest_id}/problems'
+    assert client.get(path).status_code==401
+    assert owner.get(path).json()=={"problems":[]}
+    assert calls==[("GET",f'/api/editor/contests/{contest_id}/problems','author@example.com')]
+    assert owner.get('/api/zoj/contests/invalid/problems').status_code==422

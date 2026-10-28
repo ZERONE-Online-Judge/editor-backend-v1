@@ -7,7 +7,7 @@ import time
 import uuid
 from urllib.parse import urlencode
 import httpx
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Path
 from pydantic import Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -68,6 +68,12 @@ def contests(user: User = Depends(current_user)):
     return {"configured": True, **result}
 
 
+@router.get("/zoj/contests/{contest_id}/problems")
+def contest_problems(contest_id: str = Path(pattern=r"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$"), user: User = Depends(current_user)):
+    # The destination service rechecks the caller's current contest role.
+    return remote("GET", f"/api/editor/contests/{contest_id}/problems", user)
+
+
 class Publish(Strict):
     job_id: str = Field(pattern=r"^[a-f0-9]{32}$")
     contest_id: str = Field(pattern=r"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$")
@@ -99,14 +105,22 @@ def publications(problem_id: str, user: User = Depends(current_user), db: Sessio
     return {**metadata, "items": items} if metadata else items
 
 
+def require_transfer_copy(problem, user, db):
+    wc = db.get(WorkingCopy, (problem.id, user.id))
+    if wc and document_hash(wc.document) != document_hash(problem.document):
+        if wc.document == wc.base_document:
+            fail("workspace_update_required", "새 공유 리비전이 있습니다. 문제 작업 공간에서 업데이트한 뒤 다시 준비하세요.", 409)
+        fail("commit_required", "변경사항을 먼저 커밋한 뒤 검증 패키지를 준비하세요.", 409)
+
+
 def verified_package(problem_id, job_id, user, db):
     problem, _ = authorize(db, problem_id, user, permission="publish")
     job = db.get(Job, job_id)
     if not job or job.problem_id != problem_id or job.kind != "package" or job.status != "completed" or job.result.get("package", {}).get("format") != "zoj" or not job.result.get("package", {}).get("verified"):
         fail("zoj_package_required", "검증을 완료한 ZOJ 형식 패키지를 먼저 만드세요.", 409)
-    wc = db.get(WorkingCopy, (problem_id, user.id))
-    if job.document_hash != document_hash(problem.document) or job.revision != problem.revision or (wc and document_hash(wc.document) != job.document_hash):
+    if job.document_hash != document_hash(problem.document) or job.revision != problem.revision:
         fail("stale_package", "문제가 변경되었습니다. 커밋 후 ZOJ 패키지를 다시 만드세요.", 409)
+    require_transfer_copy(problem, user, db)
     path = get_settings().data_dir / "packages" / (job.id + ".zip")
     if not path.is_file() or path.stat().st_size > get_settings().max_archive_bytes:
         fail("zoj_package_missing", "보관된 패키지를 찾을 수 없습니다. 다시 생성하세요.", 409)
