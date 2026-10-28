@@ -1,62 +1,22 @@
-"""ZOJ-initiated access to projects the authenticated caller can edit."""
-import base64
-import hashlib
-import hmac
-import json
-import re
-from fastapi import APIRouter, Depends, Query, Request
-from fastapi.responses import FileResponse
-from pydantic import EmailStr, Field, TypeAdapter
-from sqlalchemy import delete, func, or_, select
-from sqlalchemy.exc import IntegrityError
+"""Editor-owned picker and package preparation for the single ZOJ transfer flow."""
+from fastapi import APIRouter, Depends, Query
+from pydantic import Field
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
+from .auth import current_user
 from .config import get_settings
-from .db import Folder, Job, LibraryNonce, Placement, Problem, User, WorkingCopy, now, session_dependency
+from .db import Folder, Job, Placement, Problem, User, WorkingCopy, session_dependency
 from .domain import document_hash, fail, workspace
-from .jobs import JobOptions, JobRequest, _create_job
+from .jobs import JobOptions, JobRequest, _create_job, job_json
 from .schema import Strict
+from .zoj import require_transfer_copy
 from .folders import accessible_folders
 from .permissions import has
 from .folder_access import effective_access, writable_problem_ids, workspace_role
 from .db import SharedPlacement
 
-router = APIRouter(prefix="/api/zoj-library", tags=["ZOJ library"])
+router = APIRouter(prefix="/api/zoj-transfer", tags=["ZOJ transfer"])
 
-
-async def caller(request: Request, db: Session = Depends(session_dependency)):
-    settings = get_settings()
-    key = settings.zoj_bridge_secret.get_secret_value() if settings.zoj_bridge_secret else ""
-    if len(key) < 32:
-        fail("library_not_configured", "Editor와 ZOJ의 연결이 아직 설정되지 않았습니다.", 503)
-    stamp, nonce = request.headers.get("x-editor-timestamp", ""), request.headers.get("x-editor-nonce", "")
-    encoded, sha = request.headers.get("x-editor-identity", ""), request.headers.get("x-editor-content-sha256", "")
-    signature = request.headers.get("x-editor-signature", "")
-    if not re.fullmatch(r"[0-9]{10}", stamp) or abs(int(stamp) - now()) > 90 or not re.fullmatch(r"[a-f0-9]{32}", nonce) or not re.fullmatch(r"[a-f0-9]{64}", sha) or not re.fullmatch(r"[a-f0-9]{64}", signature) or len(encoded) > 512:
-        fail("library_auth_invalid", "ZOJ 연결 인증이 유효하지 않습니다.", 401)
-    path = request.url.path + ("?" + request.url.query if request.url.query else "")
-    message = "\n".join(["zoj-library-v1", request.method, path, stamp, nonce, encoded, sha])
-    if not hmac.compare_digest(hmac.new(key.encode(), message.encode(), hashlib.sha256).hexdigest(), signature):
-        fail("library_auth_invalid", "ZOJ 연결 인증이 유효하지 않습니다.", 401)
-    try:
-        email = str(TypeAdapter(EmailStr).validate_python(base64.b64decode(encoded + "=" * (-len(encoded) % 4), altchars=b'-_', validate=True).decode())).lower()
-    except (ValueError, UnicodeError):
-        fail("library_auth_invalid", "연결 계정이 유효하지 않습니다.", 401)
-    body = bytearray()
-    async for chunk in request.stream():
-        body.extend(chunk)
-        if len(body) > 8192:
-            fail("library_request_too_large", "요청 크기가 너무 큽니다.", 413)
-    if hashlib.sha256(body).hexdigest() != sha:
-        fail("library_content_changed", "연결 요청 내용이 변경되었습니다.", 401)
-    request.state.library_body = bytes(body)
-    db.execute(delete(LibraryNonce).where(LibraryNonce.expires_at < now()))
-    db.add(LibraryNonce(nonce=nonce, expires_at=now() + 180))
-    try:
-        db.commit()
-    except IntegrityError:
-        db.rollback()
-        fail("library_replayed", "이미 처리한 연결 요청입니다.", 401)
-    return email, db.scalar(select(User).where(func.lower(User.email) == email))
 
 
 def editable_problem(db, user, problem_id):
@@ -68,16 +28,13 @@ def editable_problem(db, user, problem_id):
 
 
 def package_json(job):
-    return {"id": job.id, "status": job.status, "revision": job.revision, "options": job.options,
-        "summary": job.result.get("error", job.result.get("summary", ""))[:2000],
-        "progress": job.result.get("progress", 0), "package": job.result.get("package"), "created_at": job.created_at}
-
+    return job_json(job)
 
 @router.get("/problems")
 def list_projects(q: str = Query(default="", max_length=200), offset: int = Query(default=0, ge=0, le=100000),
         limit: int = Query(default=100, ge=1, le=200), folder: str = Query(default="all", pattern=r"^(all|root|[a-f0-9]{32})$"),
-        identity=Depends(caller), db: Session = Depends(session_dependency)):
-    email, user = identity
+        user: User = Depends(current_user), db: Session = Depends(session_dependency)):
+    email = user.email
     result = {"email": email, "account_exists": bool(user), "editor_url": get_settings().public_origin,
               "problems": [], "folders": [], "total": 0, "offset": offset, "limit": limit}
     if not user:
@@ -122,16 +79,12 @@ class PackageOptions(Strict):
 
 
 @router.post("/problems/{problem_id}/packages", status_code=202)
-def prepare_package(problem_id: str, request: Request, identity=Depends(caller), db: Session = Depends(session_dependency)):
-    _, user = identity
+def prepare_package(problem_id: str, values: PackageOptions, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
     problem = editable_problem(db, user, problem_id)
-    try:
-        values = PackageOptions.model_validate(json.loads(request.state.library_body))
-    except ValueError:
-        fail("invalid_request", "테스트 세트와 지문 언어를 확인하세요.", 422)
+    require_transfer_copy(problem, user, db)
     wc = workspace(db, problem, user)
     result = _create_job(problem_id, JobRequest(kind="package", version=wc.version,
-        options=JobOptions(export_format="zoj", verify=True, **values.model_dump()), reuse=True), user, db, from_committed_revision=True)
+        options=JobOptions(export_format="zoj", verify=True, **values.model_dump()), reuse=True), user, db)
     return package_json(db.get(Job, result["id"]))
 
 
@@ -146,23 +99,5 @@ def own_package(db, user, problem_id, job_id):
 
 
 @router.get("/problems/{problem_id}/packages/{job_id}")
-def package_status(problem_id: str, job_id: str, identity=Depends(caller), db: Session = Depends(session_dependency)):
-    return package_json(own_package(db, identity[1], problem_id, job_id))
-
-
-@router.get("/problems/{problem_id}/packages/{job_id}/download")
-def package_download(problem_id: str, job_id: str, identity=Depends(caller), db: Session = Depends(session_dependency)):
-    job = own_package(db, identity[1], problem_id, job_id)
-    package = job.result.get("package", {})
-    if job.status != "completed" or not package.get("verified") or package.get("format") != "zoj":
-        fail("library_package_not_ready", "검증 패키지가 아직 준비되지 않았습니다.", 409)
-    path = get_settings().data_dir / "packages" / (job.id + ".zip")
-    if not path.is_file() or path.stat().st_size > get_settings().max_archive_bytes:
-        fail("library_package_missing", "패키지 파일을 다시 생성하세요.", 409)
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        while chunk := source.read(1048576):
-            digest.update(chunk)
-    if digest.hexdigest() != package["sha256"]:
-        fail("library_package_changed", "패키지 무결성 검사에 실패했습니다.", 409)
-    return FileResponse(path, media_type="application/zip", filename=package["filename"], headers={"X-Content-Sha256": package["sha256"]})
+def package_status(problem_id: str, job_id: str, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
+    return package_json(own_package(db, user, problem_id, job_id))
