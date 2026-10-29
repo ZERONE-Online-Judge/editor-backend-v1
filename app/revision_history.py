@@ -21,7 +21,7 @@ PREVIEW_FILES = 3
 FIELDS = {"name": "이름", "time_limit_ms": "시간 제한 (ms)", "memory_limit_mb": "메모리 제한 (MiB)",
           "legend": "지문", "input": "입력 형식", "output": "출력 형식", "notes": "예제 설명",
           "tutorial": "해설", "scoring": "점수", "interaction": "상호작용", "script": "생성 스크립트",
-          "groups": "테스트 그룹", "groups_enabled": "그룹 사용", "checker": "Checker",
+          "order": "테스트 실행 순서", "groups": "테스트 그룹", "groups_enabled": "그룹 사용", "checker": "Checker",
           "validator": "Validator", "interactor": "Interactor", "extra_validators": "추가 Validator",
           "common_statement": "공통 설명", "common_tutorial": "공통 해설",
           "translation_source": "번역 기준 원문", "translation_reviews": "번역 검토 상태",

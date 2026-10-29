@@ -4,7 +4,7 @@ import math
 import threading
 import time
 
-from .domain import expanded_tests
+from .domain import case_order, expanded_tests
 from .expectations import expected_tag
 from .invocation_scope import selected_testsets
 
@@ -113,7 +113,7 @@ class VerificationProgress:
             target = self.rows[name]
             target["state"] = "running"
             target["cases"].append(row)
-            target["cases"].sort(key=lambda case: (case["testset"], case["index"]))
+            target["cases"].sort(key=case_order(self.pipeline.doc))
             target["completed_tests"] = sum(case["index"] > 0 for case in target["cases"])
             complete = target["completed_tests"] == target["total_tests"]
             self.publish(target["completed_tests"] == 1 or complete)
@@ -125,7 +125,7 @@ class VerificationProgress:
             target["state"] = "running"
             merged = {(case["testset"], case["index"]): case for case in target["cases"]}
             merged.update({(case["testset"], case["index"]): case for case in cases})
-            target["cases"] = sorted(merged.values(), key=lambda case: (case["testset"], case["index"]))
+            target["cases"] = sorted(merged.values(), key=case_order(self.pipeline.doc))
             target["completed_tests"] = sum(case["index"] > 0 for case in target["cases"])
             if record:
                 target["judge_runs"] = [value for value in target["judge_runs"] if value["id"] != record["id"]] + [record]

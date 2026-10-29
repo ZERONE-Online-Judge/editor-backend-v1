@@ -1,6 +1,6 @@
 from .file_limits import MAX_FILE_BYTES
 import re
-from typing import Literal
+from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator, model_serializer
 from .execution_limits import MAX_TESTS_PER_SET
 
@@ -173,12 +173,23 @@ class Group(Strict):
 
 
 class TestSet(Strict):
+    order: list[Annotated[int, Field(strict=True, ge=1, le=MAX_TESTS_PER_SET)]] = Field(default_factory=list, max_length=MAX_TESTS_PER_SET)
+
+    @model_serializer(mode="wrap")
+    def serialize(self, handler):
+        value = handler(self)
+        if not self.order:
+            value.pop("order", None)
+        return value
+
     script: str = Field(default="", max_length=262144)
     tests: dict[str, Test] = Field(default_factory=dict)
     groups_enabled: bool = False
     groups: dict[str, Group] = Field(default_factory=dict)
     @model_validator(mode="after")
     def valid_set(self):
+        if len(set(self.order)) != len(self.order):
+            raise ValueError("Test order must contain unique indexes")
         if len(self.groups) > 100:
             raise ValueError("At most 100 test groups")
         for name in self.groups:

@@ -1,6 +1,7 @@
 """Analyze only observed testcase outcomes; missing measurements stay missing."""
 from collections import defaultdict
 from .expectations import expected_tag
+from .domain import case_order
 from .stress import minimum_cover
 
 WRONG_TAGS = {'WA','TL','ML','RE','PE','RJ','TM'}
@@ -15,7 +16,8 @@ def analyze(document, result):
     for _,set_name,index in observations:
         tests.setdefault((set_name,index),{'index':index,'group':''})
     rows, signatures, targets = [], defaultdict(list), set()
-    for (set_name,index),test in sorted(tests.items()):
+    order = case_order(document)
+    for (set_name,index),test in sorted(tests.items(), key=lambda item: order({"testset": item[0][0], "index": item[0][1]})):
         hits, missing, signature, skipped = [], [], [], []
         cpu, memory = [], []
         eligible = []

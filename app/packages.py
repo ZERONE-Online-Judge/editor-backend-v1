@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from .auth import current_user
 from .config import get_settings
 from .db import Access, Blob, Collection, Job, Problem, Revision, User, WorkingCopy, now, session_dependency
-from .domain import authorize, document_hash, fail, references, validate_document
+from .domain import authorize, document_hash, fail, ordered_tests, references, validate_document
 from .schema import Document, Strict, empty_document, safe_name
 from .storage import put_blob, read_blob
 from .sandbox import VENDOR
@@ -36,7 +36,7 @@ def statement_html(doc, language, assets_prefix="../../assets"):
     body = "".join(f"<section><h2>{label}</h2><div class='copy'>{html.escape(statement[key])}</div></section>" for label, key in sections if statement[key])
     from .statement_samples import display
     for testset in doc["testsets"].values():
-        for test in sorted(testset["tests"].values(), key=lambda row: row["index"]):
+        for test in ordered_tests(testset):
             if test["sample"]:
                 body += "<section><h2>예제 입력</h2><pre>" + html.escape(display(test, "input")) + "</pre><h2>예제 출력</h2><pre>" + html.escape(display(test, "output")) + "</pre></section>"
     return f"<!doctype html><html lang='ko'><head><meta charset='utf-8'><title>{title}</title><link rel='stylesheet' href='{assets_prefix}/katex/katex.min.css'><style>body{{font:16px/1.8 sans-serif;max-width:900px;margin:40px auto;padding:0 24px;color:#0f172a}}h1{{text-align:center}}h2{{font-size:18px}}.copy{{white-space:pre-wrap}}pre{{padding:16px;background:#f7f8fd}}</style></head><body><h1>{title}</h1><p>시간 제한 {doc['info']['time_limit_ms']}ms · 메모리 {doc['info']['memory_limit_mb']}MiB</p>{body}<script src='{assets_prefix}/katex/katex.min.js'></script><script src='{assets_prefix}/katex/auto-render.min.js'></script><script>renderMathInElement(document.body,{{delimiters:[{{left:'$$',right:'$$',display:true}},{{left:'$',right:'$',display:false}},{{left:'\\\\[',right:'\\\\]',display:true}},{{left:'\\\\(',right:'\\\\)',display:false}}],throwOnError:false}})</script></body></html>"
