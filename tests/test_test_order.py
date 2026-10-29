@@ -10,7 +10,7 @@ from pydantic import ValidationError
 from app import judge_bridge as bridge
 from app.db import Problem, Revision, SessionLocal
 from app.demo import populate
-from app.domain import expanded_tests, ordered_tests
+from app.domain import case_order, expanded_tests, ordered_tests
 from app.revision_history import changes
 from app.schema import TestSet as SchemaSet
 from test_invocation_scope import scoped_pipeline
@@ -142,3 +142,9 @@ def test_reordered_verification_reports_original_ids_in_execution_order(problem,
     result = bridge.verify_solution(pipeline, None, 'main.cpp', None)
     assert result['matched'] is True
     assert [case['index'] for case in result['cases']] == [3, 1, 2]
+
+
+def test_case_order_preserves_legacy_set_labels_and_custom_order_within_each_set():
+    document = {'testsets': {'tests': {'order': [3, 1, 2]}, 'samples': {}}}
+    cases = [{'testset': name, 'index': index} for name, index in [('tests', 1), ('tests', 2), ('samples', 1), ('tests', 3)]]
+    assert [(case['testset'], case['index']) for case in sorted(cases, key=case_order(document))] == [('samples', 1), ('tests', 3), ('tests', 1), ('tests', 2)]

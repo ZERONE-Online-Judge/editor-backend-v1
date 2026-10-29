@@ -107,7 +107,7 @@ def ordered_tests(testset, tests=None):
 
 
 def case_order(document):
-    sets = {name: position for position, name in enumerate(document["testsets"])}
+    sets = {name: position for position, name in enumerate(sorted(document["testsets"]))}
     ranks = {name: {index: rank for rank, index in enumerate(config.get("order", []))}
              for name, config in document["testsets"].items()}
     return lambda case: (sets.get(case["testset"], len(sets)),
