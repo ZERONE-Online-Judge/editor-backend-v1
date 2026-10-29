@@ -214,7 +214,7 @@ class Pipeline:
             from .test_preparation import prepare_test
             def prepare_case(test):
                 return prepare_test(self, test, set_name, mode, frozen, main)
-            chosen = [test for test in sorted(saved, key=lambda t:t["index"]) if not indices or test["index"] in indices]
+            chosen = [test for test in saved if not indices or test["index"] in indices]
             with self.work(prepare_case, chosen) as results:
                 for row, sha, input_bytes, answer in results:
                     if sha in seen and not self.doc["info"]["skip_duplicate_validation"]:

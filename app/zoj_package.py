@@ -136,7 +136,7 @@ def build_zoj_package(job, testsets):
                 if count > 10000:
                     raise ValueError("ZOJ 패키지는 전체 테스트 10,000개까지 지원합니다.")
                 inp, out = read_blob(test["input_sha"]), read_blob(test["answer_sha"])
-                order = ordinal if job.options.get("testsets") is not None else test["index"]
+                order = ordinal if job.options.get("testsets") is not None or doc["testsets"][set_name].get("order") else test["index"]
                 path = f"testcases/v{version}/{order:05d}"
                 cases.append({"display_order": order, "input": file(path + ".in", inp), "output": file(path + ".out", out),
                     "time_limit_ms_override": None, "memory_limit_mb_override": None})

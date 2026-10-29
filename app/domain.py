@@ -99,6 +99,22 @@ def parse_script(source: str, occupied=()):
         fail("invalid_script", f"생성 스크립트: {error}")
 
 
+def ordered_tests(testset, tests=None):
+    """Keep testcase identity stable while ordering saved or expanded tests."""
+    ranks = {index: rank for rank, index in enumerate(testset.get("order", []))}
+    return sorted(testset["tests"].values() if tests is None else tests,
+                  key=lambda test: (ranks.get(test["index"], len(ranks)), test["index"]))
+
+
+def case_order(document):
+    sets = {name: position for position, name in enumerate(document["testsets"])}
+    ranks = {name: {index: rank for rank, index in enumerate(config.get("order", []))}
+             for name, config in document["testsets"].items()}
+    return lambda case: (sets.get(case["testset"], len(sets)),
+                         ranks.get(case["testset"], {}).get(case["index"], len(ranks.get(case["testset"], {}))),
+                         case["index"])
+
+
 def expanded_tests(testset):
     saved = list(testset["tests"].values())
     if testset["script"].strip():
@@ -111,7 +127,7 @@ def expanded_tests(testset):
         saved += [{"input_sha": None, "answer_sha": None, "group": "", "points": 0,
                    "description": "", "sample": False,
                    **{k:v for k,v in previous.get((test["index"],test["command"]),{}).items() if k in fields}, **test} for test in generated]
-    return sorted(saved, key=lambda test: test["index"])
+    return ordered_tests(testset, saved)
 
 
 def cautions(doc):

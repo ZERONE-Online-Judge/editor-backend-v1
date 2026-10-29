@@ -54,4 +54,5 @@ def read_blob(sha):
 
 def expanded_tests(testset):
     if testset.get('script'): raise ValueError('Linux replay requires materialized tests')
-    return sorted(testset['tests'].values(),key=lambda test:test['index'])
+    ranks = {index: rank for rank, index in enumerate(testset.get('order', []))}
+    return sorted(testset['tests'].values(), key=lambda test: (ranks.get(test['index'], len(ranks)), test['index']))

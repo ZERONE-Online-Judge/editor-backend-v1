@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from fastapi import APIRouter, Depends, HTTPException
 from .auth import current_user
 from .config import get_settings
+from .domain import case_order
 from .db import SessionLocal, User, Job, now, session_dependency
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -161,14 +162,21 @@ def testcase_batches(pipeline, name, tests):
         yield batch
 
 
+def wire_tests(tests):
+    # The receiver executes numeric indexes in order. Use request-local
+    # positions for reordered batches, then restore Editor identities.
+    indices = [test["index"] for test in tests]
+    return dict(zip(indices if indices == sorted(indices) else range(1, len(tests) + 1), tests))
+
+
 def archive(pipeline, name, set_name, tests, attempt):
     source = pipeline.doc["solutions"][name]
     blobs, resources = judge_files(pipeline, name)
     cases = []
-    for t in tests:
+    for wire_index, t in wire_tests(tests).items():
         for sha in (t["input_sha"], t["answer_sha"]):
             blobs[sha] = blob_path(sha)
-        cases.append({"index": t["index"], "input_sha": t["input_sha"], "answer_sha": t["answer_sha"]})
+        cases.append({"index": wire_index, "input_sha": t["input_sha"], "answer_sha": t["answer_sha"]})
     if sum(path.stat().st_size for path in blobs.values()) > MAX_JUDGE_CONTENT_BYTES:
         raise SandboxError("ZOJ 채점 묶음의 원본 자료 한도를 초과했습니다.")
     operation = hashlib.sha256(json.dumps([pipeline.job.id, name, set_name, [t["index"] for t in tests], attempt], separators=(",", ":")).encode()).hexdigest()[:32]
@@ -254,7 +262,7 @@ def run_batch(pipeline, user, name, set_name, tests, attempt, cancellation):
 
 
 def observed_cases(pipeline, user, set_name, tests, run):
-    lookup = {test["index"]: test for test in tests}
+    lookup = wire_tests(tests)
     result = []
     seen = set()
     cache = getattr(pipeline, "judge_outputs", None)
@@ -280,13 +288,14 @@ def observed_cases(pipeline, user, set_name, tests, run):
                 except (HTTPException, ValueError, KeyError):
                     output_error = "실제 출력 파일을 가져오지 못했습니다. 원본 채점 기록은 유지됩니다."
             actual_sha = cache.get(key)
-        result.append({"testset": set_name, "index": index, "verdict": VERDICTS[record["final_status"]],
+        result.append({"testset": set_name, "index": test["index"], "verdict": VERDICTS[record["final_status"]],
                        "cpu_ms": record.get("runtime_ms"), "wall_ms": None, "memory_kb": record.get("memory_kb"),
                        "comment": record.get("judge_message", ""), "group": test.get("group", ""),
                        "input_sha": test["input_sha"], "answer_sha": test["answer_sha"], "actual_sha": actual_sha,
                        "output_truncated": record.get("output_truncated", False), "output_size": record.get("output_size"),
                        "output_total_bytes": record.get("output_total_bytes"), "output_error": output_error})
-    return sorted(result, key=lambda case: case["index"])
+    ranks = {test["index"]: rank for rank, test in enumerate(tests)}
+    return sorted(result, key=lambda case: ranks[case["index"]])
 
 
 def verify_solution(pipeline, user, name, cancellation):
@@ -321,7 +330,7 @@ def verify_solution(pipeline, user, name, cancellation):
     verdicts = [c["verdict"] for c in cases]
     expectations = evaluate(pipeline.doc, source, pipeline.result["testsets"], cases)
     return {"name": name, "tag": source["tag"], **expectations, "matched": complete and expectations["matched"],
-            "cases": sorted(cases, key=lambda c: (c["testset"], c["index"])), "skipped": False,
+            "cases": sorted(cases, key=case_order(pipeline.doc)), "skipped": False,
             "complete": complete, "judge_runs": records}
 
 

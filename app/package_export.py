@@ -1,7 +1,7 @@
 """Archive committed files without compiling, judging or changing answers."""
 import copy
 
-from .domain import expanded_tests, fail
+from .domain import expanded_tests, fail, ordered_tests
 from .invocation_scope import selected_testsets
 
 
@@ -11,7 +11,7 @@ def stored_testsets(document, options):
     for name in selected_testsets(document, options, "package"):
         config = document["testsets"][name]
         saved = {(t["index"], t.get("command", "")): t for t in config["tests"].values()}
-        definitions = expanded_tests(config) if complete_required else sorted(config["tests"].values(), key=lambda t: t["index"])
+        definitions = expanded_tests(config) if complete_required else ordered_tests(config)
         result[name] = []
         for definition in definitions:
             test = copy.deepcopy(definition)
