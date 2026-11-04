@@ -3,7 +3,7 @@ import copy
 import re
 from collections import OrderedDict, defaultdict
 from threading import Lock
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, func
 from .db import Job, JobApplication, now
 from .domain import cautions, document_hash, expanded_tests
 from .statements import effective, translation_status
@@ -136,9 +136,10 @@ def build(doc, jobs=()):
 
 def report(db, problem_id, doc):
     sha = document_hash(doc)
+    source_hash = func.coalesce(Job.options["source_document_hash"].as_string(), Job.document_hash)
     ids = db.execute(select(Job.id, Job.finished_at).outerjoin(JobApplication, JobApplication.job_id==Job.id).where(
         Job.problem_id==problem_id, Job.status.in_(['completed','failed','cancelled']),
-        or_(Job.document_hash==sha, JobApplication.document_hash==sha)).order_by(Job.created_at.desc(), Job.id.desc()).limit(48)).all()
+        or_(source_hash==sha, JobApplication.document_hash==sha)).order_by(Job.created_at.desc(), Job.id.desc()).limit(48)).all()
     unique = list(dict.fromkeys(tuple(row) for row in ids))[:24]
     key = (str(db.get_bind().url),problem_id,sha,tuple(unique))
     with _LOCK:

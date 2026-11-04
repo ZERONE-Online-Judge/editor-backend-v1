@@ -118,7 +118,7 @@ def verified_package(problem_id, job_id, user, db):
     job = db.get(Job, job_id)
     if not job or job.problem_id != problem_id or job.kind != "package" or job.status != "completed" or job.result.get("package", {}).get("format") != "zoj" or not job.result.get("package", {}).get("verified"):
         fail("zoj_package_required", "검증을 완료한 ZOJ 형식 패키지를 먼저 만드세요.", 409)
-    if job.document_hash != document_hash(problem.document) or job.revision != problem.revision:
+    if (job.options.get("source_document_hash") or job.document_hash) != document_hash(problem.document) or job.revision != problem.revision:
         fail("stale_package", "문제가 변경되었습니다. 커밋 후 ZOJ 패키지를 다시 만드세요.", 409)
     require_transfer_copy(problem, user, db)
     path = get_settings().data_dir / "packages" / (job.id + ".zip")

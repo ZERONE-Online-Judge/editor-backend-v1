@@ -5,6 +5,7 @@ import time
 
 from .execution_limits import MAX_MINIMIZE_INPUT_BYTES
 from .sandbox import SandboxError
+from .test_line_endings import normalize_test_bytes
 
 
 class ReductionBudgetReached(RuntimeError):
@@ -79,6 +80,7 @@ class CounterexampleMinimizer:
         return verdict, actual, checked
 
     def try_input(self, content):
+        content = normalize_test_bytes(content)
         self.check()
         if self.metadata["attempts"] >= self.options.get("minimize_attempts", 40):
             raise ReductionBudgetReached()
@@ -88,6 +90,7 @@ class CounterexampleMinimizer:
         if not valid:
             return False
         verdict, reference = self.p.run_solution(self.reference, content)
+        reference = {**reference, "output": normalize_test_bytes(reference["output"])}
         if verdict != "AC":
             return False
         findings = []

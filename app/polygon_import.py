@@ -8,6 +8,7 @@ from pathlib import PurePosixPath
 
 from .schema import empty_document, safe_name
 from .storage import put_blob
+from .test_line_endings import normalize_test_bytes
 
 FIELDS = ("legend", "input", "output", "scoring", "interaction", "notes", "tutorial")
 NAMESPACE = "{https://editor.zoj.kr/schema/v1}"
@@ -62,11 +63,6 @@ class PolygonImport:
         if len(xml) > 1048576 or re.search(br"<!\s*(DOCTYPE|ENTITY)", xml, re.I):
             raise ValueError("Unsafe XML descriptor")
         self.root = ET.fromstring(xml)
-        self.windows_text_tests = (
-            any(node.get("type") == "exe.win32" for node in self.root.findall(".//binary"))
-            and any(node.get("name") == "tests-wellformed" and node.get("value") == "true"
-                    for node in self.root.findall("properties/property"))
-        )
         self.normalized_test_files = set()
         self.doc = empty_document(name)
         self.doc["files"], self.doc["solutions"] = {}, {}
@@ -102,13 +98,7 @@ class PolygonImport:
 
     def test_data(self, path):
         content = self.read(path)
-        normalized = content
-        if self.windows_text_tests and b"\r\n" in content and b"\x00" not in content:
-            try:
-                content.decode("utf-8-sig")
-                normalized = content.replace(b"\r\n", b"\n")
-            except UnicodeDecodeError:
-                pass
+        normalized = normalize_test_bytes(content)
         blob = put_blob(self.db, self.problem_id, normalized)
         if normalized == content:
             self.used.add(self.prefix + str(PurePosixPath(path)))
@@ -250,7 +240,11 @@ class PolygonImport:
                 if value is None and self.exists(path):
                     value = self.text(path)
                 if value is not None:
-                    test["statement_" + field] = value.replace("\r\n", "\n") if self.windows_text_tests else value
+                    test["statement_" + field] = value
+                    try:
+                        test["statement_" + field] = normalize_test_bytes(value.encode("utf-8")).decode("utf-8")
+                    except UnicodeError:
+                        pass
         if len(self.sample_values) > 1:
             self.warning(f"표시용 예제는 {language} 지문 기준으로 가져왔습니다. 다른 언어의 원본 지문 설정도 보조 파일로 보관합니다.")
 
@@ -309,12 +303,16 @@ class PolygonImport:
                     if role == "validator" and self.doc["extra_validators"]:
                         self.warning("추가 Validator의 자체 테스트는 원본 보조 파일로 보관했습니다. 주 Validator의 자체 테스트와 합치지 않습니다.")
                         break
-                    unit = {"input_sha": self.test_data(pattern_path(tests.findtext("input-path-pattern"), index))["sha256"],
+                    preserve = test.get("preserve-line-endings") == "true"
+                    store = self.store if preserve else self.test_data
+                    unit = {"input_sha": store(pattern_path(tests.findtext("input-path-pattern"), index))["sha256"],
                             "output_sha": None, "answer_sha": None, "expected": test.get("verdict").upper().replace("-", "_")}
+                    if preserve:
+                        unit["preserve_line_endings"] = True
                     for field, xml_key in (("output_sha", "output-path-pattern"), ("answer_sha", "answer-path-pattern")):
                         pattern = tests.findtext(xml_key)
                         if pattern:
-                            unit[field] = self.test_data(pattern_path(pattern, index))["sha256"]
+                            unit[field] = store(pattern_path(pattern, index))["sha256"]
                     self.doc[role + "_tests"][str(index)] = unit
 
     def generator_roles(self):
@@ -373,7 +371,7 @@ class PolygonImport:
         self.assets()
         self.generator_roles()
         if self.normalized_test_files:
-            self.warning(f"Windows 텍스트 테스트 파일 {len(self.normalized_test_files)}개의 줄바꿈을 Linux LF로 변환했습니다. 변환 전 원본은 보조 파일로 보관했습니다.")
+            self.warning(f"텍스트 테스트 파일 {len(self.normalized_test_files)}개의 줄바꿈을 Linux LF로 변환했습니다. 변환 전 원본은 보조 파일로 보관했습니다.")
         self.preserve_originals()
         return self.doc
 

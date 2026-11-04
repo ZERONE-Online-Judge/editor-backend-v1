@@ -6,6 +6,7 @@ from .preparation_cache import content_hash
 from .sandbox import SandboxError
 from .job_errors import AssessmentFailure
 from .storage import read_blob
+from .test_line_endings import normalize_test_bytes
 
 
 def prepare_test(p, test, set_name, mode, frozen, main):
@@ -46,11 +47,17 @@ def prepare_test(p, test, set_name, mode, frozen, main):
             name = matches[0]
         value = step("input", {"program": program(name), "args": tokens[1:], "testset": set_name, "index": index,
                      "limits": [GENERATOR_CPU_MS, GENERATOR_MEMORY_MB, GENERATOR_OUTPUT_BYTES]},
-                     lambda: {"blob_sha": p.blob(p.generator(test["command"]))})
+                     lambda: {"blob_sha": p.blob(normalize_test_bytes(p.generator(test["command"])))})
         input_bytes = read_blob(value["blob_sha"])
     else:
         input_bytes = p.generator(test["command"])
+    input_bytes = normalize_test_bytes(input_bytes)
     sha = content_hash(input_bytes)
+    # Old queued jobs can predate snapshot normalization. Bind the bytes used
+    # for validation to their actual hash without rewriting the source copy.
+    stored_input_sha = test["input_sha"]
+    if (frozen or mode == "validate") and sha != stored_input_sha:
+        stored_input_sha = p.blob(input_bytes)
     if p.doc["info"]["well_formed"] and (b"\r" in input_bytes or b"\x00" in input_bytes or (input_bytes and not input_bytes.endswith(b"\n"))):
         raise AssessmentFailure(f"{set_name} #{index}: LF 줄바꿈과 마지막 개행을 확인하세요.", 'input', 'input_format')
     completed("input")
@@ -65,7 +72,7 @@ def prepare_test(p, test, set_name, mode, frozen, main):
     step("validator", {"input": sha, "programs": validators, "testset": set_name, "group": test["group"]}, validate_input)
     if mode in {"inputs", "validate"}:
         answer_sha = test["answer_sha"] if mode == "validate" or sha == test["input_sha"] else None
-        return ({**test, "input_sha": test["input_sha"] if mode == "validate" else None,
+        return ({**test, "input_sha": stored_input_sha if mode == "validate" else None,
                  "answer_sha": answer_sha, "validator": "VALID", "main_cpu_ms": None, "main_memory_kb": None, "main_wall_ms": None,
                  "preparation": stages}, sha, input_bytes if mode == "inputs" else None, None)
     result = {"cpu_ms": None, "memory_kb": None, "wall_ms": None}
@@ -92,9 +99,14 @@ def prepare_test(p, test, set_name, mode, frozen, main):
                     raise AssessmentFailure(f"Main 풀이가 {set_name} #{index}에서 {verdict}입니다.\n{result['stderr']}", 'preparation', 'reference_failed')
                 raise SandboxError(f"Main 풀이가 {set_name} #{index}에서 {verdict}입니다.\n{result['stderr']}")
             answer = (read_blob(test["answer_sha"]) if test["answer_sha"] else b"") if info["interactive"] else result["output"]
+            answer = normalize_test_bytes(answer)
             return {"blob_sha": p.blob(answer)} if cache else {"answer": answer}
         value = step("answer", main_dependencies, generate_answer)
         answer = read_blob(value["blob_sha"]) if cache else value["answer"]
+    answer = normalize_test_bytes(answer)
+    stored_answer_sha = test["answer_sha"]
+    if frozen and content_hash(answer) != stored_answer_sha:
+        stored_answer_sha = p.blob(answer)
     checker_dependencies = {"program": program(p.doc["checker"]), "input": sha, "answer": content_hash(answer),
                             "points": test["points"], "points_enabled": info["points_enabled"], "checker_percent": info["checker_percent"]}
     def check_answer():
@@ -105,7 +117,7 @@ def prepare_test(p, test, set_name, mode, frozen, main):
             raise SandboxError(f"Checker 실행 오류로 Main 출력을 확인하지 못했습니다.\n{checked['stderr']}")
         return {"accepted": True}
     step("checker", checker_dependencies, check_answer)
-    row = {**test, "input_sha": test["input_sha"] if frozen else None, "answer_sha": test["answer_sha"] if frozen else None,
+    row = {**test, "input_sha": stored_input_sha if frozen else None, "answer_sha": stored_answer_sha if frozen else None,
            "validator": "VALID", "main_cpu_ms": result["cpu_ms"], "main_memory_kb": result["memory_kb"], "main_wall_ms": result["wall_ms"],
            "preparation": stages}
     from .statement_samples import validate as validate_sample

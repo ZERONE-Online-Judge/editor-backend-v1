@@ -16,6 +16,7 @@ from .execution_limits import MAX_GENERATOR_ARGUMENTS, GENERATOR_CPU_MS, GENERAT
 from .stress_search import StressSearch
 from .expectations import expected_tag, evaluate as evaluate_expectations, matches
 from .invocation_scope import selected_testsets
+from .test_line_endings import normalize_test_bytes
 
 
 class Pipeline:
@@ -63,6 +64,9 @@ class Pipeline:
         if job.kind in {"prepare", "verify", "package"}:
             from .preparation_cache import PreparationCache
             self.preparation_cache = PreparationCache(self)
+        if report := job.options.get("newline_normalization"):
+            self.result["newline_normalization"] = report
+            self.event(f"테스트 {report['tests']}개의 줄바꿈을 LF로 자동 보정했습니다.")
 
 
     def event(self, label, **extra):
@@ -121,7 +125,7 @@ class Pipeline:
         result = self.sandbox.run(program, args=tokens[1:], cpu_ms=GENERATOR_CPU_MS, memory_mb=GENERATOR_MEMORY_MB, output_bytes=GENERATOR_OUTPUT_BYTES)
         if result["status"] != "ok" or result["exit_code"] != 0:
             raise SandboxError(f"입력 생성 실패: {command}\n{result['stderr']}")
-        return result["output"]
+        return normalize_test_bytes(result["output"])
 
     def validator(self, input_bytes, testset="tests", group=""):
         names = [self.doc["validator"], *self.doc["extra_validators"]]
@@ -303,12 +307,15 @@ class Pipeline:
         def component_case(item):
             key, test = item
             self.event(f"구성요소 테스트 · #{key}")
-            inp = read_blob(test["input_sha"])
+            def fixture(field):
+                content = read_blob(test[field])
+                return content if test.get("preserve_line_endings") else normalize_test_bytes(content)
+            inp = fixture("input_sha")
             if kind == "validator-tests":
                 valid, result = self.validator(inp)
                 verdict = "VALID" if valid else "INVALID" if result["status"] == "ok" and result["exit_code"] >= 0 else "CRASHED"
             else:
-                verdict, result = self.checker(inp, read_blob(test["output_sha"]), read_blob(test["answer_sha"]))
+                verdict, result = self.checker(inp, fixture("output_sha"), fixture("answer_sha"))
                 verdict = {"AC": "OK", "WA": "WRONG_ANSWER", "PE": "PRESENTATION_ERROR", "JUDGE_ERROR": "CRASHED", "PARTIAL": "WRONG_ANSWER"}[verdict]
             return {"id": key, "expected": test["expected"], "actual": verdict, "matched": verdict == test["expected"], "comment": result["stderr"]}
         with self.work(component_case, tests.items()) as results:

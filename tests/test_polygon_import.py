@@ -101,7 +101,7 @@ def test_official_polygon_topology_and_statement_sources(owner, properties, sect
     tests = doc["testsets"]["tests"]["tests"]
     assert tests["2"]["command"] == "gen 5 17"
     assert tests["2"]["description"] == "Random"
-    assert read_blob(tests["1"]["input_sha"]) == b"2\r\n"
+    assert read_blob(tests["1"]["input_sha"]) == b"2\n"
     if properties or sections:
         assert tests["1"]["statement_input"] == "2\n"
         assert tests["1"]["statement_output"] == "42\n"
@@ -209,9 +209,9 @@ def test_real_package_has_no_missing_payloads_or_authoring_sections(owner):
         properties = json.loads(archive.read("statements/korean/problem-properties.json"))
         for key in ("legend", "input", "output", "notes", "tutorial"):
             assert doc["statements"]["korean"][key] == (properties.get(key) or "")
-        windows_text = any(n.get("type") == "exe.win32" for n in root.findall(".//binary")) and any(n.get("name") == "tests-wellformed" and n.get("value") == "true" for n in root.findall("properties/property"))
         def portable(value):
-            return value.replace(b"\r\n", b"\n") if windows_text else value
+            from app.test_line_endings import normalize_test_bytes
+            return normalize_test_bytes(value)
         tests = doc["testsets"]["tests"]["tests"]
         nodes = root.findall("judging/testset/tests/test")
         assert len(tests) == len(nodes)
@@ -231,8 +231,8 @@ def test_real_package_has_no_missing_payloads_or_authoring_sections(owner):
             else:
                 assert test["answer_sha"] is None
         for index, sample in enumerate(properties["sampleTests"], 1):
-            assert tests[str(index)]["statement_input"] == (sample["input"].replace("\r\n", "\n") if windows_text else sample["input"])
-            assert tests[str(index)]["statement_output"] == (sample["output"].replace("\r\n", "\n") if windows_text else sample["output"])
+            assert tests[str(index)]["statement_input"] == portable(sample["input"].encode()).decode()
+            assert tests[str(index)]["statement_output"] == portable(sample["output"].encode()).decode()
         checksums = references(doc)
         for entry in archive.infolist():
             if not entry.is_dir():
@@ -329,7 +329,7 @@ def test_source_package_preserves_pending_generated_tests_without_inventing_data
     files['files/tests/validator-tests/02'] = b'unrelated validator fixture\n'
     doc, report = imported(owner, rewrite_package({prefix+name: data for name,data in files.items()}))
     manual, generated = doc['testsets']['tests']['tests'].values()
-    assert read_blob(manual['input_sha']) == b'2\r\n'
+    assert read_blob(manual['input_sha']) == b'2\n'
     assert manual['answer_sha'] is None
     assert generated['input_sha'] is None and generated['answer_sha'] is None
     assert generated['command'] == 'gen 5 17'
@@ -385,8 +385,8 @@ def test_wellformed_windows_tests_use_linux_newlines_and_keep_exact_originals(ow
     assert any('Linux LF' in warning for warning in report['warnings'])
 
 
-@pytest.mark.parametrize('content', [b'\0\r\n', b'\xff\r\n', b'bare\rreturn\n'])
-def test_windows_import_does_not_rewrite_binary_or_other_line_endings(owner, content):
+@pytest.mark.parametrize('content', [b'\0\r\n', b'\xff\r\n'])
+def test_windows_import_does_not_rewrite_binary_text(owner, content):
     _, files = package()
     root = ET.fromstring(files['problem.xml'])
     ET.SubElement(root.find('assets/solutions/solution'), 'binary', type='exe.win32')

@@ -50,6 +50,12 @@ def test_package_and_judge_snapshot_both_carry_language_policy(problem,tmp_path)
 def test_online_verification_rejects_isolated_backend(owner,problem,tmp_path):
     p=fixture_data(problem,tmp_path)
     with SessionLocal() as db:
+        # The bridge fixture rolls back metadata; real job snapshots require
+        # their test blobs to be registered to the problem before admission.
+        from app.domain import references
+        from app.storage import put_blob, read_blob
+        for sha in references(p.doc):
+            put_blob(db, problem, read_blob(sha))
         row=db.get(Problem,problem);row.document=copy.deepcopy(p.doc);db.get(Revision,(problem,0)).document=copy.deepcopy(p.doc);db.commit()
     state=owner.get(f"/api/problems/{problem}").json()
     for kind,options in [("verify",{}),("package",{"export_format":"linux","verify":True}),

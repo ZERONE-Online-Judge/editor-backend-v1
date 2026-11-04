@@ -19,6 +19,7 @@ from .invocation_scope import selected_testsets
 from .job_errors import readable_result
 from .pagination import actor_json, page_rows, page_number, page_length
 from .job_categories import JobCategory, job_category, category_condition
+from .test_line_endings import normalize_test_document
 
 router = APIRouter(prefix="/api/problems", tags=["execution"])
 
@@ -343,6 +344,11 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
         if execution.get("protocol") != "editor-execute-v1" or execution.get("online_nodes", 0) < 1:
             fail("execution_agents_unavailable", "Editor 실행이 허용된 채점 에이전트가 준비되지 않았습니다. 관리자에게 문의하세요.", 503)
         options["execution_revision"] = execution["runtime_revision"]
+    # Admission checks run before creating derived data. Keep source identity
+    # intact; execution uses a canonical snapshot without changing its source.
+    doc, newline_report = normalize_test_document(db, problem_id, doc)
+    if newline_report["tests"]:
+        options["newline_normalization"] = newline_report
     hash_value = document_hash(doc)
     if values.reuse and not options["force_prepare"]:
         cached = db.scalars(select(Job).where(Job.problem_id == problem_id, Job.document_hash == hash_value, Job.kind == values.kind, Job.status.in_(["queued", "running", "completed"]),

@@ -22,6 +22,7 @@ from .pagination import page_rows, page_number, page_length
 from .schema import Document, Strict, empty_document
 from .storage import put_blob, put_blob_file, blob_path, read_blob
 from .prepared_results import pending_preparations
+from .test_line_endings import normalize_test_document
 
 router = APIRouter(prefix="/api/problems", tags=["problems"])
 
@@ -128,6 +129,14 @@ def save_working(db, wc, doc, version):
     db.refresh(wc)
 
 
+def normalize_editable_tests(db, problem_id, doc, access):
+    allowed = grants(access)
+    areas = ({"testsets"} if "edit_tests" in allowed else set())
+    if "edit_files" in allowed:
+        areas.update({"validator_tests", "checker_tests"})
+    return normalize_test_document(db, problem_id, doc, areas=areas)
+
+
 @router.put("/{problem_id}/working-copy")
 def save_document(problem_id: str, values: SaveWorking, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
     problem, access = authorize(db, problem_id, user)
@@ -141,8 +150,10 @@ def save_document(problem_id: str, values: SaveWorking, user: User = Depends(cur
         if stamp != wc.document.get("translation_reviews",{}).get(language) and (not current or stamp['source_hash'] != current or stamp['target_hash'] != statement_fingerprint(doc,language) or language == doc.get("translation_source")):
             fail("translation_review_stale", "현재 원문 내용을 기준으로 번역을 검토한 뒤 표시하세요.")
     check_changes(access, wc.document, doc)
+    doc, normalization = normalize_editable_tests(db, problem.id, doc, access)
     save_working(db, wc, doc, values.version)
     return {"version": wc.version, "document_hash": document_hash(doc), "modified": doc != wc.base_document,
+            "document": doc, "line_endings": normalization,
             "cautions": cautions(doc), "pending_preparations": pending_preparations(db, problem_id, user.id, document_hash(doc))}
 
 
@@ -192,6 +203,7 @@ def commit(problem_id: str, values: Commit, user: User = Depends(current_user), 
         fail("revision_conflict", "동료의 변경과 충돌했습니다. 충돌 항목을 확인해 주세요.", 409, conflicts=conflicts)
     doc = validate_document(db, problem.id, doc)
     check_changes(access, problem.document, doc)
+    doc, _ = normalize_editable_tests(db, problem.id, doc, access)
     if doc == problem.document:
         save_working(db, wc, doc, values.version)
         wc.base_revision = problem.revision
@@ -343,6 +355,7 @@ def resolve_conflicts(problem_id: str, values: Resolve, user: User = Depends(cur
             target[parts[-1]] = copy.deepcopy(source)
     doc = validate_document(db, problem_id, merged)
     check_changes(access, problem.document, doc)
+    doc, _ = normalize_editable_tests(db, problem_id, doc, access)
     changed = db.execute(update(WorkingCopy).where(WorkingCopy.problem_id == problem_id, WorkingCopy.user_id == user.id, WorkingCopy.version == values.version).values(document=doc, base_document=copy.deepcopy(problem.document), base_revision=problem.revision, version=values.version + 1, updated_at=now()))
     if not changed.rowcount:
         db.rollback()

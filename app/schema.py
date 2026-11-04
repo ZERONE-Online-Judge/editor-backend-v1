@@ -222,6 +222,14 @@ class UnitTest(Strict):
     output_sha: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     answer_sha: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     expected: Literal["VALID", "INVALID", "OK", "WRONG_ANSWER", "PRESENTATION_ERROR", "CRASHED"]
+    preserve_line_endings: bool = False
+
+    @model_serializer(mode="wrap")
+    def serialize(self, handler):
+        value = handler(self)
+        if not self.preserve_line_endings:
+            value.pop("preserve_line_endings", None)
+        return value
 
 
 class Material(Strict):

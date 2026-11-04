@@ -7,6 +7,7 @@ from .execution_limits import MAX_STRESS_COUNTEREXAMPLES, MAX_STRESS_EVIDENCE_BY
 from .sandbox import SandboxError
 from .stress import DEFAULT_VERDICTS, generator_command, minimum_cover, patterns_for, stop_mode, stress_configuration
 from .stress_minimizer import CounterexampleMinimizer
+from .test_line_endings import normalize_test_bytes
 
 
 class StressDurationReached(RuntimeError):
@@ -111,7 +112,7 @@ class StressSearch:
             self.stats.update(iterations_started=iteration, last_seed=seed, last_command=command, last_pattern_index=index, last_range_values=draws)
             pattern_stats["attempts"] += 1
             self.p.event(f"스트레스 테스트 · {iteration} / {self.options['iterations']} · 시드 {seed} · {pattern['name']} · 비교 풀이 {len(candidates)}개", seed=seed, pattern_index=index)
-            content = self.p.generator(command)
+            content = normalize_test_bytes(self.p.generator(command))
             digest = hashlib.sha256(content).hexdigest()
             if digest in seen:
                 self.stats["duplicates_skipped"] += 1
@@ -125,6 +126,7 @@ class StressSearch:
             seen.add(digest)
             pattern_stats["valid_inputs"] += 1
             verdict, correct = self.p.run_solution(self.reference, content)
+            correct = {**correct, "output": normalize_test_bytes(correct["output"])}
             packet = {"iteration": iteration, "seed": seed, "command": command, "pattern": pattern, "draws": draws}
             self.results.case(self.reference, verdict, correct, correct.get("stderr", ""), content,
                               correct["output"] if verdict == "AC" else None, packet)

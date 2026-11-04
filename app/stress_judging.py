@@ -5,6 +5,7 @@ from .db import SessionLocal, User
 from .judge_bridge import run_batch
 from .storage import read_blob
 from .sandbox import SandboxError
+from .test_line_endings import normalize_test_bytes
 
 
 def run(pipeline, name, content, answer):
@@ -16,7 +17,7 @@ def run(pipeline, name, content, answer):
         verdict, prepared = pipeline.run_solution(name, content, preparation=True)
         if verdict != "AC":
             raise SandboxError(f"기준 정답 생성이 {verdict}로 실패했습니다. ZOJ 채점기의 실제 실행 판정입니다.")
-        answer = prepared["output"]
+        answer = normalize_test_bytes(prepared["output"])
     with SessionLocal() as db:
         user = db.get(User, pipeline.job.user_id)
         if user is None:

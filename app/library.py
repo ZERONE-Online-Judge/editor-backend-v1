@@ -93,7 +93,7 @@ def own_package(db, user, problem_id, job_id):
     job = db.get(Job, job_id)
     if not job or job.problem_id != problem_id or job.kind != "package" or job.options.get("export_format") != "zoj":
         fail("library_package_not_found", "검증 패키지를 찾을 수 없습니다.", 404)
-    if job.revision != problem.revision or job.document_hash != document_hash(problem.document):
+    if job.revision != problem.revision or (job.options.get("source_document_hash") or job.document_hash) != document_hash(problem.document):
         fail("library_package_stale", "문제가 변경되었습니다. 커밋 후 패키지를 다시 준비하세요.", 409)
     return job
 

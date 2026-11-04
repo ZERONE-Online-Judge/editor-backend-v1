@@ -6,6 +6,7 @@ from .execution_limits import MAX_STRESS_COUNTEREXAMPLES, MAX_STRESS_EVIDENCE_BY
 from .parallel import ordered_work
 from .sandbox import SandboxError
 from .stress import generator_command
+from .test_line_endings import normalize_test_bytes
 
 
 def collect(search):
@@ -35,7 +36,7 @@ def collect(search):
         promise, owner = None, False
         try:
             search.check()
-            content = p.generator(packet["command"])
+            content = normalize_test_bytes(p.generator(packet["command"]))
             digest = hashlib.sha256(content).hexdigest()
             result.update(content=content, digest=digest)
             # Equal inputs share the same pending reference/comparisons. The
@@ -62,6 +63,7 @@ def collect(search):
                 raise SandboxError("생성한 반례 입력이 유효하지 않습니다.\n" + validation["stderr"])
             result["valid"] = True
             verdict, correct = p.run_solution(search.reference, content)
+            correct = {**correct, "output": normalize_test_bytes(correct["output"])}
             result.update(correct=correct, reference_verdict=verdict)
             if verdict != "AC":
                 raise SandboxError(f"기준 풀이가 {verdict}입니다.")

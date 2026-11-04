@@ -113,7 +113,10 @@ def descriptor(job, testsets):
                 ET.SubElement(testset, "answer-path-pattern").text = "checker-tests/%03d.a"
             tests = ET.SubElement(testset, "tests")
             for unit in units.values():
-                ET.SubElement(tests, "test", {"verdict": unit["expected"].lower().replace("_", "-")})
+                attrs = {"verdict": unit["expected"].lower().replace("_", "-")}
+                if unit.get("preserve_line_endings"):
+                    attrs["preserve-line-endings"] = "true"
+                ET.SubElement(tests, "test", attrs)
     ET.indent(root)
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
@@ -315,7 +318,11 @@ def restore_package(content, values, folder_id, user, db):
         else:
             report["format"] = "polygon"
             doc = polygon_document(archive, db, problem.id, values.name, report)
-        problem.document = validate_document(db, problem.id, doc)
+        from .test_line_endings import normalize_test_document
+        doc = validate_document(db, problem.id, doc)
+        problem.document, report["line_endings"] = normalize_test_document(db, problem.id, doc)
+        if report["line_endings"]["tests"]:
+            report["warnings"].append("가져온 테스트 입력·정답의 텍스트 줄바꿈을 LF로 통일했습니다. 원본 파일은 유지됩니다.")
         db.add(Access(problem_id=problem.id, user_id=user.id, role="OWNER"))
         place(db, user, problem.id, folder_id, permission="create_problems")
         db.add(Revision(problem_id=problem.id, number=0, author_id=user.id, message="문제 패키지 가져오기", document=copy.deepcopy(problem.document)))

@@ -28,7 +28,7 @@ def application_json(row):
 
 
 def pending_preparations(db, problem_id, user_id, current_hash):
-    rows = db.scalars(select(Job).options(load_only(Job.id, Job.document_hash, Job.created_at))
+    rows = db.scalars(select(Job).options(load_only(Job.id, Job.document_hash, Job.options, Job.created_at))
         .outerjoin(JobApplication, (JobApplication.job_id == Job.id) & (JobApplication.user_id == user_id))
         .outerjoin(JobDiscard, (JobDiscard.job_id == Job.id) & (JobDiscard.user_id == user_id))
         .where(Job.problem_id == problem_id, Job.user_id == user_id, Job.kind == "prepare",
@@ -36,7 +36,7 @@ def pending_preparations(db, problem_id, user_id, current_hash):
                ~check_only_condition())
         .order_by(Job.created_at.desc())).all()
     return [{"id": row.id, "created_at": row.created_at,
-             "stale": row.document_hash != current_hash} for row in rows]
+             "stale": (row.options.get("source_document_hash") or row.document_hash) != current_hash} for row in rows]
 
 
 def apply_prepared_results(db, job, user, version):
@@ -54,7 +54,7 @@ def apply_prepared_results(db, job, user, version):
         fail("result_discarded", "버린 생성 결과는 반영할 수 없습니다. 입력·정답 생성을 다시 요청하세요.", 409)
     if wc.version != version:
         fail("workspace_changed", "다른 창에서 변경되었습니다. 최신 작업 사본을 불러오세요.", 409)
-    if job.document_hash != document_hash(wc.document):
+    if (job.options.get("source_document_hash") or job.document_hash) != document_hash(wc.document):
         fail("stale_results", "실행 이후 자료가 변경되었습니다. 입력·정답을 다시 생성하세요.", 409)
     doc = copy.deepcopy(wc.document)
     for name, tests in job.result.get("testsets", {}).items():
