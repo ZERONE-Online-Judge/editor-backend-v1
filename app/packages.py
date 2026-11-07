@@ -28,17 +28,20 @@ SOURCE_TYPES = {"cpp17": "cpp.g++17", "cpp20": "cpp.g++20", "c17": "c.gcc", "c99
 TAG_NAMES = {"MA": "main", "OK": "accepted", "WA": "wrong-answer", "TL": "time-limit-exceeded", "ML": "memory-limit-exceeded", "PE": "presentation-error", "RE": "runtime-error", "RJ": "rejected", "TO": "time-limit-exceeded-or-accepted", "TM": "time-limit-exceeded-or-memory-limit-exceeded", "NR": "do-not-run"}
 
 
-def statement_html(doc, language, assets_prefix="../../assets"):
+def statement_html(doc, language, assets_prefix="../../assets", *, embed_images=False):
     from .statements import effective
+    from .statement_images import html_section
     statement = effective(doc,language)
     title = html.escape(statement["name"] or doc["info"]["name"])
     sections = [("문제", "legend"), ("입력", "input"), ("출력", "output"), ("부분 점수", "scoring"), ("인터랙션", "interaction"), ("노트", "notes"), ("해설", "tutorial")]
-    body = "".join(f"<section><h2>{label}</h2><div class='copy'>{html.escape(statement[key])}</div></section>" for label, key in sections if statement[key])
+    body = "".join(f"<section><h2>{label}</h2><div class='copy'>{html_section(statement[key], doc['files'], embed=embed_images)}</div></section>" for label, key in sections if statement[key])
     from .statement_samples import display
     for testset in doc["testsets"].values():
         for test in ordered_tests(testset):
             if test["sample"]:
                 body += "<section><h2>예제 입력</h2><pre>" + html.escape(display(test, "input")) + "</pre><h2>예제 출력</h2><pre>" + html.escape(display(test, "output")) + "</pre></section>"
+                if test.get("description"):
+                    body += "<div class='copy'>" + html_section(test["description"], doc["files"], embed=embed_images) + "</div>"
     return f"<!doctype html><html lang='ko'><head><meta charset='utf-8'><title>{title}</title><link rel='stylesheet' href='{assets_prefix}/katex/katex.min.css'><style>body{{font:16px/1.8 sans-serif;max-width:900px;margin:40px auto;padding:0 24px;color:#0f172a}}h1{{text-align:center}}h2{{font-size:18px}}.copy{{white-space:pre-wrap}}pre{{padding:16px;background:#f7f8fd}}</style></head><body><h1>{title}</h1><p>시간 제한 {doc['info']['time_limit_ms']}ms · 메모리 {doc['info']['memory_limit_mb']}MiB</p>{body}<script src='{assets_prefix}/katex/katex.min.js'></script><script src='{assets_prefix}/katex/auto-render.min.js'></script><script>renderMathInElement(document.body,{{delimiters:[{{left:'$$',right:'$$',display:true}},{{left:'$',right:'$',display:false}},{{left:'\\\\[',right:'\\\\]',display:true}},{{left:'\\\\(',right:'\\\\)',display:false}}],throwOnError:false}})</script></body></html>"
 
 
@@ -157,8 +160,11 @@ def build_package(job, testsets, report=None):
                         archive.writestr(f"{kind}-tests/{index:03d}{suffix}", read_blob(test[key]))
         from .rendering import statement_tex
         for lang, statement in doc["statements"].items():
+            image_files = {}
             archive.writestr(f"statements/{lang}/statement.html", statement_html(doc, lang))
-            archive.writestr(f"statements/{lang}/statement.tex", statement_tex(doc, lang))
+            archive.writestr(f"statements/{lang}/statement.tex", statement_tex(doc, lang, image_files=image_files))
+            for name, content in image_files.items():
+                archive.writestr(f"statements/{lang}/{name}", content)
             archive.writestr(f"statements/{lang}/properties.json", json.dumps(statement, ensure_ascii=False))
         for name, material in doc["materials"].items():
             payload = io.BytesIO()
@@ -410,4 +416,4 @@ def rendered_file(problem_id: str, job_id: str, language: str, format: str, user
     path = get_settings().data_dir / "rendered" / job.id / (safe_name(language) + "." + format)
     if not path.is_file():
         fail("not_found", "렌더링에 실패한 파일입니다.", 404)
-    return Response(path.read_bytes(), media_type="application/pdf" if format == "pdf" else "text/html", headers={"Content-Disposition": f'attachment; filename="{language}.{format}"', "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; script-src 'none'"})
+    return Response(path.read_bytes(), media_type="application/pdf" if format == "pdf" else "text/html", headers={"Content-Disposition": f'attachment; filename="{language}.{format}"', "Content-Security-Policy": "default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'none'"})

@@ -1,6 +1,7 @@
 """Restore Polygon's authoring data; keep unmapped originals as inert Aux files."""
 import hashlib
 import json
+import posixpath
 import re
 import shlex
 import xml.etree.ElementTree as ET
@@ -359,6 +360,32 @@ class PolygonImport:
             self.doc["files"][alias] = {"name": alias, "kind": "aux", "language": "text", "attach_to_build": False, **blob}
             self.report["preserved_files"].append({"path": relative, "name": alias})
 
+    def statement_image_paths(self):
+        """Flatten only descriptor-declared statement resources, not guesses."""
+        from .statement_images import apply_changes, references, local_name, source_change
+        declared = {path: name for path, (solution, name) in self.imported.items()
+                    if not solution and self.doc["files"][name]["kind"] == "statement"}
+        for language, statement in self.doc["statements"].items():
+            origins = [node.get("path") for node in self.root.findall("statements/statement")
+                       if node.get("language") == language and node.get("path")]
+            bases = {str(PurePosixPath(path).parent) for path in origins}
+            bases.add(f"statements/{language}")
+            for field in FIELDS:
+                text, changes = statement[field], {}
+                for image in references(text):
+                    if local_name(image.src, self.doc["files"]):
+                        continue
+                    if re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:|^[/\\]", image.src):
+                        continue
+                    candidates = {declared[path] for path in {image.src, *(posixpath.normpath(posixpath.join(base, image.src)) for base in bases)}
+                                  if path in declared}
+                    if len(candidates) > 1:
+                        raise ValueError(f"Ambiguous statement image: {image.src}")
+                    if candidates:
+                        changed, value = source_change(text, image, next(iter(candidates)))
+                        changes[changed] = value
+                statement[field] = apply_changes(text, changes)
+
     def restore(self):
         judging = self.root.find("judging")
         if judging is None:
@@ -369,6 +396,7 @@ class PolygonImport:
         self.statements()
         self.testsets(judging)
         self.assets()
+        self.statement_image_paths()
         self.generator_roles()
         if self.normalized_test_files:
             self.warning(f"텍스트 테스트 파일 {len(self.normalized_test_files)}개의 줄바꿈을 Linux LF로 변환했습니다. 변환 전 원본은 보조 파일로 보관했습니다.")

@@ -74,6 +74,9 @@ def build_zoj_package(job, testsets):
     destination.parent.mkdir(parents=True, exist_ok=True)
     manifest = {"format": "zoj-problem", "version": 1, "problem": {}, "assets": [], "testcase_sets": [], "files": []}
     mappings = {}
+    from .statement_images import editorial_only, rewrite as rewrite_images
+    private_images = editorial_only(doc, sample_notes=[test.get("description", "") for name in selected
+        for test in testsets[name] if test.get("sample")])
     created = datetime.now(timezone.utc).isoformat()
     total = 0
     with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as archive:
@@ -108,7 +111,7 @@ def build_zoj_package(job, testsets):
             elif name in generators:
                 category = "package-files/generator"
             else:
-                category = "assets" if source["kind"] == "statement" else "package-files/package-resource"
+                category = ("editorial-assets" if name in private_images else "assets") if source["kind"] == "statement" else "package-files/package-resource"
             aid = asset(name, read_blob(source["sha256"]), category)
             if source["kind"] == "statement":
                 images[name] = "asset://" + aid
@@ -142,7 +145,8 @@ def build_zoj_package(job, testsets):
                     "time_limit_ms_override": None, "memory_limit_mb_override": None})
                 if active and test["sample"]:
                     from .statement_samples import display
-                    examples.append({"input": display(test, "input"), "output": display(test, "output"), "note": test["description"]})
+                    examples.append({"input": display(test, "input"), "output": display(test, "output"),
+                        "note": rewrite_images(test["description"], doc["files"], images)})
             manifest["testcase_sets"].append({"version": version, "is_active": active, "testcases": cases})
         for sha in references(doc) | references(job.document):
             if sha not in mappings:
@@ -161,12 +165,14 @@ def build_zoj_package(job, testsets):
         effective_statements={name:effective(doc,name) for name in doc["statements"]}
         statement = effective_statements[default_language]
         def rewrite(text):
-            # Match full Markdown resource targets, never arbitrary occurrences.
-            return re.sub(r"(?<=\]\()(?:\.\/)?([^\s)]+)(?=\))", lambda m: images.get(m[1], m[0]), text)
+            return rewrite_images(text, doc["files"], images)
         def statement_text(item):
             meta = {"inputDescription": rewrite(item["input"]), "outputDescription": rewrite(item["output"]),
                     "note": rewrite(item["notes"]), "examples": examples}
-            return "<!--ZOJ_META:" + json.dumps(meta, ensure_ascii=False).replace("-->", "\\u002d\\u002d>") + "-->\n" + rewrite(item["legend"])
+            body = [rewrite(item["legend"])]
+            body += [f"\n\n### {title}\n\n" + rewrite(item[key]) for title, key in
+                     (("부분 점수", "scoring"), ("인터랙션", "interaction")) if item.get(key)]
+            return "<!--ZOJ_META:" + json.dumps(meta, ensure_ascii=False).replace("-->", "\\u002d\\u002d>") + "-->\n" + "".join(body)
         manifest["problem"] = {"problem_code": "A", "title": statement["name"] or doc["info"]["name"],
             "statement": statement_text(statement), "editorial": rewrite(statement["tutorial"]), "time_limit_ms": doc["info"]["time_limit_ms"],
             "memory_limit_mb": doc["info"]["memory_limit_mb"], "language_resource_limits": exported_limits(doc.get("language_resource_limits")), "display_order": 1}

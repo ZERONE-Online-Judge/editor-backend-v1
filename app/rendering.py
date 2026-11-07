@@ -13,19 +13,27 @@ def tex_escape(text):
     return "".join(replacements.get(c, c) for c in text)
 
 
-def statement_tex(doc, language):
+def statement_tex(doc, language, *, image_files=None):
     from .statements import effective
+    from .statement_images import tex_section
+    image_files = {} if image_files is None else image_files
     statement = effective(doc,language)
     title = tex_escape(statement["name"] or doc["info"]["name"])
-    result = [r"\documentclass[11pt]{article}", r"\usepackage[a4paper,margin=22mm]{geometry}", r"\usepackage{fontspec,xeCJK,amsmath,amssymb,graphicx,enumitem,hyperref}", r"\setCJKmainfont{Noto Sans CJK KR}", r"\setmainfont{DejaVu Sans}", r"\newcommand{\InputFile}{\section*{입력}}", r"\newcommand{\OutputFile}{\section*{출력}}", r"\newcommand{\Note}{\section*{노트}}", r"\newcommand{\Scoring}{\section*{부분 점수}}", r"\newcommand{\Interaction}{\section*{인터랙션}}", r"\begin{document}", r"\begin{center}{\Large\bfseries " + title + r"}\end{center}", f"시간 제한: {doc['info']['time_limit_ms']}ms\\quad 메모리 제한: {doc['info']['memory_limit_mb']}MiB\n\n"]
+    result = [r"\documentclass[11pt]{article}", r"\usepackage[a4paper,margin=22mm]{geometry}", r"\usepackage{fontspec,xeCJK,amsmath,amssymb,graphicx,enumitem,hyperref}", r"\setCJKmainfont{Noto Sans CJK KR}", r"\setmainfont{DejaVu Sans}", r"\newcommand{\InputFile}{\section*{입력}}", r"\newcommand{\OutputFile}{\section*{출력}}", r"\newcommand{\Note}{\section*{노트}}", r"\newcommand{\Scoring}{\section*{부분 점수}}", r"\newcommand{\Interaction}{\section*{인터랙션}}",
+        r"\newcommand{\zojimage}[1]{\sbox0{\includegraphics{#1}}\ifdim\wd0>\linewidth\includegraphics[width=\linewidth]{#1}\else\usebox0\fi}",
+        r"\newcommand{\zojsizedimage}[2]{\ifdim#2>\linewidth\includegraphics[width=\linewidth]{#1}\else\includegraphics[width=#2]{#1}\fi}",
+        r"\newcommand{\zojfitimage}[1]{\sbox0{#1}\ifdim\wd0>\linewidth\resizebox{\linewidth}{!}{\usebox0}\else\usebox0\fi}",
+        r"\begin{document}", r"\begin{center}{\Large\bfseries " + title + r"}\end{center}", f"시간 제한: {doc['info']['time_limit_ms']}ms\\quad 메모리 제한: {doc['info']['memory_limit_mb']}MiB\n\n"]
     for label, key in [("문제", "legend"), ("입력", "input"), ("출력", "output"), ("부분 점수", "scoring"), ("인터랙션", "interaction"), ("노트", "notes"), ("해설", "tutorial")]:
         text = statement[key]
         if text:
-            result += [r"\section*{" + label + "}", text]
+            result += [r"\section*{" + label + "}", tex_section(text, doc["files"], image_files)]
     for testset in doc["testsets"].values():
         for test in ordered_tests(testset):
             if test["sample"] and (test.get("input_sha") or test.get("statement_input") is not None) and (test.get("answer_sha") or test.get("statement_output") is not None):
                 result += [r"\subsection*{예제 입력}", r"\begin{verbatim}", display(test, "input").replace(r"\end{verbatim}", "[verbatim-end]"), r"\end{verbatim}", r"\subsection*{예제 출력}", r"\begin{verbatim}", display(test, "output").replace(r"\end{verbatim}", "[verbatim-end]"), r"\end{verbatim}"]
+                if test.get("description"):
+                    result += [tex_section(test["description"], doc["files"], image_files)]
     result.append(r"\end{document}")
     return "\n".join(result)
 
@@ -36,7 +44,7 @@ def render_statements(job, sandbox):
     destination.mkdir(parents=True, exist_ok=True)
     results = {}
     for language in job.document["statements"]:
-        html_content = statement_html(job.document, language, "/assets")
+        html_content = statement_html(job.document, language, "/assets", embed_images=True)
         katex = Path(__file__).resolve().parent.parent / "vendor" / "katex"
         css = (katex / "katex.min.css").read_text()
         def inline_font(match):
@@ -50,10 +58,20 @@ def render_statements(job, sandbox):
             html_content = html_content.replace(f"<script src='/assets/katex/{script}'></script>", "<script>" + (katex / script).read_text().replace("</script", "<\\/script") + "</script>")
         (destination / (language + ".html")).write_text(html_content)
         folder = sandbox.new_folder()
-        (folder / "statement.tex").write_text(statement_tex(job.document, language))
+        image_files = {}
+        try:
+            tex = statement_tex(job.document, language, image_files=image_files)
+        except ValueError as error:
+            results[language] = {"html": "OK", "pdf": "FAILED", "message": str(error)}
+            continue
         for file in job.document["files"].values():
             if file["kind"] == "statement":
                 (folder / file["name"]).write_bytes(read_blob(file["sha256"]))
+        # Project attachments must not replace decoded pixels or the generated
+        # entrypoint merely by matching one of their filenames.
+        for name, content in image_files.items():
+            (folder / name).write_bytes(content)
+        (folder / "statement.tex").write_text(tex)
         run = sandbox.execute(folder, ["xelatex", "-no-shell-escape", "-halt-on-error", "-interaction=nonstopmode", "statement.tex"], cpu_ms=60000, memory_mb=1024, output_bytes=16 * 1024 * 1024, wall_seconds=90, image=get_settings().render_image, export_files=["statement.pdf"])
         pdf_path = folder / "run" / "statement.pdf"
         if run["exit_code"] == 0 and run["status"] == "ok" and pdf_path.is_file():
