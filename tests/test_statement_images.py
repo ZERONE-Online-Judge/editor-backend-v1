@@ -150,6 +150,25 @@ def test_pdf_raster_conversion_is_bounded_and_discards_metadata(format, monkeypa
         png_image(content, 'image.' + format.lower())
 
 
+@pytest.mark.parametrize('mode', ['P', 'RGB'])
+def test_pdf_conversion_preserves_palette_and_color_key_transparency(mode):
+    source = PillowImage.new(mode, (2, 1))
+    if mode == 'P':
+        source.putpalette([10, 20, 30, 40, 50, 60] + [0] * 762)
+        source.putdata([0, 1])
+        transparency = 0
+    else:
+        source.putdata([(10, 20, 30), (40, 50, 60)])
+        transparency = (10, 20, 30)
+    content = io.BytesIO()
+    source.save(content, format='PNG', transparency=transparency)
+    with PillowImage.open(io.BytesIO(png_image(content.getvalue(), 'transparent.png'))) as result:
+        assert result.mode == 'RGBA'
+        assert result.getpixel((0, 0)) == (10, 20, 30, 0)
+        assert result.getpixel((1, 0)) == (40, 50, 60, 255)
+        assert not result.info
+
+
 def test_pdf_rejects_unsupported_invalid_and_decompression_bomb_images(monkeypatch):
     with pytest.raises(ValueError, match='PNG·JPEG·WebP'):
         png_image(b'<svg xmlns="http://www.w3.org/2000/svg"/>', 'image.svg')

@@ -281,7 +281,7 @@ def png_image(content, name):
                 source.load()
                 # Discard metadata and normalize to at most four bytes per pixel.
                 result = io.BytesIO()
-                source.convert("RGBA" if "A" in source.getbands() else "RGB").save(result, format="PNG")
+                source.convert("RGBA" if "A" in source.getbands() or "transparency" in source.info else "RGB").save(result, format="PNG")
                 if result.tell() > 80 * 1024 * 1024:
                     raise ValueError("변환된 이미지가 너무 큽니다.")
                 return result.getvalue()
