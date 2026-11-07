@@ -250,6 +250,44 @@ def test_images_survive_revisions_and_package_roundtrip(owner, problem, monkeypa
     assert restored['files'] == doc['files']
 
 
+@pytest.mark.parametrize('format', ['editor', 'linux'])
+@pytest.mark.parametrize('extension', ['svg', 'gif'])
+def test_source_archives_preserve_images_unsupported_by_the_pdf_renderer(owner, problem, monkeypatch, format, extension):
+    doc = setup_document(owner, problem)
+    content = b'<svg xmlns="http://www.w3.org/2000/svg"/>' if extension == 'svg' else raster('GIF')
+    name = 'legacy-image.' + extension
+    uploaded = owner.post(f'/api/problems/{problem}/blobs', content=content)
+    assert uploaded.status_code == 201, uploaded.text
+    doc['files'][name] = SourceFile(name=name, kind='statement', language='text', **uploaded.json()).model_dump()
+    markup = f'<img src="{name}" alt="Original" data-zoj-align="left" data-zoj-width="60%">'
+    doc['statements']['korean']['legend'] = markup
+    state = owner.get(f'/api/problems/{problem}').json()
+    saved = owner.put(f'/api/problems/{problem}/working-copy', json={'version': state['version'], 'document': doc})
+    assert saved.status_code == 200, saved.text
+    committed = owner.post(f'/api/problems/{problem}/commit', json={'version': saved.json()['version'], 'message': 'Preserve legacy image'})
+    assert committed.status_code == 200, committed.text
+    archive, exported = run_export(owner, problem, monkeypatch, format)
+    with archive:
+        assert archive.read('files/' + name) == content
+        assert json.loads(archive.read('editor.json'))['document']['statements']['korean']['legend'] == markup
+        assert json.loads(archive.read('statements/korean/properties.json'))['legend'] == markup
+        rendered = archive.read('statements/korean/statement.html').decode()
+        assert f'src="../../files/{name}"' in rendered and 'data-zoj-width="60%"' in rendered
+        tex = archive.read('statements/korean/statement.tex').decode()
+        assert name in tex and 'PNG·JPEG·WebP' in tex and r'\fbox{' in tex
+    restored = owner.post('/api/imports?name=Legacy&slug=legacy-' + format + '-' + extension, content=exported)
+    assert restored.status_code == 201, restored.text
+    result = owner.get('/api/problems/' + restored.json()['id']).json()['document']
+    assert result['statements']['korean']['legend'] == markup and result['files'][name] == doc['files'][name]
+    with pytest.raises(ValueError, match='PNG·JPEG·WebP'):
+        statement_tex(doc, 'korean')
+
+
+def test_archive_tex_projection_still_rejects_missing_image_references():
+    with pytest.raises(ValueError, match='찾을 수 없습니다'):
+        tex_section('<img src="missing.png">', {}, {}, strict=False)
+
+
 def test_statement_html_and_tex_share_image_settings(owner, problem):
     doc = setup_document(owner, problem)
     output = {}

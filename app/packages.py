@@ -162,7 +162,7 @@ def build_package(job, testsets, report=None):
         for lang, statement in doc["statements"].items():
             image_files = {}
             archive.writestr(f"statements/{lang}/statement.html", statement_html(doc, lang))
-            archive.writestr(f"statements/{lang}/statement.tex", statement_tex(doc, lang, image_files=image_files))
+            archive.writestr(f"statements/{lang}/statement.tex", statement_tex(doc, lang, image_files=image_files, strict_images=False))
             for name, content in image_files.items():
                 archive.writestr(f"statements/{lang}/{name}", content)
             archive.writestr(f"statements/{lang}/properties.json", json.dumps(statement, ensure_ascii=False))

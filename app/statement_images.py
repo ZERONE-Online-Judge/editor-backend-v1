@@ -289,7 +289,7 @@ def png_image(content, name):
         raise ValueError(f"PDF 이미지 '{name}'를 안전하게 읽을 수 없습니다.") from error
 
 
-def tex_section(text, files, output):
+def tex_section(text, files, output, *, strict=True):
     from .storage import read_blob
     changes = {}
     for image in sorted(images(text), key=lambda item: item.start):
@@ -301,7 +301,20 @@ def tex_section(text, files, output):
             raise ValueError(f"PDF 이미지 '{image.src}'를 지문 자료에서 찾을 수 없습니다. 외부 이미지는 파일로 업로드해 주세요.")
         identifier = "zoj-image-" + files[name]["sha256"] + ".png"
         if identifier not in output:
-            output[identifier] = png_image(read_blob(files[name]["sha256"]), name)
+            content = read_blob(files[name]["sha256"])
+            try:
+                output[identifier] = png_image(content, name)
+            except ValueError:
+                if strict:
+                    raise
+                # Source archives retain unsupported images and a useful HTML
+                # document; a PDF-only limitation must not block the archive.
+                from .rendering import tex_escape
+                notice = ("그림 " + tex_escape(name) + ": 원본과 HTML 문서에 이미지가 보존되어 있습니다. "
+                          "PDF에 포함하려면 PNG·JPEG·WebP 형식으로 변환해 주세요.")
+                changes[(image.start, image.end)] = "\n\\par\\noindent\\fbox{\\parbox{0.9\\linewidth}{" + notice + "}}\\par\n"
+                if image.definition_line: changes[image.definition_line] = ""
+                continue
         dimension = image.width or image.legacy_width
         size = (f"{float(dimension[:-1]) / 100:g}\\linewidth" if dimension.endswith("%")
                 else f"{float(dimension[:-2]) * 0.75:g}pt") if dimension else None

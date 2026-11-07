@@ -13,7 +13,7 @@ def tex_escape(text):
     return "".join(replacements.get(c, c) for c in text)
 
 
-def statement_tex(doc, language, *, image_files=None):
+def statement_tex(doc, language, *, image_files=None, strict_images=True):
     from .statements import effective
     from .statement_images import tex_section
     image_files = {} if image_files is None else image_files
@@ -27,13 +27,13 @@ def statement_tex(doc, language, *, image_files=None):
     for label, key in [("문제", "legend"), ("입력", "input"), ("출력", "output"), ("부분 점수", "scoring"), ("인터랙션", "interaction"), ("노트", "notes"), ("해설", "tutorial")]:
         text = statement[key]
         if text:
-            result += [r"\section*{" + label + "}", tex_section(text, doc["files"], image_files)]
+            result += [r"\section*{" + label + "}", tex_section(text, doc["files"], image_files, strict=strict_images)]
     for testset in doc["testsets"].values():
         for test in ordered_tests(testset):
             if test["sample"] and (test.get("input_sha") or test.get("statement_input") is not None) and (test.get("answer_sha") or test.get("statement_output") is not None):
                 result += [r"\subsection*{예제 입력}", r"\begin{verbatim}", display(test, "input").replace(r"\end{verbatim}", "[verbatim-end]"), r"\end{verbatim}", r"\subsection*{예제 출력}", r"\begin{verbatim}", display(test, "output").replace(r"\end{verbatim}", "[verbatim-end]"), r"\end{verbatim}"]
                 if test.get("description"):
-                    result += [tex_section(test["description"], doc["files"], image_files)]
+                    result += [tex_section(test["description"], doc["files"], image_files, strict=strict_images)]
     result.append(r"\end{document}")
     return "\n".join(result)
 
