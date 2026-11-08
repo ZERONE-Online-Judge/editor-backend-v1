@@ -40,8 +40,20 @@ def check_compatibility(doc, options):
         issues.append("그룹·부분 점수 채점은 현재 ZOJ 문제 ZIP에 표현할 수 없습니다.")
     if not 100 <= info["time_limit_ms"] <= 10000 or not 16 <= info["memory_limit_mb"] <= 1024:
         issues.append("ZOJ 제한 범위는 시간 100~10,000ms, 메모리 16~1,024MiB입니다.")
-    if doc["extra_validators"] or any(f.get("compile_with_solution") for f in doc["files"].values()):
-        issues.append("추가 validator와 풀이 결합 파일은 ZOJ 채점에서 동일하게 실행되지 않습니다.")
+    unsupported_extra_validators = list(doc["extra_validators"])
+    unsupported_solution_files = [name for name, source in doc["files"].items() if source.get("compile_with_solution")]
+    if unsupported_extra_validators:
+        issues.append(
+            f"추가 Validator({', '.join(unsupported_extra_validators)})는 ZOJ 문제 ZIP에서 지원하지 않습니다. "
+            "‘Validator > 추가 Validator’에서 불필요한 선택만 해제하거나, 필요한 검사를 기본 Validator 코드에 통합해 다시 검증하세요. "
+            "변경 후 저장·커밋하세요."
+        )
+    if unsupported_solution_files:
+        issues.append(
+            f"풀이 결합 파일({', '.join(unsupported_solution_files)})은 ZOJ 문제 ZIP에서 지원하지 않습니다. "
+            "‘파일·리소스 > 파일 편집 > 풀이와 함께 컴파일 (grader)’에서 불필요한 설정만 해제하세요. "
+            "필수 grader라면 해제하지 말고 독립 실행 가능한 풀이 구성으로 조정해 다시 검증한 뒤 저장·커밋하세요."
+        )
     if any(f.get("resource_policy") for f in doc["files"].values()):
         issues.append("언어·대상별 리소스 정책은 Editor 또는 재현용 패키지로 내보내세요. ZOJ 문제 ZIP은 이 컴파일 정책을 지원하지 않습니다.")
     checker = doc["files"].get(doc["checker"])
@@ -56,7 +68,9 @@ def check_compatibility(doc, options):
     except ValueError as error:
         issues.append(str(error))
     if issues:
-        fail("zoj_incompatible", " ".join(issues), 400, issues=issues)
+        fail("zoj_incompatible", " ".join(issues), 400, issues=issues,
+             unsupported_extra_validators=unsupported_extra_validators,
+             unsupported_solution_files=unsupported_solution_files)
 
 
 def build_zoj_package(job, testsets):
