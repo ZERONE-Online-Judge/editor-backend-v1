@@ -17,6 +17,7 @@ from .stress_search import StressSearch
 from .expectations import expected_tag, evaluate as evaluate_expectations, matches
 from .invocation_scope import selected_testsets
 from .test_line_endings import normalize_test_bytes
+from .validators import validator_names
 
 
 class Pipeline:
@@ -128,10 +129,9 @@ class Pipeline:
         return normalize_test_bytes(result["output"])
 
     def validator(self, input_bytes, testset="tests", group=""):
-        names = [self.doc["validator"], *self.doc["extra_validators"]]
-        if not names[0]:
+        if not self.doc["validator"]:
             raise SandboxError("validator를 선택하세요.")
-        for name in names:
+        for name in validator_names(self.doc):
             program = self.program(name)
             args = ["--testset", testset]
             if group:

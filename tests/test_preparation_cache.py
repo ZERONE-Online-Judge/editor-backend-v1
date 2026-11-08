@@ -77,6 +77,42 @@ def test_repeat_skips_all_preparation_but_rejudges_every_case(document, make_pip
     assert first.result['testsets']['tests'][2]['input_sha'] == second.result['testsets']['tests'][2]['input_sha']
 
 
+def test_duplicate_validator_selection_keeps_effective_cache_dependencies(document, make_pipeline):
+    document['extra_validators'] = [document['validator'], document['validator']]
+    original = copy.deepcopy(document)
+    first, calls = make_pipeline(document)
+    first.prepare()
+    assert calls['validator'] == 3
+    assert first.doc == original
+
+    document['extra_validators'] = []
+    second, calls = make_pipeline(document)
+    second.prepare()
+    assert not calls
+    assert second.result['preparation_cache']['reused']['validator'] == 3
+
+    document['files']['second.cpp'] = {**document['files'][document['validator']], 'name': 'second.cpp'}
+    document['extra_validators'] = ['second.cpp', document['validator'], 'second.cpp']
+    original = copy.deepcopy(document)
+    third, calls = make_pipeline(document)
+    third.prepare()
+    assert calls == {'validator': 3}
+    assert third.doc == original
+
+
+def test_cached_extra_validator_cannot_replace_missing_basic_selection(document, make_pipeline):
+    first, _ = make_pipeline(document)
+    first.prepare()
+    document['extra_validators'] = [document['validator']]
+    document['validator'] = ''
+    original = copy.deepcopy(document)
+    second, calls = make_pipeline(document)
+    with pytest.raises(SandboxError, match='validator를 선택하세요'):
+        second.prepare()
+    assert not calls
+    assert second.doc == original
+
+
 def test_all_sets_reuses_each_preparation_scope_but_rejudges_every_case(document, make_pipeline):
     document['testsets']['samples'] = copy.deepcopy(document['testsets']['tests'])
     single, _ = make_pipeline(document)

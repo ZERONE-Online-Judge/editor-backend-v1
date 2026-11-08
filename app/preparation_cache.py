@@ -30,7 +30,7 @@ def policy_digest():
         "pipeline.py", "sandbox.py", "resources.py", "statement_samples.py",
         "test_preparation.py", "preparation_cache.py", "execution_limits.py",
         "reference_generation.py", "agent_sandbox.py",
-        "test_line_endings.py",
+        "test_line_endings.py", "validators.py",
     )})
 
 

@@ -7,6 +7,7 @@ from .sandbox import SandboxError
 from .job_errors import AssessmentFailure
 from .storage import read_blob
 from .test_line_endings import normalize_test_bytes
+from .validators import validator_names
 
 
 def prepare_test(p, test, set_name, mode, frozen, main):
@@ -61,7 +62,9 @@ def prepare_test(p, test, set_name, mode, frozen, main):
     if p.doc["info"]["well_formed"] and (b"\r" in input_bytes or b"\x00" in input_bytes or (input_bytes and not input_bytes.endswith(b"\n"))):
         raise AssessmentFailure(f"{set_name} #{index}: LF 줄바꿈과 마지막 개행을 확인하세요.", 'input', 'input_format')
     completed("input")
-    validators = [program(name) for name in [p.doc["validator"], *p.doc["extra_validators"]]] if cache else []
+    if cache and not p.doc["validator"]:
+        raise SandboxError("validator를 선택하세요.")
+    validators = [program(name) for name in validator_names(p.doc)] if cache else []
     def validate_input():
         valid, result = p.validator(input_bytes, set_name, test["group"])
         if not valid:

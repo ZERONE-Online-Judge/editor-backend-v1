@@ -13,6 +13,7 @@ from .schema import Document
 from .storage import put_blob, read_blob
 from .sandbox import VENDOR
 from .invocation_scope import selected_testsets
+from .validators import validator_names
 
 
 def statement_language_code(value):
@@ -40,7 +41,7 @@ def check_compatibility(doc, options):
         issues.append("그룹·부분 점수 채점은 현재 ZOJ 문제 ZIP에 표현할 수 없습니다.")
     if not 100 <= info["time_limit_ms"] <= 10000 or not 16 <= info["memory_limit_mb"] <= 1024:
         issues.append("ZOJ 제한 범위는 시간 100~10,000ms, 메모리 16~1,024MiB입니다.")
-    unsupported_extra_validators = list(doc["extra_validators"])
+    unsupported_extra_validators = [name for name in validator_names(doc) if name != doc["validator"]]
     unsupported_solution_files = [name for name, source in doc["files"].items() if source.get("compile_with_solution")]
     if unsupported_extra_validators:
         issues.append(
