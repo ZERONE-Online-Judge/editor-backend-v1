@@ -69,6 +69,8 @@ def download_files(problem_id: str, values: DownloadRequest,
     # Count every ZIP entry, including repeated content, to bound amplification.
     if sum(sizes[entry.sha256] for entry in values.files) > get_settings().max_project_bytes:
         fail("download_too_large", "다운로드 크기가 문제 자료의 저장 한도를 넘습니다. 나누어 선택하세요.", 413)
+    # Authorization/metadata are complete; ZIP work and streaming need no DB.
+    db.close()
     archive = tempfile.TemporaryFile()
     try:
         with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=1) as output:

@@ -253,6 +253,8 @@ async def upload_blob(problem_id: str, request: Request, user: User = Depends(cu
     _, access = authorize(db, problem_id, user)
     if not editing(access):
         fail("forbidden", "업로드 권한이 필요합니다.", 403)
+    # Do not hold a DB connection while awaiting request bytes or file I/O.
+    db.close()
     limit = get_settings().max_upload_bytes
     with tempfile.TemporaryFile("w+b") as source:
         size = 0
@@ -261,8 +263,15 @@ async def upload_blob(problem_id: str, request: Request, user: User = Depends(cu
             if size > limit:
                 fail("too_large", file_limit_message(limit), 413)
             await run_in_threadpool(source.write, chunk)
-        result = await run_in_threadpool(put_blob_file, db, problem_id, source)
-    db.commit()
+        def save_upload():
+            # Access may have been revoked while the body was being received.
+            _, current_access = authorize(db, problem_id, user)
+            if not editing(current_access):
+                fail("forbidden", "업로드 권한이 필요합니다.", 403)
+            result = put_blob_file(db, problem_id, source)
+            db.commit()
+            return result
+        result = await run_in_threadpool(save_upload)
     return result
 
 
@@ -271,6 +280,8 @@ def download_blob(problem_id: str, sha: str, user: User = Depends(current_user),
     authorize(db, problem_id, user)
     if not db.get(Blob, (problem_id, sha)):
         fail("not_found", "파일을 찾을 수 없습니다.", 404)
+    # FileResponse performs its reads in the same worker pool as DB requests.
+    db.close()
     return FileResponse(blob_path(sha), media_type="application/octet-stream", headers={"Content-Disposition": "attachment", "X-Content-Type-Options": "nosniff"})
 
 

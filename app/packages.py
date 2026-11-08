@@ -276,6 +276,7 @@ class ImportInfo(Strict):
 @router.post("/imports", status_code=201)
 async def import_package(request: Request, name: str, slug: str, folder_id: str | None = None, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
     owned_folder(db, user, folder_id, permission="create_problems")
+    db.close()
     values = ImportInfo(name=name, slug=slug)
     settings = get_settings()
     length = request.headers.get("content-length", "")
@@ -295,6 +296,9 @@ async def import_package(request: Request, name: str, slug: str, folder_id: str 
 
 
 def restore_package(content, values, folder_id, user, db):
+    # Recheck after receiving the archive, without keeping a transaction open
+    # throughout the asynchronous upload.
+    owned_folder(db, user, folder_id, permission="create_problems")
     if db.scalar(select(Problem).where(Problem.owner_id == user.id, Problem.slug == values.slug)):
         fail("slug_taken", "같은 이름의 문제가 이미 있습니다.", 409)
     archive = checked_archive(content)
@@ -404,7 +408,9 @@ def download_package(problem_id: str, job_id: str, user: User = Depends(current_
     if not job or job.problem_id != problem_id or job.kind != "package" or job.status != "completed" or not job.result.get("package"):
         fail("not_found", "완료된 패키지를 찾을 수 없습니다.", 404)
     path = get_settings().data_dir / "packages" / (job.id + ".zip")
-    return Response(path.read_bytes(), media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="{job.result["package"]["filename"]}"'})
+    filename = job.result["package"]["filename"]
+    db.close()
+    return Response(path.read_bytes(), media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
 @router.get("/problems/{problem_id}/rendered/{job_id}/{language}.{format}")
@@ -414,6 +420,7 @@ def rendered_file(problem_id: str, job_id: str, language: str, format: str, user
     if not job or job.problem_id != problem_id or job.kind != "render" or job.status != "completed" or language not in job.document["statements"] or format not in {"html", "pdf"}:
         fail("not_found", "렌더링 결과를 찾을 수 없습니다.", 404)
     path = get_settings().data_dir / "rendered" / job.id / (safe_name(language) + "." + format)
+    db.close()
     if not path.is_file():
         fail("not_found", "렌더링에 실패한 파일입니다.", 404)
     return Response(path.read_bytes(), media_type="application/pdf" if format == "pdf" else "text/html", headers={"Content-Disposition": f'attachment; filename="{language}.{format}"', "Content-Security-Policy": "default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'none'"})

@@ -16,8 +16,7 @@ POLL_SECONDS = 1.0
 
 
 def viewer_id(request):
-    with SessionLocal() as db:
-        return current_user(request, db).id
+    return current_user(request).id
 
 
 def revision_status(problem_id, user_id):

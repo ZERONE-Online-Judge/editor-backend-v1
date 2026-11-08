@@ -14,7 +14,7 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from .config import get_settings
-from .db import LoginCode, LoginSession, RateLimit, User, now, session_dependency, uid
+from .db import LoginCode, LoginSession, RateLimit, SessionLocal, User, now, session_dependency, uid
 from .domain import fail
 from .schema import Strict
 from .auth_redirect import require_central_login
@@ -40,18 +40,23 @@ def check_browser_request(request: Request):
         fail("origin", "허용되지 않은 요청 경로입니다.", 403)
 
 
-def current_user(request: Request, db: Session = Depends(session_dependency)):
-    if get_settings().auth_mode=='zoj':
-        from .shared_auth import current_user as shared_user
-        return shared_user(request,db)
-    token = request.cookies.get(COOKIE, "")
-    session = db.get(LoginSession, digest(token)) if token else None
-    if not session or session.expires_at <= now():
-        fail("authentication_required", "로그인이 필요합니다.", 401)
-    user = db.get(User, session.user_id)
-    if not user:
-        fail("authentication_required", "로그인이 필요합니다.", 401)
-    return user
+def current_user(request: Request):
+    # Authentication must return its connection before the endpoint waits for
+    # request data, a file response, or another shared worker-pool operation.
+    with SessionLocal() as db:
+        if get_settings().auth_mode == "zoj":
+            from .shared_auth import current_user as shared_user
+            user = shared_user(request, db)
+        else:
+            token = request.cookies.get(COOKIE, "")
+            session = db.get(LoginSession, digest(token)) if token else None
+            if not session or session.expires_at <= now():
+                fail("authentication_required", "로그인이 필요합니다.", 401)
+            user = db.get(User, session.user_id)
+            if not user:
+                fail("authentication_required", "로그인이 필요합니다.", 401)
+        db.expunge(user)
+        return user
 
 
 def user_json(user):
