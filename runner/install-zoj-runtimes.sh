@@ -11,7 +11,11 @@ printf '%s  %s\n' "$pypy_sha" /tmp/pypy.tar.gz | sha256sum -c -
 mkdir -p /usr/local/lib/pypy
 tar -xzf /tmp/pypy.tar.gz -C /usr/local/lib/pypy --strip-components=1
 ln -s /usr/local/lib/pypy/bin/pypy3 /usr/local/bin/pypy3
-curl -fLS --retry 3 https://github.com/JetBrains/kotlin/releases/download/v1.9.24/kotlin-compiler-1.9.24.zip -o /tmp/kotlin.zip
+if ! curl -fLS --retry 3 https://github.com/JetBrains/kotlin/releases/download/v1.9.24/kotlin-compiler-1.9.24.zip -o /tmp/kotlin.zip; then
+  # The release download CDN can fail while GitHub's asset API is healthy.
+  # Both paths must pass the same pinned checksum below.
+  curl -fLS --retry 3 -H 'Accept: application/octet-stream' https://api.github.com/repos/JetBrains/kotlin/releases/assets/166441700 -o /tmp/kotlin.zip
+fi
 printf '%s  %s\n' eb7b68e01029fa67bc8d060ee54c12018f2c60ddc438cf21db14517229aa693b /tmp/kotlin.zip | sha256sum -c -
 unzip -q /tmp/kotlin.zip -d /usr/local/lib
 mv /usr/local/lib/kotlinc /usr/local/lib/kotlin
