@@ -20,10 +20,10 @@ from starlette.background import BackgroundTask
 
 from .auth import current_user
 from .config import get_settings
-from .db import FolderPackageExport, Job, JobDiscard, Placement, Problem, SharedPlacement, SessionLocal, User, now, session_dependency
+from .db import Access, FolderPackageExport, Job, JobDiscard, Placement, Problem, SharedPlacement, SessionLocal, User, now, session_dependency
 from .domain import authorize, document_hash, fail
 from .folders import accessible_folders, lock_user, owned_folder
-from .folder_access import merge_access, problem_access_context
+from .folder_access import merge_access, problem_access_context, visible_problem_ids
 from .jobs import JobOptions, JobRequest, _create_job
 from .permissions import has
 from .schema import Strict
@@ -199,7 +199,9 @@ def snapshot(db, user, root, recursive):
     personal = select(Placement.problem_id).where(Placement.user_id == user.id, Placement.folder_id.in_(selected),
         ~select(SharedPlacement.problem_id).where(SharedPlacement.problem_id == Placement.problem_id).exists())
     ids = shared if root.workspace_id else personal
-    problems = db.scalars(select(Problem).where(Problem.id.in_(ids), Problem.deleted.is_(False))
+    visible = (Problem.id.in_(select(Access.problem_id).where(Access.user_id == user.id))) | (
+        Problem.id.in_(visible_problem_ids(db, user.id)))
+    problems = db.scalars(select(Problem).where(Problem.id.in_(ids), visible, Problem.deleted.is_(False))
         .order_by(Problem.id).limit(MAX_EXPORT_PROBLEMS + 1)).all()
     if not problems:
         fail("empty_folder", "이 폴더에 내보낼 문제가 없습니다.")

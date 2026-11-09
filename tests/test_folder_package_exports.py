@@ -537,3 +537,32 @@ def test_legacy_crlf_storage_uses_user_then_problem_lock_order(owner, background
     assert locks.index("user") < locks.index("problem")
     with SessionLocal() as db:
         assert db.get(Problem, pid).document == doc
+
+
+def test_stale_personal_placement_excludes_hidden_current_revision(owner, clients):
+    private_root = folder(owner)
+    hidden = add(owner, private_root)
+    member = clients("member")
+    grant(owner, hidden, "member", ["package"])
+    personal = folder(member)
+    visible = add(member, personal, 1)
+    assert member.post("/api/folders/move-problems", json={"problem_ids": [hidden], "folder_id": personal}).status_code == 200
+    assert owner.put(f"/api/problems/{hidden}/accesses", json={"login": "member", "role": "NONE"}).status_code == 200
+    with SessionLocal() as db:
+        problem = db.get(Problem, hidden)
+        problem.revision = 987
+        doc = copy.deepcopy(problem.document)
+        doc["info"]["name"] = "Hidden new revision"
+        problem.document = doc
+        db.commit()
+    batch = start(member, personal)
+    assert batch["total"] == 1
+    assert [item["problem_id"] for item in batch["items"]] == [visible]
+    assert hidden not in json.dumps(batch)
+    assert all(item["revision"] != 987 for item in batch["items"])
+    # The visible read-only row remains an explicit package-permission error.
+    grant(owner, hidden, "member", [])
+    next_batch = start(member, personal, include_descendants=False)
+    assert next_batch["total"] == 2
+    denied = next(item for item in next_batch["items"] if item["problem_id"] == hidden)
+    assert denied["error"]["code"] == "forbidden"
