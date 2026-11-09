@@ -208,6 +208,10 @@ def sync_user(db, identity):
                     "계정 연결 상태를 관리자에게 확인해 주세요.",
                     409,
                 )
+    # This capability belongs to the current trusted central identity, never to
+    # the local profile. Re-evaluate it on every authenticated request so that a
+    # central role change also takes effect in an already logged-in browser.
+    user.is_service_master = identity.get("is_service_master") is True
     return user
 
 

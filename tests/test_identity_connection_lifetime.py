@@ -73,6 +73,7 @@ def request_for(mode, token="fixture-token"):
 @pytest.mark.parametrize("mode", ["local", "zoj"])
 def test_success_returns_detached_scalar_identity_and_no_connection(identity_pool, monkeypatch, mode):
     engine, _, identity, closed = identity_pool
+    identity["is_service_master"] = True
     monkeypatch.setattr(get_settings(), "auth_mode", mode)
     user = auth.current_user(request_for(mode))
     assert inspect(user).detached
@@ -80,6 +81,7 @@ def test_success_returns_detached_scalar_identity_and_no_connection(identity_poo
         "id": "fixture-user", "account_id": identity["account_id"],
         "email": identity["email"], "handle": "identity",
         "display_name": identity["display_name"],
+        "is_service_master": mode == "zoj",
     }
     assert len(closed) == 1
     assert engine.pool.checkedout() == 0

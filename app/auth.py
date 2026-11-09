@@ -60,7 +60,14 @@ def current_user(request: Request):
 
 
 def user_json(user):
-    return {"id": user.id, "account_id":user.central_account_id,"email": user.email, "handle": user.handle, "display_name": user.display_name}
+    return {"id": user.id, "account_id":user.central_account_id,"email": user.email, "handle": user.handle, "display_name": user.display_name,
+            "is_service_master": get_settings().auth_mode == "zoj" and getattr(user, "is_service_master", False) is True}
+
+
+def require_service_master(user: User = Depends(current_user)):
+    if get_settings().auth_mode != "zoj" or getattr(user, "is_service_master", False) is not True:
+        fail("service_master_required", "서비스 마스터만 제작 현황을 확인할 수 있습니다.", 403)
+    return user
 
 
 def rate_limit(db, key, limit, seconds):
@@ -232,4 +239,5 @@ def update_profile(values: Profile,request: Request,user: User = Depends(current
     row = db.get(User, user.id)
     row.display_name, row.handle = values.display_name.strip(), values.handle
     db.commit()
+    row.is_service_master = getattr(user, "is_service_master", False) is True
     return user_json(row)
