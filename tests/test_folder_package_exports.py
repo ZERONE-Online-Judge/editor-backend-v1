@@ -141,7 +141,7 @@ def test_partial_zoj_export_reports_blockers_without_modifying_problem(owner, mo
         assert db.get(Problem, bad).document == before
 
 
-def test_existing_archive_is_reused_across_backend_releases_but_not_verification_modes(owner):
+def test_existing_archive_is_reused_across_backend_releases(owner):
     root = folder(owner)
     add(owner, root)
     first = finish(owner, start(owner, root)["id"])
@@ -153,12 +153,6 @@ def test_existing_archive_is_reused_across_backend_releases_but_not_verification
     second = finish(owner, start(owner, root)["id"])
     assert second["items"][0]["job_id"] == original
     assert second["items"][0]["reused"] is True
-    with SessionLocal() as db:
-        job = db.get(Job, original)
-        job.result = {**job.result, "package": {**job.result["package"], "verified": True}}
-        db.commit()
-    third = finish(owner, start(owner, root)["id"])
-    assert third["items"][0]["job_id"] != original
 
 
 def test_package_permission_is_required_for_cached_and_new_items_and_bundle(owner, clients):
@@ -204,7 +198,7 @@ def test_shared_root_revocation_and_active_batch_limit(owner, clients):
     assert response.status_code == 429
 
 
-def test_verified_cache_uses_actual_agent_revisions_and_all_testsets(owner, monkeypatch):
+def test_verified_cache_needs_no_current_agents_and_force_rebuild_uses_them(owner, monkeypatch):
     root = folder(owner)
     pid = add(owner, root, ready=True)
     with SessionLocal() as db:
@@ -233,9 +227,15 @@ def test_verified_cache_uses_actual_agent_revisions_and_all_testsets(owner, monk
     detail = owner.get(f"/api/folder-package-exports/{batch['id']}").json()
     assert detail["ready"] == 1
     assert detail["items"][0]["job_id"] == original
+    monkeypatch.setattr("app.judge_bridge.capabilities", forbid_execution)
+    next_batch = start(owner, root, verify=True, export_format="zoj")
+    exports.advance_exports()
+    detail = owner.get(f"/api/folder-package-exports/{next_batch['id']}").json()
+    assert detail["items"][0]["job_id"] == original
+    assert detail["ready"] == 1
     monkeypatch.setattr("app.judge_bridge.capabilities", lambda user: {"runtime_revision": "new-agent", "reference_output_protocol": PROTOCOL,
         "reference_output_online_nodes": 1, "execution": {"runtime_revision": "new-execution", "protocol": "editor-execute-v1", "online_nodes": 1}})
-    next_batch = start(owner, root, verify=True, export_format="zoj")
+    next_batch = start(owner, root, verify=True, export_format="zoj", reuse=False)
     exports.advance_exports()
     detail = owner.get(f"/api/folder-package-exports/{next_batch['id']}").json()
     assert detail["items"][0]["job_id"] != original

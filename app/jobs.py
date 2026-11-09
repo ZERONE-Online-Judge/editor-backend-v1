@@ -138,6 +138,17 @@ def create_job(problem_id: str, values: JobRequest, user: User = Depends(current
     return _create_job(problem_id, values, user, db)
 
 
+def reusable_package_response(db, user, problem_id, revision, doc, options):
+    from .package_reuse import cached_package, package_identity
+    authorize(db, problem_id, user, permission="package")
+    identity = package_identity(problem_id, revision, options["source_document_hash"], doc, options)
+    cached = cached_package(db, user, identity, options)
+    if not cached:
+        return None
+    row = db.get(Job, cached.id)
+    return {**job_json(row, application=db.get(JobApplication, (row.id, user.id)), requester=db.get(User, row.user_id)), "reused": True}
+
+
 def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *, from_committed_revision: bool = False, commit: bool = True, capabilities_snapshot: dict | None = None, folder_export_id: str | None = None):
     problem, access = authorize(db, problem_id, user)
     require(access, job_permission(values.kind))
@@ -225,15 +236,12 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
     if values.kind == "package" and options["export_format"] == "zoj":
         from .zoj_package import check_compatibility
         check_compatibility(doc, options)
-    if values.kind == "verify" or (values.kind == "package" and options["verify"]):
+    if values.kind == "verify":
         from .expectations import VERSION
         options["expectations_version"] = VERSION
         blockers = [c for c in cautions(doc) if c["blocking"]]
         if blockers:
             fail("not_ready", "필수 자료를 먼저 준비하세요.", cautions=blockers)
-    if archive_only:
-        from .package_export import stored_testsets
-        stored_testsets(doc, options)
     options["runtime_revision"] = get_settings().runtime_revision
     if values.kind == "verify" and options["all_testsets"]:
         if not doc["testsets"]:
@@ -312,6 +320,20 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
         options["stress_configuration"] = stress_configuration(doc, options)
     if options["execution_backend"] == "editor":
         fail("judge_backend_required", "모든 생성·채점·검증 작업은 ZOJ 에이전트에서만 실행할 수 있습니다.")
+    if values.kind == "package":
+        if values.reuse:
+            cached = reusable_package_response(db, user, problem_id, revision, doc, options)
+            if cached:
+                return cached
+        if options["verify"]:
+            from .expectations import VERSION
+            options["expectations_version"] = VERSION
+            blockers = [c for c in cautions(doc) if c["blocking"]]
+            if blockers:
+                fail("not_ready", "필수 자료를 먼저 준비하세요.", cautions=blockers)
+        else:
+            from .package_export import stored_testsets
+            stored_testsets(doc, options)
     options["execution_backend"] = "archive" if archive_only else "zoj"
     uses_judge = values.kind in {"verify", "stress"} or (values.kind == "package" and not archive_only)
     uses_reference = uses_judge or (values.kind == "prepare" and options["prepare_mode"] in {"full", "answers"})
@@ -351,13 +373,17 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
     # must finish before acquiring this per-user admission lock.
     from .folders import lock_user
     lock_user(db, user)
+    if values.kind == "package" and values.reuse:
+        cached = reusable_package_response(db, user, problem_id, revision, doc, options)
+        if cached:
+            return cached
     doc, newline_report = normalize_test_document(db, problem_id, doc)
     if newline_report["tests"]:
         options["newline_normalization"] = newline_report
     hash_value = document_hash(doc)
     if folder_export_id is not None:
         options["folder_export_id"] = folder_export_id
-    if values.reuse and not options["force_prepare"]:
+    if values.reuse and values.kind != "package" and not options["force_prepare"]:
         cached = db.scalars(select(Job).where(Job.problem_id == problem_id, Job.document_hash == hash_value, Job.kind == values.kind, Job.status.in_(["queued", "running", "completed"]),
             ~select(JobDiscard.job_id).where(JobDiscard.job_id == Job.id, JobDiscard.user_id == user.id).exists()).order_by(Job.created_at.desc())).all()
         for row in cached:

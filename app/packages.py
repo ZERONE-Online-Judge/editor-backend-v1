@@ -16,7 +16,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 from .auth import current_user
 from .config import get_settings
-from .db import Access, Blob, Collection, Job, Problem, Revision, User, WorkingCopy, now, session_dependency
+from .db import Access, Blob, Collection, Job, Problem, Revision, SessionLocal, User, WorkingCopy, now, session_dependency
 from .domain import authorize, document_hash, fail, ordered_tests, references, validate_document
 from .schema import Document, Strict, empty_document, safe_name
 from .storage import put_blob, read_blob
@@ -408,9 +408,23 @@ def download_package(problem_id: str, job_id: str, user: User = Depends(current_
     if not job or job.problem_id != problem_id or job.kind != "package" or job.status != "completed" or not job.result.get("package"):
         fail("not_found", "완료된 패키지를 찾을 수 없습니다.", 404)
     path = get_settings().data_dir / "packages" / (job.id + ".zip")
-    filename = job.result["package"]["filename"]
+    artifact = copy.deepcopy(job.result["package"])
+    filename = artifact["filename"]
+    ident = job.id
     db.close()
-    return Response(path.read_bytes(), media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+    if artifact.get("invalid"):
+        fail("package_artifact_corrupt", "저장된 패키지를 사용할 수 없습니다. 내보내기를 다시 요청하세요.", 409)
+    try:
+        content = path.read_bytes()
+    except OSError:
+        fail("package_artifact_missing", "저장된 패키지 파일을 찾을 수 없습니다. 내보내기를 다시 요청하세요.", 409)
+    if len(content) != artifact.get("size") or hashlib.sha256(content).hexdigest() != artifact.get("sha256"):
+        from .package_reuse import invalidate_artifact
+        with SessionLocal() as integrity_db:
+            invalidate_artifact(integrity_db, ident)
+            integrity_db.commit()
+        fail("package_artifact_corrupt", "저장된 패키지가 손상되었습니다. 내보내기를 다시 요청하세요.", 409)
+    return Response(content, media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
 @router.get("/problems/{problem_id}/rendered/{job_id}/{language}.{format}")

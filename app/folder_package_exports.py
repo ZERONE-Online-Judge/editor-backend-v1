@@ -9,23 +9,23 @@ import tempfile
 import threading
 import zipfile
 from typing import Literal
-from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import Field
-from sqlalchemy import func, select
-from sqlalchemy.orm import Session, load_only
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 from starlette.background import BackgroundTask
 
 from .auth import current_user
 from .config import get_settings
-from .db import Access, FolderPackageExport, Job, JobDiscard, Placement, Problem, SharedPlacement, SessionLocal, User, now, session_dependency
+from .db import Access, FolderPackageExport, Job, Placement, Problem, SharedPlacement, SessionLocal, User, now, session_dependency
 from .domain import authorize, document_hash, fail
 from .folders import accessible_folders, lock_user, owned_folder
 from .folder_access import merge_access, problem_access_context, visible_problem_ids
 from .jobs import JobOptions, JobRequest, _create_job
 from .permissions import has
+from .package_reuse import artifact_present_summary, cached_package, invalidate_artifact, package_path
 from .schema import Strict
 
 router = APIRouter(prefix="/api", tags=["folder package exports"])
@@ -42,6 +42,7 @@ class ExportOptions(Strict):
     include_descendants: bool = True
     export_format: Literal["editor", "zoj", "linux"] = "zoj"
     verify: bool = True
+    reuse: bool = True
     statement_language: str = Field(default="korean", min_length=1, max_length=100)
 
 
@@ -74,92 +75,6 @@ def permission_errors(db, user, items):
     return result
 
 
-def package_path(job):
-    return get_settings().data_dir / "packages" / ((job if isinstance(job, str) else job.id) + ".zip")
-
-
-def artifact_present(job):
-    return artifact_present_summary(job.id, job.result.get("package", {}))
-
-
-def artifact_present_summary(job_id, artifact):
-    path = package_path(job_id)
-    return (isinstance(artifact, dict) and not artifact.get("invalid")
-            and re.fullmatch(r"[a-f0-9]{64}", str(artifact.get("sha256", "")))
-            and path.is_file() and path.stat().st_size == artifact.get("size"))
-
-
-def effective_sets(job):
-    if job.options.get("export_format", "editor") != "zoj":
-        return list(job.document["testsets"])
-    if job.options.get("testsets") is not None:
-        requested = set(job.options["testsets"])
-        return [name for name in job.document["testsets"] if name in requested]
-    return [job.options.get("testset", "tests")]
-
-
-def compatible_package(job, item, options, caps=None):
-    """Match source identity and output semantics, never permission to publish."""
-    if (job.kind != "package" or job.revision != item["revision"]
-            or (job.options.get("source_document_hash") or job.document_hash) != item["source_document_hash"]
-            or job.options.get("snapshot") != "committed"
-            or job.options.get("export_format", "editor") != options["export_format"]
-            or job.options.get("verify", True) is not options["verify"]
-            or effective_sets(job) != item["testsets"]):
-        return False
-    if options["export_format"] == "zoj" and job.options.get("statement_language") != options["statement_language"]:
-        return False
-    # The backend release SHA changes on every deployment. These unchanged
-    # builders remain compatible across releases; execution evidence is tied
-    # to the actual agent protocols/revisions below instead.
-    if options["verify"]:
-        from .expectations import VERSION
-        from .reference_generation import PROTOCOL
-        if (not caps or job.options.get("execution_backend") != "zoj" or job.options.get("execution_transport") != "agent"
-                or caps.get("reference_output_protocol") != PROTOCOL
-                or caps.get("execution", {}).get("protocol") != "editor-execute-v1"
-                or job.options.get("expectations_version") != VERSION
-                or job.options.get("reference_output_protocol") != PROTOCOL
-                or job.options.get("reference_revision") != caps.get("runtime_revision")
-                or job.options.get("judge_revision") != caps.get("runtime_revision")
-                or job.options.get("execution_revision") != caps.get("execution", {}).get("runtime_revision")):
-            return False
-    elif (job.options.get("package_export_version") != 1 or job.options.get("execution_backend") != "archive"
-            or job.options.get("execution_transport") != "archive"):
-        return False
-    if job.status == "completed":
-        artifact = job.result.get("package", {})
-        if (not artifact_present(job) or artifact.get("format") != options["export_format"]
-                or artifact.get("verified") is not options["verify"]):
-            return False
-        if options["verify"] and job.result.get("verified") is not True:
-            return False
-        if options["export_format"] == "zoj" and (artifact.get("testsets") != item["testsets"]
-                or artifact.get("statement_language") != options["statement_language"]):
-            return False
-    return True
-
-
-def cached_package(db, user, item, options, caps):
-    rows = db.execute(select(Job.id, Job.revision, Job.document_hash, Job.options, Job.status,
-        Job.result["package"].label("package"), Job.result["verified"].as_boolean().label("verified"))
-        .where(Job.problem_id == item["problem_id"], Job.kind == "package",
-        Job.revision == item["revision"], Job.status.in_(["completed", "queued", "running"]),
-        func.coalesce(Job.options["source_document_hash"].as_string(), Job.document_hash) == item["source_document_hash"],
-        ~select(JobDiscard.job_id).where(JobDiscard.job_id == Job.id, JobDiscard.user_id == user.id).exists()
-        ).order_by(Job.created_at.desc()).limit(100)).all()
-    for row in rows:
-        # The matched source hash fixes testset names/order. Canonical newline
-        # conversion cannot alter that structure, so no full source/result
-        # document needs loading to match package scopes.
-        job = SimpleNamespace(id=row.id, kind="package", revision=row.revision, document_hash=row.document_hash,
-            options=row.options, status=row.status, document={"testsets": dict.fromkeys(item["testsets"])},
-            result={"package": row.package, "verified": row.verified})
-        if compatible_package(job, item, options, caps):
-            return job
-    return None
-
-
 def update_status(row):
     pending = sum(item["status"] not in {"ready", "failed"} for item in row.items)
     ready = sum(item["status"] == "ready" for item in row.items)
@@ -182,7 +97,7 @@ def export_json(row, detail=True):
         "progress": round(sum(item.get("progress", 0) for item in row.items) / len(row.items)) if row.items else 100,
         "download_url": f"/api/folder-package-exports/{row.id}/download" if ready and row.status not in ACTIVE else None}
     if detail:
-        value["items"] = [{key: val for key, val in item.items() if key not in {"source_document_hash", "testsets"}} for item in row.items]
+        value["items"] = [{key: val for key, val in item.items() if key not in {"source_document_hash", "testsets", "document_testsets"}} for item in row.items]
     return value
 
 
@@ -389,11 +304,10 @@ def download_export(export_id: str, user: User = Depends(current_user), db: Sess
                 persisted = final_db.scalar(select(FolderPackageExport).where(FolderPackageExport.id == export_id).with_for_update())
                 invalid_ids = [item["job_id"] for item in items if item.get("job_id")
                     and (item.get("error") or {}).get("code") == "package_artifact_corrupt"]
-                for job in final_db.scalars(select(Job).where(Job.id.in_(invalid_ids))
-                        .options(load_only(Job.id, Job.result)).with_for_update()):
+                for job_id in invalid_ids:
                     # Preserve execution evidence while preventing future
                     # exports from selecting an artifact whose hash failed.
-                    job.result = {**job.result, "package": {**job.result["package"], "invalid": True}}
+                    invalidate_artifact(final_db, job_id)
                 internal = copy.deepcopy(persisted.items)
                 outcomes = {item["problem_id"]: item for item in items}
                 for item in internal:
@@ -430,22 +344,88 @@ def active_folder_jobs(db, user_id):
         Job.options["folder_export_id"].as_string().is_not(None))).all()
 
 
-def advance_exports(draining=lambda: False):
-    """One child per export per pass; leave capacity for interactive jobs."""
+_CAPABILITIES_NEEDED = object()
+
+
+def advance_export(export_id, user_id, caps, draining):
+    """Resolve existing artifacts before requesting any execution admission."""
+    needs_caps = False
     with SessionLocal() as db:
-        rows = db.scalars(select(FolderPackageExport).where(FolderPackageExport.status.in_(ACTIVE))
+        user = db.get(User, user_id)
+        lock_user(db, user)
+        row = db.scalar(select(FolderPackageExport).where(FolderPackageExport.id == export_id,
+            FolderPackageExport.status.in_(ACTIVE)).with_for_update(skip_locked=True))
+        if not row:
+            return False
+        row.last_coordinated_at = now()
+        try:
+            owned_folder(db, user, row.folder_id, write=False)
+        except HTTPException as error:
+            items = copy.deepcopy(row.items)
+            for item in items:
+                failed_item(item, error_json(error))
+            row.items = items
+            update_status(row)
+            db.commit()
+            return False
+        refresh_export(db, row, user)
+        active_children = active_folder_jobs(db, user_id)
+        items = copy.deepcopy(row.items)
+        examined = 0
+        for item in items:
+            if item["status"] != "pending":
+                continue
+            if examined >= 20 or draining():
+                break
+            examined += 1
+            try:
+                authorize(db, item["problem_id"], user, permission="package")
+                request_options = {key: value for key, value in row.options.items() if key != "reuse"}
+                request_options["testsets"] = item["testsets"] if row.options["export_format"] == "zoj" and item["testsets"] else None
+                cached = cached_package(db, user, item, request_options) if row.options.get("reuse", True) else None
+                if cached:
+                    item.update(job_id=cached.id, reused=True, status="ready" if cached.status == "completed" else cached.status,
+                        progress=100 if cached.status == "completed" else 0)
+                    continue
+                if len(active_children) >= MAX_ACTIVE_FOLDER_JOBS or draining():
+                    break
+                if row.options["verify"] and caps is _CAPABILITIES_NEEDED:
+                    needs_caps = True
+                    break
+                if isinstance(caps, HTTPException):
+                    raise caps
+                options = JobOptions(**request_options, testset=item["testsets"][0] if item["testsets"] else "tests")
+                with db.begin_nested():
+                    created = _create_job(item["problem_id"], JobRequest(kind="package", version=0,
+                        revision=item["revision"], options=options, reuse=False), user, db,
+                        from_committed_revision=True, commit=False, capabilities_snapshot=caps, folder_export_id=row.id)
+                item.update(job_id=created["id"], status=created["status"], progress=0)
+                break
+            except HTTPException as error:
+                if error.status_code == 429:
+                    break
+                failed_item(item, error_json(error))
+        row.items = items
+        update_status(row)
+        db.commit()
+    return needs_caps
+
+
+def advance_exports(draining=lambda: False):
+    """One child per export per pass; network calls never hold row locks."""
+    with SessionLocal() as db:
+        candidates = db.execute(select(FolderPackageExport.id, FolderPackageExport.user_id)
+            .where(FolderPackageExport.status.in_(ACTIVE))
             .order_by(FolderPackageExport.last_coordinated_at, FolderPackageExport.created_at, FolderPackageExport.id).limit(20)).all()
-        candidates = []
-        for row in rows:
-            active = active_folder_jobs(db, row.user_id)
-            candidates.append((row.id, row.user_id, row.options["verify"] and len(active) < MAX_ACTIVE_FOLDER_JOBS
-                and any(item["status"] == "pending" for item in row.items)))
     capabilities = {}
-    for _, user_id, needs_caps in candidates:
+    for export_id, user_id in candidates:
         if draining():
             return
-        if not needs_caps or user_id in capabilities:
+        caps = capabilities.get(user_id, _CAPABILITIES_NEEDED)
+        if not advance_export(export_id, user_id, caps, draining):
             continue
+        if draining():
+            return
         with SessionLocal() as db:
             user = db.get(User, user_id)
         if draining():
@@ -455,68 +435,9 @@ def advance_exports(draining=lambda: False):
             capabilities[user_id] = get_capabilities(user)
         except HTTPException as error:
             capabilities[user_id] = error
-    for export_id, user_id, _ in candidates:
         if draining():
             return
-        with SessionLocal() as db:
-            user = db.get(User, user_id)
-            lock_user(db, user)
-            row = db.scalar(select(FolderPackageExport).where(FolderPackageExport.id == export_id,
-                FolderPackageExport.status.in_(ACTIVE)).with_for_update(skip_locked=True))
-            if not row:
-                continue
-            row.last_coordinated_at = now()
-            try:
-                owned_folder(db, user, row.folder_id, write=False)
-            except HTTPException as error:
-                items = copy.deepcopy(row.items)
-                for item in items:
-                    failed_item(item, error_json(error))
-                row.items = items
-                update_status(row)
-                db.commit()
-                continue
-            refresh_export(db, row, user)
-            active_children = active_folder_jobs(db, user_id)
-            items = copy.deepcopy(row.items)
-            examined = 0
-            for item in items:
-                if item["status"] != "pending":
-                    continue
-                if examined >= 20:
-                    break
-                examined += 1
-                caps = capabilities.get(user_id)
-                if row.options["verify"] and caps is None:
-                    break
-                try:
-                    authorize(db, item["problem_id"], user, permission="package")
-                    if isinstance(caps, HTTPException):
-                        raise caps
-                    cached = cached_package(db, user, item, row.options, caps)
-                    if cached:
-                        item.update(job_id=cached.id, reused=True, status="ready" if cached.status == "completed" else cached.status,
-                            progress=100 if cached.status == "completed" else 0)
-                        continue
-                    if len(active_children) >= MAX_ACTIVE_FOLDER_JOBS:
-                        break
-                    if draining():
-                        break
-                    options = JobOptions(**row.options, testset=item["testsets"][0] if item["testsets"] else "tests",
-                        testsets=item["testsets"] if row.options["export_format"] == "zoj" and item["testsets"] else None)
-                    with db.begin_nested():
-                        created = _create_job(item["problem_id"], JobRequest(kind="package", version=0,
-                            revision=item["revision"], options=options, reuse=False), user, db,
-                            from_committed_revision=True, commit=False, capabilities_snapshot=caps, folder_export_id=row.id)
-                    item.update(job_id=created["id"], status=created["status"], progress=0)
-                    break
-                except HTTPException as error:
-                    if error.status_code == 429:
-                        break
-                    failed_item(item, error_json(error))
-            row.items = items
-            update_status(row)
-            db.commit()
+        advance_export(export_id, user_id, capabilities[user_id], draining)
 
 
 def run_coordinator(stop_event, drain_event):

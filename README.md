@@ -363,15 +363,20 @@ Participant submission output limits are unchanged.
 `POST /api/folders/{id}/package-exports` snapshots the selected folder's
 committed problem revisions, including descendants by default. Options are
 `export_format` (`zoj`, `editor`, `linux`), `verify` (default `true`), and
-`statement_language` (default `korean`). ZOJ exports include every testset and
+`statement_language` (default `korean`), and `reuse` (default `true`). ZOJ exports
+include every testset and
 require that exact statement language. Private working copies are unchanged.
 
 The worker reuses compatible packages or coordinates existing package jobs,
 with at most two generated folder jobs per user. Verification uses ZOJ agents;
 `verify: false` archives stored data without executing source code. Source
-identity, format, verification, testsets, language, archive version, and actual
-agent revisions/protocols determine compatibility. Backend release changes
-alone do not invalidate these unchanged package builders.
+identity, format, exported testset scope/layout, language, and recorded
+verification determine compatibility. Completed packages remain reusable
+across backend/agent releases and while agents are offline. Skipping new
+verification can reuse an already verified package without changing its
+recorded verification. Set `reuse: false` to explicitly rebuild; only newly
+generated verified packages require current agent readiness. Individual
+package jobs use the same lookup and return `reused: true` on a cache hit.
 
 `GET /api/folder-package-exports/{id}` returns per-problem progress and errors;
 `GET /api/folders/{id}/package-exports` lists the requester's latest ten exports.
