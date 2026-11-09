@@ -139,12 +139,15 @@ def main():
     # Mail delivery has its own thread and never consumes a judging worker slot.
     mail_thread = threading.Thread(target=run_access_mail, args=(stop_event,), daemon=True)
     mail_thread.start()
+    from .folder_package_exports import coordinator_idle, run_coordinator
+    export_thread = threading.Thread(target=run_coordinator, args=(stop_event, drain_event), daemon=True)
+    export_thread.start()
     with ThreadPoolExecutor(max_workers=get_settings().worker_concurrency) as pool:
         futures = set()
         last_maintenance = 0
         while not stop_event.is_set():
             futures = {f for f in futures if not f.done()}
-            if drain_event.is_set() and not futures:
+            if drain_event.is_set() and not futures and coordinator_idle.is_set():
                 DRAIN_MARKER.touch()
             if time.monotonic() - last_maintenance > 30:
                 maintenance()
@@ -156,6 +159,7 @@ def main():
                     continue
             stop_event.wait(0.5)
     mail_thread.join(timeout=20)
+    export_thread.join(timeout=5)
 
 
 if __name__ == "__main__":

@@ -53,6 +53,8 @@ app.include_router(auth_redirect.router)
 from . import password_auth
 app.include_router(password_auth.router)
 app.include_router(folders.router)
+from . import folder_package_exports
+app.include_router(folder_package_exports.router)
 app.include_router(shared_folders.router)
 app.include_router(problems.router)
 app.include_router(blob_text_formats.router)

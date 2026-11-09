@@ -138,7 +138,7 @@ def create_job(problem_id: str, values: JobRequest, user: User = Depends(current
     return _create_job(problem_id, values, user, db)
 
 
-def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *, from_committed_revision: bool = False):
+def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *, from_committed_revision: bool = False, commit: bool = True, capabilities_snapshot: dict | None = None, folder_export_id: str | None = None):
     problem, access = authorize(db, problem_id, user)
     require(access, job_permission(values.kind))
     writer = editing(access) and (values.kind != "render" or has(access, "edit_statements"))
@@ -156,7 +156,7 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
     snapshot = options["snapshot"] or ("committed" if not writer and not translator_render else "working_copy")
     if values.kind == "package" or from_committed_revision:
         snapshot = "committed"
-    wc = workspace(db, problem, user) if writer or translator_render else None
+    wc = workspace(db, problem, user) if (writer or translator_render) and not from_committed_revision else None
     if wc and wc.version != values.version and (snapshot == "working_copy" or (values.kind == "package" and not from_committed_revision)):
         fail("workspace_changed", "최신 작업 사본을 저장한 뒤 실행하세요.", 409)
     revision = problem.revision
@@ -324,14 +324,14 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
         if not main:
             fail("not_ready", "정답을 생성할 Main 풀이를 지정하세요.")
         compatible(doc, {**options, "solutions": [main]}, "prepare")
-        caps = capabilities(user)
+        caps = capabilities_snapshot if capabilities_snapshot is not None else capabilities(user)
         if caps.get("reference_output_protocol") != PROTOCOL or caps.get("reference_output_online_nodes", 0) < 1:
             fail("reference_agents_unavailable", "정답 생성용 ZOJ 채점 에이전트가 준비되지 않았습니다. 잠시 후 다시 요청하세요.", 503)
         options.update(reference_output_protocol=PROTOCOL, reference_revision=caps["runtime_revision"])
     if uses_judge:
         from .judge_bridge import compatible, capabilities
         compatible(doc, options, values.kind)
-        options["judge_revision"] = capabilities(user)["runtime_revision"]
+        options["judge_revision"] = (capabilities_snapshot if capabilities_snapshot is not None else capabilities(user))["runtime_revision"]
     if uses_reference:
         from .language_limits import effective_limits, exported_limits
         options["judging_policy"] = {"version":1, "time_limit_ms":doc["info"]["time_limit_ms"],
@@ -340,16 +340,23 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
     options["execution_transport"] = "archive" if archive_only else "agent"
     if options["execution_transport"] == "agent":
         from .judge_bridge import capabilities
-        execution = capabilities(user).get("execution", {})
+        execution = (capabilities_snapshot if capabilities_snapshot is not None else capabilities(user)).get("execution", {})
         if execution.get("protocol") != "editor-execute-v1" or execution.get("online_nodes", 0) < 1:
             fail("execution_agents_unavailable", "Editor 실행이 허용된 채점 에이전트가 준비되지 않았습니다. 관리자에게 문의하세요.", 503)
         options["execution_revision"] = execution["runtime_revision"]
     # Admission checks run before creating derived data. Keep source identity
     # intact; execution uses a canonical snapshot without changing its source.
+    # Match coordinator ordering before normalization can lock the Problem
+    # row while storing derived LF blobs. workspace() and network calls above
+    # must finish before acquiring this per-user admission lock.
+    from .folders import lock_user
+    lock_user(db, user)
     doc, newline_report = normalize_test_document(db, problem_id, doc)
     if newline_report["tests"]:
         options["newline_normalization"] = newline_report
     hash_value = document_hash(doc)
+    if folder_export_id is not None:
+        options["folder_export_id"] = folder_export_id
     if values.reuse and not options["force_prepare"]:
         cached = db.scalars(select(Job).where(Job.problem_id == problem_id, Job.document_hash == hash_value, Job.kind == values.kind, Job.status.in_(["queued", "running", "completed"]),
             ~select(JobDiscard.job_id).where(JobDiscard.job_id == Job.id, JobDiscard.user_id == user.id).exists()).order_by(Job.created_at.desc())).all()
@@ -364,7 +371,10 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
     row = Job(problem_id=problem_id, user_id=user.id, kind=values.kind, document=doc, document_hash=hash_value,
               workspace_version=wc.version if wc else values.version, revision=revision, options=options)
     db.add(row)
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     return job_json(row, requester=user)
 
 

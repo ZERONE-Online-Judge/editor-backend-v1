@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     max_uncompressed_archive_bytes: int = 16 * 1024 * 1024 * 1024
     max_upload_bytes: int = Field(default=MAX_FILE_BYTES, ge=1, le=MAX_FILE_BYTES)
     max_archive_bytes: int = Field(default=2 * 1024 * 1024 * 1024, ge=1)
+    folder_export_max_archive_bytes: int = Field(default=8 * 1024 ** 3, ge=1)
     zoj_api_url: str = ""
     zoj_public_origin: str = "https://zoj.kr"
     zoj_bridge_secret: SecretStr | None = None

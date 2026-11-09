@@ -358,6 +358,30 @@ split into bounded 512 MiB requests without dropping cases. This requires
 ZOJ API and judge agent 0.2.27 or later before updating Editor workers.
 Participant submission output limits are unchanged.
 
+### Folder package exports
+
+`POST /api/folders/{id}/package-exports` snapshots the selected folder's
+committed problem revisions, including descendants by default. Options are
+`export_format` (`zoj`, `editor`, `linux`), `verify` (default `true`), and
+`statement_language` (default `korean`). ZOJ exports include every testset and
+require that exact statement language. Private working copies are unchanged.
+
+The worker reuses compatible packages or coordinates existing package jobs,
+with at most two generated folder jobs per user. Verification uses ZOJ agents;
+`verify: false` archives stored data without executing source code. Source
+identity, format, verification, testsets, language, archive version, and actual
+agent revisions/protocols determine compatibility. Backend release changes
+alone do not invalidate these unchanged package builders.
+
+`GET /api/folder-package-exports/{id}` returns per-problem progress and errors;
+`GET /api/folders/{id}/package-exports` lists the requester's latest ten exports.
+The `/download` suffix returns one ZIP containing ready packages and a manifest
+with every problem, including failures. Snapshot revisions remain pinned after
+later commits or moves; folder access and each problem's package permission
+are checked again. Up to 500 problems and two active requests per user are
+allowed. `EDITOR_FOLDER_EXPORT_MAX_ARCHIVE_BYTES` caps total package bytes in
+a download (default 8 GiB); larger folders must be split for downloading.
+
 ### 입력 검사와 생성 결과 반영
 
 입력 검사는 판정과 확인한 입력만 기록하고 작업 사본을 변경하지 않습니다.

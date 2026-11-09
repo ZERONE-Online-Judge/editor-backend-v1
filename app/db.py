@@ -201,6 +201,24 @@ class Job(Base):
     finished_at: Mapped[int | None] = mapped_column(nullable=True)
 
 
+class FolderPackageExport(Base):
+    __tablename__ = "folder_package_exports"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=uid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    # Keep the request and its snapshot after a folder is deleted; access is
+    # checked against the live folder before scheduling or downloading.
+    folder_id: Mapped[str] = mapped_column(String(32), index=True)
+    folder_name: Mapped[str] = mapped_column(String(80))
+    include_descendants: Mapped[bool] = mapped_column(Boolean, default=True)
+    fingerprint: Mapped[str] = mapped_column(String(64), index=True)
+    options: Mapped[dict] = mapped_column(JSON)
+    items: Mapped[list] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(20), default="queued", index=True)
+    created_at: Mapped[int] = mapped_column(default=now)
+    last_coordinated_at: Mapped[int] = mapped_column(default=0)
+    finished_at: Mapped[int | None] = mapped_column(nullable=True)
+
+
 class JobApplication(Base):
     __tablename__ = "job_applications"
     job_id: Mapped[str] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), primary_key=True)
