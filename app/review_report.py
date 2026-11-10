@@ -8,7 +8,7 @@ from .db import Job, JobApplication, now
 from .domain import cautions, document_hash, expanded_tests
 from .statements import effective, translation_status
 from .storage import blob_path
-from .constraint_bounds import statement_bounds, validator_bounds
+from .constraint_comparison import compare_constraints
 from .job_errors import exception_message
 
 _CACHE = OrderedDict()
@@ -18,45 +18,33 @@ CATEGORIES = {'settings': '공통 설정', 'statements': '지문 · 번역', 'te
 
 
 def constraint_checks(doc, tests, add):
+    comparison, source, calls, validator_skipped, all_rows = compare_constraints(doc)
     validator = doc['files'].get(doc.get('validator'))
-    if not validator: return
-    try:
-        with blob_path(validator['sha256']).open('rb') as stream: raw = stream.read(262145)
-        if len(raw) > 262144:
-            add('CONSTRAINT_TOO_LARGE','info','constraints','Validator가 커서 제한 자동 비교를 생략했습니다.','validator','256KiB 이하 소스만 자동 비교합니다.')
-            return
-        raw_source = raw.decode('utf-8')
-    except (OSError, UnicodeError): return
-    source, calls, validator_skipped = validator_bounds(raw_source)
-    statements, statement_skipped = statement_bounds(doc)
     bounds = defaultdict(list)
-    declared = defaultdict(list)
     for call in calls: bounds[call.name].append(call)
-    for entry in statements: declared[entry.name].append(entry)
-    compared = 0
-    skipped = validator_skipped | statement_skipped
-    for name, entries in bounds.items():
-        expected = declared.get(name, [])
-        actual_ranges = {(e.low,e.high) for e in entries}
-        declared_ranges = {(e.low,e.high) for e in expected}
-        if name in skipped or len(actual_ranges)!=1 or len(declared_ranges)!=1:
-            if expected: skipped.add(name)
-            continue
-        call, statement = entries[0], expected[0]; compared += 1
-        if (call.low,call.high)!=(statement.low,statement.high):
-            add('CONSTRAINT_DIFFERENCE','warning','constraints',f'{name}의 지문·Validator 정수 범위가 일치하지 않습니다.','validator',
-                f'지문 {statement.low:,}…{statement.high:,} ({statement.location}: {statement.expression}) / '
-                f'{validator["name"]}:{call.location} {call.low:,}…{call.high:,} ({call.expression}). 이름이 일치하는 명시적 정수 범위를 비교한 결과입니다.')
-    skipped_text = f' 해석이 불확실하거나 조건·언어별로 다른 {len(skipped)}개 변수는 비교에서 제외했습니다.' if skipped else ''
-    add('CONSTRAINT_SCOPE','info','constraints',f'명시적 정수 범위 {compared}개를 비교했습니다.','validator',
-        'LaTeX 숫자 구분·거듭제곱·정수 사칙연산, 엄격 부등호와 Validator의 상수식을 해석합니다. '
-        '변수에 의존하는 식·조건부 제한은 불일치로 단정하지 않습니다.' + skipped_text)
+    for row in all_rows:
+        if row['status'] != 'difference': continue
+        statement, call = row['statement'][0], row['validator'][0]
+        add('CONSTRAINT_DIFFERENCE', 'warning', 'constraints', f"{row['name']}의 지문·Validator 정수 범위가 일치하지 않습니다.", 'validator',
+            f"지문 {int(statement['low']):,}…{int(statement['high']):,} ({statement['location']}: {statement['expression']}) / "
+            f"{validator['name']}:{call['location']} {int(call['low']):,}…{int(call['high']):,} ({call['expression']}). {row['reason']}")
+    if any(notice['code'] == 'validator_too_large' for notice in comparison['notices']):
+        add('CONSTRAINT_TOO_LARGE', 'info', 'constraints', 'Validator가 커서 제한 자동 비교를 생략했습니다.', 'validator', '256KiB 이하 소스만 자동 비교합니다.')
+    compared = comparison['counts']['compared']
+    add('CONSTRAINT_SCOPE', 'info', 'constraints', f'명시적 정수 범위 {compared}개를 비교했습니다.', 'validator',
+        '변수별 지문·Validator 범위와 비교 보류 이유는 제한 비교 상세에서 확인할 수 있습니다. 변수에 의존하는 식·조건부 제한은 불일치로 단정하지 않습니다.')
+    maximum_input_check(validator, source, calls, bounds, validator_skipped, tests, add)
+    return comparison
+
+
+def maximum_input_check(validator, source, calls, bounds, validator_skipped, tests, add):
     # A maximum-coverage claim requires a single unconditional first read directly
     # after registration. Otherwise the input prefix cannot identify the variable.
     first = re.search(r'\binf\.read\w+\s*\(', source)
     register = re.search(r'\bregisterValidation\s*\([^;]*\)\s*;', source)
     if not first or not register or not calls or first.start() != calls[0].start: return
     call = calls[0]
+    if call.vector: return
     if not re.fullmatch(r'\s*(?:(?:const\s+)?(?:int|long\s+long|auto)\s+\w+\s*=\s*)?', source[register.end():call.start]): return
     entries = bounds.get(call.name, [])
     if len(entries) != 1 or call.name in validator_skipped: return
@@ -100,7 +88,7 @@ def build(doc, jobs=()):
         from fastapi import HTTPException
         if not isinstance(error, HTTPException): raise
         add('INVALID_GENERATION_SCRIPT','error','tests','생성 스크립트를 해석할 수 없습니다.','tests',exception_message(error))
-    constraint_checks(doc, all_tests, add)
+    constraint_comparison = constraint_checks(doc, all_tests, add)
     for language, status in translation_status(doc).items():
         if status in {'stale','modified','unreviewed'}:
             label = {'stale':'기준 원문이 변경되었습니다.','modified':'검토 후 번역문이 변경되었습니다.','unreviewed':'번역 검토가 기록되지 않았습니다.'}[status]
@@ -131,7 +119,7 @@ def build(doc, jobs=()):
     if not package: add('PACKAGE_UNBUILT','recommendation','packages','현재 자료의 완료된 패키지가 없습니다.','packages')
     counts = {key:sum(i['severity']==key for i in items) for key in ['error','warning','recommendation','info']}
     return {'document_hash':document_hash(doc),'generated_at':now(),'categories':CATEGORIES,'counts':counts,'items':items,
-            'evidence_jobs':[j.id for j in jobs], 'method':'자료 규칙 · 저장된 실행 기록 · 명시적 정수 범위 비교. AI 호출 및 새 코드 실행 없음'}
+            'constraint_comparison':constraint_comparison, 'evidence_jobs':[j.id for j in jobs], 'method':'자료 규칙 · 저장된 실행 기록 · 명시적 정수 범위 비교. AI 호출 및 새 코드 실행 없음'}
 
 
 def report(db, problem_id, doc):
