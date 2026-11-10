@@ -67,6 +67,7 @@ class JobOptions(Strict):
     all_testsets: bool = False
     snapshot: Literal["working_copy", "committed"] | None = None
     temporary_solutions: list[TemporarySolution] = Field(default_factory=list, max_length=10)
+    single_verification: bool = False
     solutions: list[str] = Field(default_factory=list, max_length=200)
     test_indices: list[Annotated[int, Field(strict=True, ge=1, le=MAX_TESTS_PER_SET)]] = Field(default_factory=list, max_length=MAX_TESTS_PER_SET)
     generator: str = Field(default="", max_length=4096)
@@ -155,6 +156,11 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
     writer = editing(access) and (values.kind != "render" or has(access, "edit_statements"))
     translator_render = values.kind == "render" and has(access, "translate")
     options = values.options.model_dump()
+    if options["single_verification"]:
+        from .single_verification import validate_request
+        validate_request(values.kind, options)
+    else:
+        options.pop("single_verification")
     archive_only = values.kind == "package" and not options["verify"]
     if archive_only:
         # Do not reuse legacy jobs that ran generators or validators despite
@@ -607,9 +613,22 @@ def apply_prepared(problem_id: str, job_id: str, values: ApplyResults, user: Use
 
 @router.post("/{problem_id}/jobs/{job_id}/discard")
 def discard_prepared(problem_id: str, job_id: str, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
-    authorize(db, problem_id, user, permission="edit_tests")
+    authorize(db, problem_id, user)
     row = db.get(Job, job_id)
     if not row or row.problem_id != problem_id:
         fail("not_found", "실행 기록을 찾을 수 없습니다.", 404)
+    from .single_verification import is_single, discard_solution
+    if is_single(row):
+        return discard_solution(db, row, user)
     from .prepared_results import discard_prepared_results
     return discard_prepared_results(db, row, user)
+
+
+@router.post("/{problem_id}/jobs/{job_id}/solution/apply")
+def apply_single_solution(problem_id: str, job_id: str, values: ApplyResults, user: User = Depends(current_user), db: Session = Depends(session_dependency)):
+    authorize(db, problem_id, user, permission="edit_solutions")
+    row = db.get(Job, job_id)
+    if not row or row.problem_id != problem_id:
+        fail("not_found", "실행 기록을 찾을 수 없습니다.", 404)
+    from .single_verification import apply_solution
+    return apply_solution(db, row, user, values.version)
