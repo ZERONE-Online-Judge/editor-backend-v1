@@ -184,6 +184,9 @@ def test_backend_switch_keeps_live_api_and_pins_healthy_partner(deployment):
     kills = commands_of(deployment, 'kill')
     assert ['SIGUSR1', 'worker-blue'] == kills[0][-2:]
     assert ['SIGUSR2', 'worker-green'] == kills[-1][-2:]
+    runs = commands_of(deployment, 'run')
+    assert any('app.auth_preflight' in args for args in runs)
+    assert any('app.execution_preflight' in args for args in runs)
 
 
 @pytest.mark.parametrize('stage', ['build', 'schema', 'candidate'])
@@ -216,6 +219,16 @@ def test_frontend_switch_never_restarts_or_drains_worker(deployment):
     release = (deployment.root/'config/release.env').read_text()
     assert f'EDITOR_API_IMAGE=zoj-editor-api:{OLD}' in release
     assert 'EDITOR_WORKER_SERVICE=worker-blue' in release
+
+
+def test_frontend_only_skips_backend_dependencies_but_checks_schema(deployment):
+    result = deployment.run(component='frontend')
+    assert result.returncode == 0, result.stderr
+    runs = commands_of(deployment, 'run')
+    assert not any('app.execution_preflight' in args for args in runs)
+    assert not any('app.auth_preflight' in args for args in runs)
+    assert any('app.deployment' in args for args in runs)
+    assert any('python' in args and '-c' in args for args in runs)
 
 
 def test_failed_old_worker_drain_resumes_without_stopping_active_jobs(deployment):

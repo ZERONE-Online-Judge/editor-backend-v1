@@ -169,8 +169,12 @@ try:
 except Exception:
     raise SystemExit("Editor production environment is invalid; private values were not logged.")
 '
-"${compose[@]}" run --rm --no-deps "$api" python -m app.auth_preflight
-"${compose[@]}" run --rm --no-deps "$api" python -m app.execution_preflight
+if [[ $component == backend ]]; then
+    # The unchanged backend is already serving during a frontend-only release.
+    # Do not block a UI fix on an unavailable authentication or judging service.
+    "${compose[@]}" run --rm --no-deps "$api" python -m app.auth_preflight
+    "${compose[@]}" run --rm --no-deps "$api" python -m app.execution_preflight
+fi
 schema_plan=$("${compose[@]}" run --rm --no-deps "$api" python -m app.deployment)
 read -r schema_before schema_target schema_action <<< "$schema_plan"
 [[ $schema_before =~ ^[a-zA-Z0-9_]+$ && $schema_target =~ ^[a-zA-Z0-9_]+$ && ( $schema_action == current || $schema_action == upgrade ) ]]
