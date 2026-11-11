@@ -5,14 +5,34 @@ permissions:
   contents: read
 jobs:
   runner:
-    if: github.ref == 'refs/heads/integration/editor-v1' || github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch' && (github.ref == 'refs/heads/integration/editor-v1' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/editor-blue-green')
     runs-on: [self-hosted, zoj-editor, editor-backend]
     timeout-minutes: 5
     steps:
-      - name: Check the dedicated server without loading repository code
+      - name: Inspect fixed deployment metadata without loading repository code
+        shell: bash
         run: |
+          set -euo pipefail
           test "$(hostname)" = zoj-editor
           docker version --format '{{.Server.Version}}'
           docker compose version
           test -r /srv/zoj-editor/config/editor.env
           test -d /srv/editor-source/editor_backend_v1/.git
+          docker ps --filter label=com.docker.compose.project=zoj-editor --format '{{.Names}} {{.Image}} {{.Status}} {{.Ports}}'
+          for service in api worker frontend internal-gateway db api-blue api-green frontend-blue frontend-green worker-blue worker-green; do
+            for container in $(docker ps --filter label=com.docker.compose.project=zoj-editor --filter "label=com.docker.compose.service=$service" --format '{{.ID}}'); do
+              docker inspect --format '{{.Name}} image={{.Config.Image}} restart={{.RestartCount}} started={{.State.StartedAt}} networks={{json .NetworkSettings.Networks}} mounts={{json .Mounts}}' "$container"
+            done
+          done
+          docker stats --no-stream --format '{{.Name}} {{.MemUsage}} {{.CPUPerc}}'
+          free -h
+          df -h /srv/zoj-editor /srv/editor-source
+          grep -E '^(EDITOR_BIND_ADDRESS|EDITOR_HTTP_PORT|EDITOR_INGRESS_CIDR|EDITOR_WORKER_CONCURRENCY|EDITOR_JOB_TIMEOUT_SECONDS|EDITOR_STORAGE_ROOT)=' /srv/zoj-editor/config/editor.env || true
+          grep -E '^(EDITOR_(API_IMAGE|FRONTEND_IMAGE|RUNNER_IMAGE|RENDER_IMAGE|RUNTIME_REVISION|DEPLOY_MODE|ACTIVE_SLOT))=' /srv/zoj-editor/config/release.env
+          git -C /srv/editor-source/editor_backend_v1 rev-parse HEAD
+          git -C /srv/editor-source/editor_frontend_v1 rev-parse HEAD
+          database=$(docker ps --filter label=com.docker.compose.project=zoj-editor --filter label=com.docker.compose.service=db --format '{{.ID}}')
+          test -n "$database"
+          docker exec "$database" psql -XqAt -U editor -d editor -c 'SELECT version_num FROM alembic_version; SELECT status,count(*) FROM jobs GROUP BY status ORDER BY status;'
+          systemctl list-timers 'zoj-editor-backup*' --no-pager
+          systemctl show zoj-editor-backup.service -p ExecStart --no-pager
