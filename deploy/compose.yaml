@@ -28,6 +28,48 @@ x-environment: &environment
   EDITOR_ZOJ_API_URL: ${EDITOR_ZOJ_API_URL:-}
   EDITOR_ZOJ_BRIDGE_SECRET: ${EDITOR_ZOJ_BRIDGE_SECRET:-}
   EDITOR_ZOJ_CA_FILE: ${EDITOR_ZOJ_CA_FILE:-}
+x-api: &api
+  image: ${EDITOR_API_IMAGE:-zoj-editor-api:v1}
+  build: ..
+  restart: unless-stopped
+  environment: &api-environment
+    <<: *environment
+    EDITOR_RELEASE_SHA: ${EDITOR_BACKEND_SHA:-legacy}
+    EDITOR_ZOJ_PUBLIC_ORIGIN: ${EDITOR_ZOJ_PUBLIC_ORIGIN:-https://zoj.kr}
+  volumes: &data-volumes
+    - ${EDITOR_STORAGE_ROOT:-/srv/zoj-editor}/data:/data
+    - ${EDITOR_STORAGE_ROOT:-/srv/zoj-editor}/certs:/certs:ro
+  depends_on:
+    db:
+      condition: service_healthy
+  healthcheck: &api-health
+    test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"]
+    interval: 5s
+    timeout: 5s
+    retries: 12
+x-worker: &worker
+  restart: unless-stopped
+  command: [python, -m, app.worker]
+  volumes: *data-volumes
+  depends_on:
+    db:
+      condition: service_healthy
+  healthcheck:
+    test: [CMD, python, -c, "import time; from pathlib import Path; p=Path('/tmp/editor-worker-ready'); assert p.is_file() and time.time()-p.stat().st_mtime < 60"]
+    interval: 5s
+    timeout: 5s
+    retries: 12
+x-frontend: &slot-frontend
+  build:
+    context: ../../editor_frontend_v1
+    args:
+      EDITOR_FRONTEND_REVISION: ${EDITOR_FRONTEND_SHA:-legacy}
+  restart: unless-stopped
+  healthcheck:
+    test: [CMD, wget, -q, -O, /dev/null, http://127.0.0.1/healthz]
+    interval: 5s
+    timeout: 3s
+    retries: 12
 services:
   db:
     image: postgres:17-alpine
@@ -43,61 +85,84 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+  # Legacy services remain addressable during the one-time gateway migration.
+  # Explicit service selection works even when its profile is not enabled.
   api:
-    image: ${EDITOR_API_IMAGE:-zoj-editor-api:v1}
-    build: ..
-    restart: unless-stopped
+    <<: *api
+    profiles: [legacy]
+  worker:
+    <<: *worker
+    image: ${EDITOR_LEGACY_API_IMAGE:-zoj-editor-api:v1}
+    environment: *environment
+    profiles: [legacy]
+    healthcheck:
+      disable: true
+  api-blue:
+    <<: *api
+    image: ${EDITOR_BLUE_API_IMAGE:-zoj-editor-api:unconfigured}
+    environment:
+      <<: *api-environment
+      EDITOR_RELEASE_SHA: ${EDITOR_BLUE_BACKEND_SHA:-legacy}
+    profiles: [slots]
+  api-green:
+    <<: *api
+    image: ${EDITOR_GREEN_API_IMAGE:-zoj-editor-api:unconfigured}
+    environment:
+      <<: *api-environment
+      EDITOR_RELEASE_SHA: ${EDITOR_GREEN_BACKEND_SHA:-legacy}
+    profiles: [slots]
+  worker-blue:
+    <<: *worker
+    image: ${EDITOR_BLUE_WORKER_IMAGE:-zoj-editor-api:unconfigured}
     environment:
       <<: *environment
-      EDITOR_ZOJ_API_URL: ${EDITOR_ZOJ_API_URL:-}
-      EDITOR_ZOJ_PUBLIC_ORIGIN: ${EDITOR_ZOJ_PUBLIC_ORIGIN:-https://zoj.kr}
-      EDITOR_ZOJ_BRIDGE_SECRET: ${EDITOR_ZOJ_BRIDGE_SECRET:-}
-      EDITOR_ZOJ_CA_FILE: ${EDITOR_ZOJ_CA_FILE:-}
-    volumes:
-      - ${EDITOR_STORAGE_ROOT:-/srv/zoj-editor}/data:/data
-      - ${EDITOR_STORAGE_ROOT:-/srv/zoj-editor}/certs:/certs:ro
-    depends_on:
-      db:
-        condition: service_healthy
-    healthcheck:
-      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-  worker:
-    image: ${EDITOR_API_IMAGE:-zoj-editor-api:v1}
-    restart: unless-stopped
-    command: [python, -m, app.worker]
-    environment: *environment
-    volumes:
-      - ${EDITOR_STORAGE_ROOT:-/srv/zoj-editor}/data:/data
-      - ${EDITOR_STORAGE_ROOT:-/srv/zoj-editor}/certs:/certs:ro
-    depends_on:
-      db:
-        condition: service_healthy
+      EDITOR_WORKER_START_DRAINED: '1'
+    profiles: [slots]
+  worker-green:
+    <<: *worker
+    image: ${EDITOR_GREEN_WORKER_IMAGE:-zoj-editor-api:unconfigured}
+    environment:
+      <<: *environment
+      EDITOR_WORKER_START_DRAINED: '1'
+    profiles: [slots]
+  frontend-blue:
+    <<: *slot-frontend
+    image: ${EDITOR_BLUE_FRONTEND_IMAGE:-zoj-editor-frontend:unconfigured}
+    environment:
+      # Only the stable gateway has host ports and enforces the ingress ACL.
+      EDITOR_INGRESS_CIDR: 0.0.0.0/0
+      EDITOR_API_UPSTREAM: api-blue:8000
+      NGINX_ENVSUBST_FILTER: EDITOR_
+    profiles: [slots]
+  frontend-green:
+    <<: *slot-frontend
+    image: ${EDITOR_GREEN_FRONTEND_IMAGE:-zoj-editor-frontend:unconfigured}
+    environment:
+      EDITOR_INGRESS_CIDR: 0.0.0.0/0
+      EDITOR_API_UPSTREAM: api-green:8000
+      NGINX_ENVSUBST_FILTER: EDITOR_
+    profiles: [slots]
   frontend:
-    image: ${EDITOR_FRONTEND_IMAGE:-zoj-editor-frontend:v1}
-    build: ../../editor_frontend_v1
+    image: ${EDITOR_GATEWAY_IMAGE:-nginx:alpine}
     restart: unless-stopped
     environment:
       EDITOR_INGRESS_CIDR: ${EDITOR_INGRESS_CIDR:-127.0.0.1/32}
       NGINX_ENVSUBST_FILTER: EDITOR_
     ports:
       - ${EDITOR_BIND_ADDRESS:-127.0.0.1}:${EDITOR_HTTP_PORT:-8090}:80
-    depends_on:
-      api:
-        condition: service_healthy
+    volumes:
+      - ${EDITOR_STORAGE_ROOT:-/srv/zoj-editor}/config/gateway/public:/etc/nginx/templates:ro
+      # Mount the directory: atomic rename must be visible in the container.
+      - ${EDITOR_STORAGE_ROOT:-/srv/zoj-editor}/config/traffic:/etc/editor-traffic:ro
   internal-gateway:
-    image: nginx:alpine
+    image: ${EDITOR_GATEWAY_IMAGE:-nginx:alpine}
     restart: unless-stopped
     ports:
-      - 10.10.10.118:9443:443
+      - ${EDITOR_INTERNAL_BIND_ADDRESS:-10.10.10.118}:${EDITOR_INTERNAL_HTTPS_PORT:-9443}:443
     volumes:
-      - ./internal-tls.conf:/etc/nginx/conf.d/default.conf:ro
+      - ${EDITOR_STORAGE_ROOT:-/srv/zoj-editor}/config/gateway/internal:/etc/nginx/conf.d:ro
+      - ${EDITOR_STORAGE_ROOT:-/srv/zoj-editor}/config/traffic:/etc/editor-traffic:ro
       - ${EDITOR_STORAGE_ROOT:-/srv/zoj-editor}/tls:/tls:ro
-    depends_on:
-      api:
-        condition: service_healthy
   runtime:
     image: ${EDITOR_RUNNER_IMAGE:-zoj-editor-runtime:v1}
     build:

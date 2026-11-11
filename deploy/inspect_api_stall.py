@@ -38,7 +38,16 @@ def emit(value):
 
 
 def main():
-    result = command("docker", "ps", "-q", "--filter", "label=com.docker.compose.project=zoj-editor", "--filter", "label=com.docker.compose.service=api")
+    service = "api"
+    release = Path("/srv/zoj-editor/config/release.env")
+    if release.is_file():
+        slots = [line.partition("=")[2] for line in release.read_text().splitlines()
+                 if line.startswith("EDITOR_ACTIVE_SLOT=")]
+        if slots:
+            if len(slots) != 1 or slots[0] not in {"blue", "green"}:
+                raise RuntimeError("Invalid active Editor release slot")
+            service += "-" + slots[0]
+    result = command("docker", "ps", "-q", "--filter", "label=com.docker.compose.project=zoj-editor", "--filter", "label=com.docker.compose.service=" + service)
     containers = result.stdout.decode().split()
     if result.returncode or len(containers) != 1:
         emit({"probe_error": "expected_one_running_editor_api", "count": len(containers)})

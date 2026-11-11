@@ -1,0 +1,20 @@
+name: Roll back Editor release
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  rollback:
+    if: github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, zoj-editor, editor-backend]
+    environment: production
+    timeout-minutes: 90
+    concurrency:
+      group: editor-backend-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore the retained healthy release
+        run: bash deploy/rollback.sh

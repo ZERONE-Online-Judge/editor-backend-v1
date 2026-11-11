@@ -28,7 +28,7 @@ jobs:
           free -h
           df -h /srv/zoj-editor /srv/editor-source
           grep -E '^(EDITOR_BIND_ADDRESS|EDITOR_HTTP_PORT|EDITOR_INGRESS_CIDR|EDITOR_WORKER_CONCURRENCY|EDITOR_JOB_TIMEOUT_SECONDS|EDITOR_STORAGE_ROOT)=' /srv/zoj-editor/config/editor.env || true
-          grep -E '^(EDITOR_(API_IMAGE|FRONTEND_IMAGE|RUNNER_IMAGE|RENDER_IMAGE|RUNTIME_REVISION|DEPLOY_MODE|ACTIVE_SLOT))=' /srv/zoj-editor/config/release.env
+          grep -E '^(EDITOR_(API_IMAGE|FRONTEND_IMAGE|RUNNER_IMAGE|RENDER_IMAGE|RUNTIME_REVISION|DEPLOY_MODE|ACTIVE_SLOT|WORKER_SERVICE|SCHEMA_REVISION))=' /srv/zoj-editor/config/release.env
           git -C /srv/editor-source/editor_backend_v1 rev-parse HEAD
           git -C /srv/editor-source/editor_frontend_v1 rev-parse HEAD
           database=$(docker ps --filter label=com.docker.compose.project=zoj-editor --filter label=com.docker.compose.service=db --format '{{.ID}}')
@@ -36,3 +36,10 @@ jobs:
           docker exec "$database" psql -XqAt -U editor -d editor -c 'SELECT version_num FROM alembic_version; SELECT status,count(*) FROM jobs GROUP BY status ORDER BY status;'
           systemctl list-timers 'zoj-editor-backup*' --no-pager
           systemctl show zoj-editor-backup.service -p ExecStart --no-pager
+          python3 /usr/local/lib/zoj-editor-backup/editor_backup.py status
+          sha256sum /usr/local/lib/zoj-editor-backup/editor_backup.py
+          for service in worker-blue worker-green; do
+            for container in $(docker ps --filter label=com.docker.compose.project=zoj-editor --filter "label=com.docker.compose.service=$service" --format '{{.ID}}'); do
+              docker exec "$container" python -c 'import json,time; from pathlib import Path; p=Path("/tmp/editor-worker-ready"); print(json.dumps({"ready":p.is_file() and time.time()-p.stat().st_mtime<60,"drained":Path("/tmp/editor-worker-drained").is_file(),"activated":Path("/tmp/editor-worker-activated").is_file()}))'
+            done
+          done

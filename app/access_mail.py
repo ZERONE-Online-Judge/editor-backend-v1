@@ -81,13 +81,24 @@ def dispatch_one():
     return True
 
 
-def run(stop_event):
+def run(stop_event, drain_event=None, idle_event=None):
+    if idle_event is not None:
+        idle_event.set()
     while not stop_event.is_set():
         try:
-            if dispatch_one():
-                continue
+            if drain_event is None or not drain_event.is_set():
+                if idle_event is not None:
+                    idle_event.clear()
+                # A drain can arrive between the first check and clearing idle.
+                # Recheck before starting a database transaction or relay call.
+                if not stop_event.is_set() and (drain_event is None or not drain_event.is_set()):
+                    if dispatch_one():
+                        continue
         except Exception:
             logger.error("Access notification worker failed; retrying")
+        finally:
+            if idle_event is not None:
+                idle_event.set()
         stop_event.wait(1)
 
 

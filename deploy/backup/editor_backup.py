@@ -161,6 +161,15 @@ class Backup:
         return json.loads(self.restic("snapshots", "--tag", TAG, "--json"))
 
     def db_container(self, service="db"):
+        if service == "api":
+            release = self.root / "config" / "release.env"
+            if release.is_file():
+                slots = [line.partition("=")[2] for line in release.read_text().splitlines()
+                         if line.startswith("EDITOR_ACTIVE_SLOT=")]
+                if slots:
+                    if len(slots) != 1 or slots[0] not in {"blue", "green"}:
+                        raise RuntimeError("Invalid active Editor release slot")
+                    service = "api-" + slots[0]
         rows = run(["docker", "ps", "--filter", "label=com.docker.compose.project=zoj-editor",
                     "--filter", f"label=com.docker.compose.service={service}", "--format", "{{.ID}}"]).decode().split()
         if len(rows) != 1:

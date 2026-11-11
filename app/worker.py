@@ -1,11 +1,12 @@
 import copy
 import logging
+import os
 import signal
 import threading
 import time
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, select, text, update
 from .config import get_settings
 from .db import Access, Base, Job, LoginCode, LoginSession, RateLimit, SessionLocal, User, engine, now, uid
 from .pipeline import Pipeline
@@ -16,6 +17,10 @@ logger = logging.getLogger("editor.worker")
 stop_event = threading.Event()
 drain_event = threading.Event()
 DRAIN_MARKER = Path("/tmp/editor-worker-drained")
+READY_MARKER = Path("/tmp/editor-worker-ready")
+# Activation intent survives an automatic restart of the same container.
+# Recreating a candidate container deliberately starts with a fresh layer.
+ACTIVATED_MARKER = Path("/tmp/editor-worker-activated")
 
 
 class Cancelled(RuntimeError):
@@ -129,37 +134,61 @@ def maintenance():
 
 def main():
     logging.basicConfig(level=logging.INFO)
+    DRAIN_MARKER.unlink(missing_ok=True)
+    READY_MARKER.unlink(missing_ok=True)
+    if os.environ.get("EDITOR_WORKER_START_DRAINED") == "1" and not ACTIVATED_MARKER.is_file():
+        drain_event.set()
     if get_settings().env != "production":
         Base.metadata.create_all(engine)
     for sig in [signal.SIGTERM, signal.SIGINT]:
         signal.signal(sig, lambda *_: stop_event.set())
     signal.signal(signal.SIGUSR1, lambda *_: drain_event.set())
-    DRAIN_MARKER.unlink(missing_ok=True)
+    def resume(*_):
+        ACTIVATED_MARKER.touch()
+        drain_event.clear()
+        DRAIN_MARKER.unlink(missing_ok=True)
+    signal.signal(signal.SIGUSR2, resume)
+    # A candidate worker can prove connectivity without performing cleanup or
+    # claiming durable work before its deployment becomes active.
+    with engine.connect() as connection:
+        connection.execute(text("SELECT 1"))
     from .access_mail import run as run_access_mail
     # Mail delivery has its own thread and never consumes a judging worker slot.
-    mail_thread = threading.Thread(target=run_access_mail, args=(stop_event,), daemon=True)
+    mail_idle = threading.Event()
+    mail_idle.set()
+    mail_thread = threading.Thread(target=run_access_mail, args=(stop_event, drain_event, mail_idle), daemon=True)
     mail_thread.start()
     from .folder_package_exports import coordinator_idle, run_coordinator
     export_thread = threading.Thread(target=run_coordinator, args=(stop_event, drain_event), daemon=True)
     export_thread.start()
-    with ThreadPoolExecutor(max_workers=get_settings().worker_concurrency) as pool:
-        futures = set()
-        last_maintenance = 0
-        while not stop_event.is_set():
-            futures = {f for f in futures if not f.done()}
-            if drain_event.is_set() and not futures and coordinator_idle.is_set():
-                DRAIN_MARKER.touch()
-            if time.monotonic() - last_maintenance > 30:
-                maintenance()
-                last_maintenance = time.monotonic()
-            if not drain_event.is_set() and len(futures) < get_settings().worker_concurrency:
-                row = claim_job()
-                if row:
-                    futures.add(pool.submit(process_job, row))
-                    continue
-            stop_event.wait(0.5)
-    mail_thread.join(timeout=20)
-    export_thread.join(timeout=5)
+    try:
+        with ThreadPoolExecutor(max_workers=get_settings().worker_concurrency) as pool:
+            futures = set()
+            last_maintenance = None
+            while not stop_event.is_set():
+                futures = {f for f in futures if not f.done()}
+                if drain_event.is_set() and not futures and coordinator_idle.is_set() and mail_idle.is_set():
+                    DRAIN_MARKER.touch()
+                # A resume signal can interrupt the preceding touch. Never leave
+                # a stale drained marker on an active worker.
+                if not drain_event.is_set():
+                    DRAIN_MARKER.unlink(missing_ok=True)
+                    if last_maintenance is None or time.monotonic() - last_maintenance > 30:
+                        maintenance()
+                        last_maintenance = time.monotonic()
+                READY_MARKER.touch()
+                if not drain_event.is_set() and len(futures) < get_settings().worker_concurrency:
+                    row = claim_job()
+                    if row:
+                        futures.add(pool.submit(process_job, row))
+                        continue
+                stop_event.wait(0.5)
+    finally:
+        stop_event.set()
+        mail_thread.join(timeout=20)
+        export_thread.join(timeout=5)
+        READY_MARKER.unlink(missing_ok=True)
+        DRAIN_MARKER.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

@@ -41,10 +41,12 @@ async def response_headers(request: Request, call_next):
 
 @app.get("/api/health")
 def health():
+    import os
     from sqlalchemy import text
     with engine.connect() as conn:
         conn.execute(text("SELECT 1"))
-    return {"status": "ok", "service": "editor", "environment": get_settings().env}
+    return {"status": "ok", "service": "editor", "environment": get_settings().env,
+            "release": os.environ.get("EDITOR_RELEASE_SHA", "legacy")}
 
 
 app.include_router(auth.router)

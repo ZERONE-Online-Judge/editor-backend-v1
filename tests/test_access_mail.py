@@ -139,6 +139,82 @@ def test_two_workers_do_not_send_the_same_event_while_lease_is_active(owner, cli
     assert not worker.is_alive() and rows()[0].attempts == 1
 
 
+def test_drained_dispatcher_preserves_pending_mail_until_resume(owner, clients, problem, monkeypatch):
+    clients('member')
+    owner.put(f'/api/problems/{problem}/accesses', json={'login':'member','permissions':[]})
+    stop, drain, idle = Event(), Event(), Event()
+    drain.set()
+    sent = []
+    def send(email, payload):
+        assert not drain.is_set() and not idle.is_set()
+        sent.append(payload['event_id'])
+        return 'receipt'
+    monkeypatch.setattr(mail_relay, 'send_access', send)
+    def wait(_):
+        assert idle.is_set()
+        if drain.is_set():
+            assert not sent and rows()[0].status == 'pending'
+            drain.clear()
+        else:
+            assert len(sent) == 1 and rows()[0].status == 'queued'
+            stop.set()
+    monkeypatch.setattr(stop, 'wait', wait)
+    access_mail.run(stop, drain, idle)
+    assert idle.is_set() and len(sent) == 1
+
+
+def test_drain_waits_for_inflight_mail_and_leaves_next_event_pending(owner, clients, problem, monkeypatch):
+    for handle in ('first', 'second'):
+        clients(handle)
+        owner.put(f'/api/problems/{problem}/accesses', json={'login':handle,'permissions':[]})
+    stop, drain, idle, started, release, parked = (Event() for _ in range(6))
+    sent = []
+    def send(email, payload):
+        sent.append(payload['event_id'])
+        started.set()
+        assert release.wait(5)
+        return 'receipt'
+    monkeypatch.setattr(mail_relay, 'send_access', send)
+    original_wait = stop.wait
+    def wait(timeout):
+        if drain.is_set():
+            parked.set()
+        return original_wait(min(timeout, 0.01))
+    monkeypatch.setattr(stop, 'wait', wait)
+    dispatcher = Thread(target=access_mail.run, args=(stop, drain, idle))
+    dispatcher.start()
+    try:
+        assert started.wait(5)
+        drain.set()
+        assert not idle.is_set()
+        release.set()
+        assert parked.wait(5)
+        assert idle.is_set() and len(sent) == 1
+        assert sorted(row.status for row in rows()) == ['pending', 'queued']
+    finally:
+        stop.set()
+        release.set()
+        dispatcher.join(5)
+    assert not dispatcher.is_alive()
+
+
+def test_drain_between_idle_check_and_dispatch_prevents_mail(monkeypatch):
+    stop, drain, idle = Event(), Event(), Event()
+    original_clear = idle.clear
+    def clear():
+        original_clear()
+        drain.set()
+    monkeypatch.setattr(idle, 'clear', clear)
+    def unexpected_dispatch():
+        raise AssertionError('Drain must be rechecked before opening a relay transaction')
+    monkeypatch.setattr(access_mail, 'dispatch_one', unexpected_dispatch)
+    def wait(_):
+        assert idle.is_set()
+        stop.set()
+    monkeypatch.setattr(stop, 'wait', wait)
+    access_mail.run(stop, drain, idle)
+
+
 def test_expired_invitation_is_cancelled_and_a_new_invite_notifies_again(owner, monkeypatch):
     space = shared(owner)
     endpoint = f'/api/shared-folders/{space}/invitations'

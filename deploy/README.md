@@ -32,24 +32,92 @@ Docker·Compose·전용 `editor-runner` 계정과 서비스를 설치합니다. 
 설정하세요. 내부 HTTPS 연결은 `EDITOR_AUTH_CA_FILE`로 공개 CA 인증서를
 검증합니다. SMTP 비밀번호를 Editor에 복사하지 않습니다. ZOJ 메일 작업자는
 기존 설정을 유지합니다. [공통 로그인](../docs/shared-login.md)을 확인하세요.
-배포는 중앙 인증 API의 서명·TLS·호환성을 먼저 확인하고, 성공한 뒤에만
-기존 API·워커를 멈춥니다. ZOJ 인증 API를 먼저 배포해야 합니다.
+배포는 중앙 인증 API의 서명·TLS·호환성을 먼저 확인합니다. 기존 API는
+새 버전의 상태 확인과 트래픽 전환 중에도 계속 실행합니다. ZOJ 인증 API를
+먼저 배포해야 합니다.
 
-서버의 `flock`은 양쪽 러너 배포를 직렬화합니다. 오래된 이벤트는 최신
-`main`과 비교해 건너뜁니다. 이미지는 커밋 SHA로 구분합니다. 기존 워커는
-새 작업을 받지 않고 실행 중 작업을 마친 뒤 종료하므로 대기열을 유지합니다.
-DB 마이그레이션 전에 쓰기를 멈추고 private `pg_dump` 백업을 보관합니다.
-마이그레이션·상태 확인 실패는 자동으로 DB를 덮어쓰지 않고 실패로 표시합니다.
+## Blue/green 배포와 복구
 
-정상 릴리스 이미지 목록은 `/srv/zoj-editor/config/release.env`에 기록합니다.
-장애 복구에서는 해당 파일의 이전 이미지와 백업을 확인하고 수동으로
-복구합니다. DB 스키마의 역호환성을 확인하기 전 이전 이미지를 무작정
-재시작하지 마세요. 정상 배포의 수동 점검 명령:
+양쪽 저장소의 배포와 정기 백업은 같은
+`/srv/zoj-editor/config/deploy.lock`을 사용합니다. 배포 이벤트의 정확한
+테스트 완료 SHA만 변경하고, 상대 저장소는 `release.env`의 마지막 정상
+SHA를 유지합니다. 최신 `main`보다 오래된 이벤트는 건너뜁니다. 프런트엔드
+배포도 운영 백엔드 SHA의 공통 `deploy-main.sh`로 위임합니다.
+
+- `db`와 `/srv/zoj-editor/data`는 두 슬롯이 공유합니다.
+- `api-blue/green`, `frontend-blue/green`은 호스트 포트를 열지 않습니다.
+- 안정적인 `frontend` 게이트웨이가 기존 8090 바인딩·신뢰 프록시 ACL을
+  유지하고, `internal-gateway`가 기존 9443 TLS·내부망 ACL을 유지합니다.
+- API/화면 후보의 DB·인증·실행 노드·정확한 릴리스 SHA를 확인한 뒤
+  `traffic/active.conf`를 원자적으로 교체하고 두 Nginx를 reload합니다.
+  공개 HTTPS와 내부 게이트웨이가 모두 후보 SHA를 반환해야 성공합니다.
+- 트래픽 파일과 게이트웨이 템플릿은 **디렉터리**로 마운트합니다. Git
+  checkout이나 원자적 파일 교체 때문에 이전 inode를 계속 읽지 않습니다.
+  설정 변경도 스냅샷·재렌더·검사·reload하며 실패하면 원래 파일을 복구합니다.
+- 이전 슬롯은 계속 실행합니다. 이전 Nginx 연결이 모두 끝나기 전에는 그
+  슬롯을 다음 후보로 재생성하지 않습니다. `/assets/`의 404만 이전 화면
+  슬롯으로 fallback하므로 기존 탭의 이전 JS 청크도 한 릴리스 동안 유지합니다.
+
+워커 슬롯은 화면/API 색상과 독립적으로 선택합니다. 화면만 배포하면
+워커는 재시작하거나 drain하지 않습니다. 백엔드 배포는 새 워커를 paused
+상태로 준비하고, 기존 작업·폴더 내보내기·메일 전송의 완료를 기다립니다.
+이전 워커를 완전히 멈춘 뒤, 새 경로의 상태 검증에 성공하면 새 워커를
+`SIGUSR2`로 활성화합니다. 큐나 작업 상태를 재설정하지 않습니다.
+`SIGUSR1`은 drain, `SIGUSR2`는 재개이며, `/tmp/editor-worker-ready`와
+`/tmp/editor-worker-drained`가 상태를 나타냅니다. 활성화 토큰은 컨테이너
+재시작에도 유지됩니다. 수동으로 활성 워커를 **재생성**한 경우 새 컨테이너는
+paused이므로 경로·다른 워커 중지 여부를 확인한 뒤 `SIGUSR2`가 필요합니다.
+
+공유 DB의 현재 revision이 같으면 마이그레이션을 실행하지 않습니다.
+새 revision은 `app/deployment.py`에 정확한 파일 SHA256과 함께 온라인
+호환성이 검토된 경우에만 적용합니다. 기존 API·워커와 호환되는 additive
+변경만 허용하며, 변경 전에 private `pg_dump`를 남깁니다. 파괴적 변경은
+별도 점검 시간 배포가 필요합니다. 자동 DB downgrade나 백업 덮어쓰기는
+하지 않습니다. 스키마가 이전 이미지와 다르면 수동 rollback도 거부합니다.
+
+경로·워커 활성화 검증에 실패하면 원래 게이트웨이 설정·경로·두 릴리스
+메타데이터·소스 checkout을 복원합니다. 활성 후보 작업은 먼저 끝내고
+이전 워커를 재개합니다. 복구 자체가 실패하면 `config/recovery-required`로
+이후 배포를 막습니다. 파일을 지우기 전에 실제 경로, DB 호환성, 양쪽 워커와
+작업을 확인하고 하나의 소비자만 동작하도록 운영자가 복구해야 합니다.
+구버전 워커의 drain 시간 초과도 실행 중 작업을 강제로 중단하지 않습니다.
+안전하게 완료될 때까지 다시 기다린 뒤 재시작하며, 완료할 수 없으면 복구
+표시를 남깁니다.
+
+`release.env`는 기존 이미지 키를 유지하고 활성 슬롯·워커·두 색상의 이미지와
+스키마 revision을 추가합니다. `release.previous.env`는 이전 정상 릴리스입니다.
+GitHub Actions의 **Roll back Editor release** 수동 작업이나 다음 명령으로
+두 정상 blue/green 슬롯 사이를 되돌립니다. 재실행하면 직전
+버전으로 다시 전환할 수 있습니다. 보관된 이미지와 컨테이너를 삭제하지 마세요.
+GitHub에 접속할 수 없어도 로컬 메타데이터로 복구합니다.
 
 ```sh
-docker compose --env-file /srv/zoj-editor/config/editor.env \
-  --env-file /srv/zoj-editor/config/release.env -f compose.yaml ps
+bash deploy/rollback.sh
+
+docker compose --project-name zoj-editor \
+  --env-file /srv/zoj-editor/config/editor.env \
+  --env-file /srv/zoj-editor/config/release.env -f deploy/compose.yaml ps
 ```
+
+최초 전환은 기존 정상 배포가 필요합니다. 먼저 `/healthz`, `/release.txt`,
+`EDITOR_API_UPSTREAM`을 지원하는 테스트 완료 프런트엔드를 기존 배포 방식으로
+배포하고, 그 SHA를 유지한 채 백엔드를 blue/green으로 전환합니다. 기존 API는
+계속 실행하며 게이트웨이의 포트 소유권을 옮기는 첫 1회에만 짧은 재생성이
+있습니다. 이 단계 실패 시 저장된 `config/legacy` Compose와 정확한 구버전
+이미지로 복원합니다. 첫 성공 후의 수동 rollback은 정상 blue/green 슬롯이
+두 개 생긴 다음 사용합니다. 기존 `api` 컨테이너는 이 전환 동안
+복구용으로 유지하며, 두 blue/green 릴리스와 수동 복구 검증이 끝난 뒤에만
+중지할 수 있습니다. 실행 중인 작업이 있는 워커를 정리하지 않습니다.
+
+설치된 `/usr/local/lib/zoj-editor-backup/editor_backup.py`도 첫 전환 전에
+고정된 관리 경로에서 원자적으로 갱신합니다. 백업·장애 점검·채점 점검 도구는
+`release.env`의 활성 API/워커를 선택하며 기존 단일 서비스도 지원합니다.
+
+로컬 검증은 `pytest -q tests/test_deployment.py tests/test_worker.py`와
+`pytest -q tests/test_access_mail.py tests/test_backup.py`이며, 실제 Nginx·Docker 검증은
+`bash deploy/tests/blue-green-smoke.sh`입니다. 스모크는 별도 프로젝트·격리된
+네트워크에서 ACL·TLS·후보 SHA·상태 실패 복구·연속 HTTP·오래 걸리는 응답의
+완료·이전 청크 fallback을 검사하고 리소스를 제거합니다.
 
 기존 ZOJ 서버에 이 구성을 적용하지 않습니다. 새 Linux VM에 두 저장소를
 아래 디렉터리명으로 배치하고 Docker Compose를 설치합니다.
@@ -59,43 +127,16 @@ docker compose --env-file /srv/zoj-editor/config/editor.env \
 /srv/editor-source/editor_frontend_v1
 ```
 
-## 최초 준비
+## 서버 준비
 
-백엔드의 `deploy` 디렉터리에서 실행합니다.
-
-```sh
-cp .env.example .env
-chmod 600 .env
-openssl rand -hex 32
-stat -c '%g' /var/run/docker.sock
-```
-
-출력한 무작위 값을 `EDITOR_SESSION_SECRET`에, Docker 소켓 그룹 번호를
-`EDITOR_DOCKER_GID`에 넣습니다. DB 비밀번호는 무작위 영문·숫자로
-지정합니다. ZOJ 공통 인증 API 주소와 전용 인증 연결 키를 입력합니다.
-키와 비밀번호는 Git에 넣지 않습니다.
-
-별도 리버스 프록시를 사용할 경우 `EDITOR_BIND_ADDRESS`는 새 VM의 사설
-주소, `EDITOR_INGRESS_CIDR`은 해당 프록시의 정확한 IP/32로 설정합니다.
-프록시 외의 주소에서 8090 포트로 들어오지 않도록 서버 방화벽을 설정합니다.
-같은 VM의 프록시를 사용하면 기본 loopback 바인딩을 유지합니다.
-
-```sh
-sudo install -d -m 0750 -o 1000 -g 1000 /srv/zoj-editor/data
-sudo install -d -m 0750 /srv/zoj-editor/postgres
-docker compose --profile images build
-docker compose up -d db
-docker compose run --rm api alembic upgrade head
-docker compose up -d api worker frontend
-docker compose ps
-```
-
-런타임과 렌더러는 이미지 빌드용 서비스입니다. 상시 실행하지 않습니다.
-`editor.zoj.kr` DNS와 HTTPS는 새 서비스의 프록시로 연결합니다.
-[reverse-proxy.conf.example](reverse-proxy.conf.example)의 새 VM 주소를
-교체하고 기존 TLS 가상 호스트에 반영합니다. 프런트엔드는 API와 DB의
-공개 포트를 만들지 않습니다. 배포 후 실제 이메일 로그인과 테스트 검증을
-진행해야 운영 연결까지 완료됩니다.
+이 Compose는 기존 Editor 서버의 blue/green 전환과 이후 배포용입니다.
+새 서버는 DB·데이터·TLS·비공개 환경과 기존 정상 릴리스 메타데이터를 먼저
+준비한 뒤 위 최초 전환 절차를 따릅니다. `.env.example`을 참고하여 설정을
+Git 밖 `/srv/zoj-editor/config/editor.env`에 mode 600으로 보관합니다.
+DB 비밀번호와 세션 키는 무작위 값이어야 하며 중앙 인증 연결 키·CA 파일이
+필요합니다. 프록시 외 주소에서 8090에 접근하지 못하도록 호스트 방화벽도
+유지합니다. `EDITOR_INGRESS_CIDR`은 신뢰 프록시의 정확한 주소 범위이며
+운영 게이트웨이에 `0.0.0.0/0`을 지정하지 않습니다.
 
 ## 실행 자원과 데이터
 
@@ -131,25 +172,12 @@ API/워커를 재생성합니다. 동일 자료의 이전 환경 검증 결과�
 Editor 전용 300 GiB 디스크의 정기 백업·암호화·보관 정책·실제 복구 검사는
 [자동 백업 운영 안내](../docs/backups.md)를 따릅니다. 설치는
 `deploy/backup/install.sh`로 진행하며, 저장된 미커밋 작업 사본도 포함합니다.
-아래 수동 백업은 자동 백업 구성을 대신하지 않습니다.
+백업의 보관·복구 검증도 배포와 별도로 유지합니다.
 
-```sh
-docker compose --profile images build
-docker compose stop worker
-docker compose run --rm api alembic upgrade head
-docker compose up -d --force-recreate api worker frontend
-docker compose logs --tail=100 worker
-```
-
-백업 시 API/워커 쓰기를 잠시 중단하고 DB와 `/data`를 함께 백업합니다.
-DB만 복원하면 파일 참조가 끊어집니다.
-
-```sh
-docker compose stop api worker
-docker compose exec -T db pg_dump -U editor -d editor -Fc > editor-db.dump
-sudo tar -C /srv/zoj-editor -czf editor-data.tar.gz data
-docker compose start api worker
-```
+업데이트는 검증된 `main` 워크플로를 사용합니다. 수동 `compose stop api
+worker`나 공통 스택의 일괄 재생성은 blue/green 배포 경로를 우회하므로 사용하지
+않습니다. 백업은 DB와 `/data`를 함께 보관해야 하며 DB만 복원하면 파일 참조가
+끊어집니다. 자동 백업은 동일한 DB 스냅샷과 파일 참조 검증을 사용합니다.
 
 백업 파일에는 비공개 문제·해설·테스트가 있으므로 접근을 제한합니다.
 현재 문제 휴지통은 복구 가능한 soft delete입니다. 리비전과 검증 기록은
