@@ -43,3 +43,20 @@ jobs:
               docker exec "$container" python -c 'import json,time; from pathlib import Path; p=Path("/tmp/editor-worker-ready"); print(json.dumps({"ready":p.is_file() and time.time()-p.stat().st_mtime<60,"drained":Path("/tmp/editor-worker-drained").is_file(),"activated":Path("/tmp/editor-worker-activated").is_file()}))'
             done
           done
+          gateway=$(docker ps --filter label=com.docker.compose.project=zoj-editor --filter label=com.docker.compose.service=internal-gateway --format '{{.ID}}')
+          test -n "$gateway"
+          certificate=$(docker exec "$gateway" cat /tls/server.crt)
+          endpoint=$(docker port "$gateway" 443/tcp)
+          expected=$(sed -n 's/^EDITOR_API_IMAGE=zoj-editor-api://p' /srv/zoj-editor/config/release.env)
+          python3 - "$endpoint" "$certificate" "$expected" <<'PY'
+          import json, ssl, sys, urllib.request
+          endpoint, certificate, expected = sys.argv[1:]
+          context = ssl.create_default_context(cadata=certificate)
+          context.verify_flags |= ssl.VERIFY_X509_PARTIAL_CHAIN
+          with urllib.request.urlopen('https://' + endpoint + '/api/health', context=context, timeout=10) as response:
+              data = json.load(response)
+              assert data['status'] == 'ok'
+              if 'release' in data:
+                  assert data['release'] == expected
+              print(json.dumps({'internal_tls': 'verified', 'endpoint': endpoint, 'release': data.get('release', 'legacy')}))
+          PY
