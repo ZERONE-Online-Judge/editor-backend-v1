@@ -5,8 +5,10 @@ umask 077
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 component=${1:?backend, frontend or rollback}
 event_sha=${2:-}
+paired_frontend_sha=${3:-}
 [[ $component == backend || $component == frontend || $component == rollback ]] || exit 2
 [[ $component == rollback || $event_sha =~ ^[a-f0-9]{40}$ ]] || exit 2
+[[ -z $paired_frontend_sha || ( $component == backend && $paired_frontend_sha =~ ^[a-f0-9]{40}$ ) ]] || exit 2
 root=${EDITOR_DEPLOY_ROOT:-/srv/zoj-editor}
 source_root=${EDITOR_SOURCE_ROOT:-/srv/editor-source}
 env_file="$root/config/editor.env"
@@ -59,11 +61,16 @@ if [[ $component != rollback ]]; then
         echo 'Skip a superseded deployment; a newer main commit exists.'
         exit 0
     fi
+    if [[ -n $paired_frontend_sha && $(git -C "$frontend_repo" rev-parse origin/main) != "$paired_frontend_sha" ]]; then
+        echo 'Skip a superseded paired frontend release.'
+        exit 0
+    fi
 fi
 backend_sha=$old_backend_sha
 frontend_sha=$old_frontend_sha
 [[ $component != backend ]] || backend_sha=$event_sha
 [[ $component != frontend ]] || frontend_sha=$event_sha
+[[ -z $paired_frontend_sha ]] || frontend_sha=$paired_frontend_sha
 # Save the known healthy metadata before changing checkouts or runtime state.
 previous=$(mktemp "$root/config/release.pending.XXXXXX")
 cp "$release_file" "$previous"

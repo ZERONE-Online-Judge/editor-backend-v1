@@ -199,3 +199,17 @@ ZOJ 백엔드의 제작 큐·정답 생성 프로토콜과 agent 0.3.1의 실행
 실행 이미지는 채점 VM에서 빌드하며 Editor 운영 배포는 API/화면만 빌드합니다.
 명시적인 오프라인 재현·Docker 회귀 테스트만 자체 실행기를 사용합니다.
 서비스의 작업 생성과 워커는 개발 설정에서도 ZOJ 에이전트를 강제합니다.
+
+## Paired frontend and backend releases
+
+For a coordinated release, run Editor Frontend CI manually on its current
+`main` SHA. Manual frontend runs perform all build, test and container checks
+without deploying. After that run succeeds, dispatch Editor Backend CI on
+`main` with its exact `frontend_sha` and `frontend_ci_run`.
+
+The backend workflow verifies the frontend repository, workflow, branch,
+commit and successful build, then runs its complete backend checks. The
+coordinator selects both tested commits in one cutover, retaining the normal
+deployment lock, connection drain, worker handoff, health checks and rollback.
+If either main branch has moved, the superseded release is skipped. Ordinary
+push deployments continue to update one component at a time.
