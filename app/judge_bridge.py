@@ -237,9 +237,10 @@ def run_batch(pipeline, user, name, set_name, tests, attempt, cancellation):
         last_progress = None
         while run["status"] in ACTIVE:
             check()
-            progress = (run["status"], run["progress_current"], run["progress_total"])
+            progress = (run["status"], run["progress_current"], run["progress_total"], run.get("progress_phase"))
             if progress != last_progress:
-                pipeline.event(f"ZOJ 채점 · {name} / {set_name} · {run['progress_current']}/{run['progress_total']}", node=run.get("node_name"), judge_run_id=run_id)
+                phase = "시간 초과 재확인 중" if run.get("progress_phase") == "tle_confirmation" else "ZOJ 채점"
+                pipeline.event(f"{phase} · {name} / {set_name} · {run['progress_current']}/{run['progress_total']}", node=run.get("node_name"), judge_run_id=run_id)
                 last_progress = progress
             if getattr(pipeline, "verification", None):
                 pipeline.verification.batch(name, set_name, observed_cases(pipeline, user, set_name, tests, run))

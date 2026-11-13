@@ -251,3 +251,20 @@ def test_mixed_solution_and_checker_errors_keep_both_actions(problem, tmp_path):
     assert detail['unsupported_checker']['name'] == 'check.cpp'
     assert detail['unsupported_solutions'][0]['name'] == 'main.cpp'
     assert 'Checker 파일 언어 설정' in detail['guidance'] and '풀이 언어 설정' in detail['guidance']
+
+
+def test_retry_phase_is_published_even_when_test_counts_do_not_change(problem, tmp_path, monkeypatch, clock):
+    p = fixture_data(problem, tmp_path)
+    events = []
+    p.event = lambda label, **extra: events.append(label)
+    initial = record('judging')
+    initial.update(progress_current=1, progress_total=3)
+    retry = {**initial, 'progress_phase': 'tle_confirmation'}
+    updates = iter([initial, retry, retry, initial, record()])
+    monkeypatch.setattr(bridge, 'remote', lambda *args, **kwargs: next(updates))
+    result = bridge.run_batch(p, object(), 'main.cpp', 'tests', p.result['testsets']['tests'], 0, threading.Event())
+    assert result['status'] == 'accepted'
+    assert events == ['ZOJ 채점 · main.cpp / tests · 1/3',
+                      '시간 초과 재확인 중 · main.cpp / tests · 1/3',
+                      'ZOJ 채점 · main.cpp / tests · 1/3']
+    assert len(result['cases']) == 3
