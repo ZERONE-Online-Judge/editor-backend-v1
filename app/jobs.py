@@ -359,7 +359,10 @@ def _create_job(problem_id: str, values: JobRequest, user: User, db: Session, *,
     if uses_judge:
         from .judge_bridge import compatible, capabilities
         compatible(doc, options, values.kind)
-        options["judge_revision"] = (capabilities_snapshot if capabilities_snapshot is not None else capabilities(user))["runtime_revision"]
+        caps = capabilities_snapshot if capabilities_snapshot is not None else capabilities(user)
+        if doc["info"]["points_enabled"] and (caps.get("subtask_protocol") != "zoj-judge-subtasks-v1" or caps.get("subtask_online_nodes", 0) < 1):
+            fail("subtask_agents_unavailable", "부분 점수 검증용 ZOJ 채점 에이전트가 준비되지 않았습니다. 잠시 후 다시 요청하세요.", 503)
+        options["judge_revision"] = caps["runtime_revision"]
     if uses_reference:
         from .language_limits import effective_limits, exported_limits
         options["judging_policy"] = {"version":1, "time_limit_ms":doc["info"]["time_limit_ms"],

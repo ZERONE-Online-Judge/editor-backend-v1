@@ -3,13 +3,15 @@ def score_results(document, prepared, rows):
     if not document["info"]["points_enabled"]:
         return {"total_score": None, "groups": []}
     groups = []
-    complete = True
+    complete = bool(prepared) and not any(row["verdict"] == "JUDGE_ERROR" for row in rows)
     total = 0
-    for set_name in {row["testset"] for row in rows}:
+    maximum = sum(test.get("points", 0) for tests in prepared.values() for test in tests)
+    for set_name in prepared:
         tests = prepared[set_name]
         scoped = [row for row in rows if row["testset"] == set_name]
         config = document["testsets"][set_name]
-        if len(scoped) != len(tests):
+        if (len(scoped) != len(tests)
+                or {row["index"] for row in scoped} != {test["index"] for test in tests}):
             complete = False
         if not config["groups_enabled"]:
             total += sum(row["score"] for row in scoped)
@@ -37,5 +39,5 @@ def score_results(document, prepared, rows):
         groups.extend(states.values())
         total += sum(group["score"] for group in states.values())
         total += sum(row["score"] for row in scoped if not row["group"])
-    return {"total_score": total if complete else None, "groups": groups,
+    return {"total_score": total if complete else None, "max_score": maximum, "groups": groups,
             "score_scope_complete": complete}

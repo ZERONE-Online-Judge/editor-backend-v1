@@ -8,12 +8,13 @@ import re
 import zipfile
 from datetime import datetime, timezone
 from .config import get_settings
-from .domain import fail, references
+from .domain import fail, references, expanded_tests
 from .schema import Document
 from .storage import put_blob, read_blob
 from .sandbox import VENDOR
 from .invocation_scope import selected_testsets
 from .validators import validator_names
+from .zoj_subtasks import export_subtasks
 
 
 def statement_language_code(value):
@@ -37,8 +38,16 @@ def check_compatibility(doc, options):
         issues.append("editor-project.json은 ZOJ 작업 자료용 파일명입니다. 파일명을 바꾸세요.")
     if info["interactive"] or info["input_file"] != "stdin" or info["output_file"] != "stdout":
         issues.append("ZOJ는 현재 표준 입출력의 비대화형 문제를 지원합니다.")
-    if info["points_enabled"] or any(doc["testsets"][name]["groups_enabled"] for name in selected_testsets(doc, options, "package")):
-        issues.append("그룹·부분 점수 채점은 현재 ZOJ 문제 ZIP에 표현할 수 없습니다.")
+    if info["points_enabled"]:
+        selected = selected_testsets(doc, options, "package")
+        batches = [[(name, test) for name in selected for test in expanded_tests(doc["testsets"][name])]] if options.get("testsets") is not None else [
+            [(name, test) for test in expanded_tests(doc["testsets"][name])] for name in selected]
+        for batch in batches:
+            if batch:
+                try:
+                    export_subtasks(doc, [(name, test, order) for order, (name, test) in enumerate(batch, 1)])
+                except ValueError as error:
+                    issues.append(str(error))
     if not 100 <= info["time_limit_ms"] <= 10000 or not 16 <= info["memory_limit_mb"] <= 1024:
         issues.append("ZOJ 제한 범위는 시간 100~10,000ms, 메모리 16~1,024MiB입니다.")
     unsupported_extra_validators = [name for name in validator_names(doc) if name != doc["validator"]]
@@ -149,12 +158,14 @@ def build_zoj_package(job, testsets):
             (name == job.options["testset"], [(name, test) for test in tests]) for name, tests in testsets.items()]
         for version, (active, tests) in enumerate(batches, 1):
             cases = []
+            scoring_entries = []
             for ordinal, (set_name, test) in enumerate(tests, 1):
                 count += 1
                 if count > 10000:
                     raise ValueError("ZOJ 패키지는 전체 테스트 10,000개까지 지원합니다.")
                 inp, out = read_blob(test["input_sha"]), read_blob(test["answer_sha"])
                 order = ordinal if job.options.get("testsets") is not None or doc["testsets"][set_name].get("order") else test["index"]
+                scoring_entries.append((set_name, test, order))
                 path = f"testcases/v{version}/{order:05d}"
                 cases.append({"display_order": order, "input": file(path + ".in", inp), "output": file(path + ".out", out),
                     "time_limit_ms_override": None, "memory_limit_mb_override": None})
@@ -162,7 +173,10 @@ def build_zoj_package(job, testsets):
                     from .statement_samples import display
                     examples.append({"input": display(test, "input"), "output": display(test, "output"),
                         "note": rewrite_images(test["description"], doc["files"], images)})
-            manifest["testcase_sets"].append({"version": version, "is_active": active, "testcases": cases})
+            testset = {"version": version, "is_active": active, "testcases": cases}
+            if cases and doc["info"]["points_enabled"]:
+                testset["subtasks"] = export_subtasks(doc, scoring_entries)
+            manifest["testcase_sets"].append(testset)
         for sha in references(doc) | references(job.document):
             if sha not in mappings:
                 asset("blob-" + sha + ".bin", read_blob(sha), "package-files/package-resource")

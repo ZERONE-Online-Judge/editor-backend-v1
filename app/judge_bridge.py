@@ -13,7 +13,7 @@ from types import SimpleNamespace
 from fastapi import APIRouter, Depends, HTTPException
 from .auth import current_user
 from .config import get_settings
-from .domain import case_order
+from .domain import case_order, expanded_tests
 from .db import SessionLocal, User, Job, now, session_dependency
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -26,6 +26,7 @@ from .invocation_scope import selected_testsets
 from .language_limits import exported_limits
 from .zoj import remote
 from .judge_requests import request_with_retry
+from .scoring import score_results
 
 router = APIRouter(prefix="/api", tags=["judge environment"])
 LANGUAGES = {"cpp17": "cpp17", "python3": "python311", "c99": "c99", "java8": "java8", "pypy3": "pypy3", "kotlin": "kotlin"}
@@ -63,8 +64,8 @@ def compatible(doc, options, kind):
     issues = []
     if info["interactive"] or info["input_file"] != "stdin" or info["output_file"] != "stdout":
         issues.append("현재 ZOJ 채점기는 표준 입출력의 비대화형 문제를 지원합니다.")
-    if info["points_enabled"]:
-        issues.append("ZOJ 실제 채점은 부분 점수 검증을 지원하지 않습니다.")
+    if info.get("checker_percent"):
+        issues.append("Checker 백분율 점수는 ZOJ 실제 채점에서 지원하지 않습니다. 테스트·그룹의 고정 배점을 사용하세요.")
     if not 100 <= info["time_limit_ms"] <= 10000 or not 16 <= info["memory_limit_mb"] <= 1024:
         issues.append("ZOJ 문제 제한 범위는 100~10,000ms, 16~1,024MiB입니다.")
     if any(f.get("compile_with_solution") for f in doc["files"].values()):
@@ -187,6 +188,8 @@ def archive(pipeline, name, set_name, tests, attempt):
                 "time_limit_ms": pipeline.doc["info"]["time_limit_ms"], "memory_limit_mb": pipeline.doc["info"]["memory_limit_mb"],
                 "language_resource_limits": exported_limits(pipeline.doc.get("language_resource_limits")),
                 "resources": resources, "testcases": cases}
+    if pipeline.doc["info"]["points_enabled"] and not getattr(pipeline, "reference_output", False):
+        manifest["scoring_mode"] = "ioi"
     if getattr(pipeline, "reference_output", False):
         manifest["reference_output"] = True
     path = pipeline.sandbox.root / (operation + ".judge.zip")
@@ -291,6 +294,8 @@ def observed_cases(pipeline, user, set_name, tests, run):
         result.append({"testset": set_name, "index": test["index"], "verdict": VERDICTS[record["final_status"]],
                        "cpu_ms": record.get("runtime_ms"), "wall_ms": None, "memory_kb": record.get("memory_kb"),
                        "comment": record.get("judge_message", ""), "group": test.get("group", ""),
+                       "score": test.get("points", 0) if record["final_status"] == "accepted" else 0,
+                       "max_score": test.get("points", 0),
                        "input_sha": test["input_sha"], "answer_sha": test["answer_sha"], "actual_sha": actual_sha,
                        "output_truncated": record.get("output_truncated", False), "output_size": record.get("output_size"),
                        "output_total_bytes": record.get("output_total_bytes"), "output_error": output_error})
@@ -329,9 +334,12 @@ def verify_solution(pipeline, user, name, cancellation):
                 pipeline.verification.batch(name, set_name, observed, records[-1])
     verdicts = [c["verdict"] for c in cases]
     expectations = evaluate(pipeline.doc, source, pipeline.result["testsets"], cases)
+    # Preserve the original complete testset scope, even when a request chose
+    # a few test indexes or an NR group. A partial run has no full-problem score.
+    score_scope = {set_name: expanded_tests(pipeline.doc["testsets"][set_name]) for set_name in sets}
     return {"name": name, "tag": source["tag"], **expectations, "matched": complete and expectations["matched"],
             "cases": sorted(cases, key=case_order(pipeline.doc)), "skipped": False,
-            "complete": complete, "judge_runs": records}
+            "complete": complete, "judge_runs": records, **score_results(pipeline.doc, score_scope, cases)}
 
 
 def verify(pipeline):
