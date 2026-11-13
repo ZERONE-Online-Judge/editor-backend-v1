@@ -1,5 +1,6 @@
 """ZOJ owns identity, password and session; Editor owns projects."""
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -7,6 +8,7 @@ import ipaddress
 import json
 import ssl
 import time
+from contextlib import AsyncExitStack, aclosing
 from functools import lru_cache
 from uuid import uuid4
 import httpx
@@ -17,6 +19,9 @@ from .db import User
 from .domain import fail
 
 COOKIE = "zoj_sso"
+# Rotate even busy streams so a graceful proxy reload can drain old workers.
+# A normal EOF makes EventSource reconnect using the existing session cookie.
+SESSION_EVENTS_MAX_SECONDS = 120
 
 
 def domain():
@@ -235,21 +240,37 @@ async def session_events(request):
     verify = (
         ssl.create_default_context(cafile=s.auth_ca_file) if s.auth_ca_file else True
     )
-    async with httpx.AsyncClient(
-        timeout=httpx.Timeout(30, read=25, connect=5),
-        verify=verify,
-        follow_redirects=False,
-        trust_env=False,
-    ) as remote:
-        async with remote.stream(
-            "POST", target, content=body, headers=headers
-        ) as response:
-            if response.status_code == 401:
-                yield "event: session_revoked\ndata: {}\n\n"
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + SESSION_EVENTS_MAX_SECONDS
+    async with AsyncExitStack() as stack:
+        try:
+            async with asyncio.timeout_at(deadline):
+                remote = await stack.enter_async_context(httpx.AsyncClient(
+                    timeout=httpx.Timeout(30, read=25, connect=5),
+                    verify=verify,
+                    follow_redirects=False,
+                    trust_env=False,
+                ))
+                response = await stack.enter_async_context(remote.stream(
+                    "POST", target, content=body, headers=headers
+                ))
+        except TimeoutError:
+            return
+        if response.status_code == 401:
+            yield "event: session_revoked\ndata: {}\n\n"
+            return
+        if response.status_code != 200:
+            return
+        chunks = await stack.enter_async_context(aclosing(response.aiter_bytes()))
+        while loop.time() < deadline:
+            try:
+                # Never leave a timeout active across yield: it could cancel
+                # the consumer while ASGI is sending to a slow browser.
+                async with asyncio.timeout_at(deadline):
+                    if await request.is_disconnected():
+                        return
+                    chunk = await anext(chunks)
+            except (TimeoutError, StopAsyncIteration):
+                # EOF rotates the connection without revoking its session.
                 return
-            if response.status_code != 200:
-                return
-            async for chunk in response.aiter_bytes():
-                if await request.is_disconnected():
-                    return
-                yield chunk
+            yield chunk
