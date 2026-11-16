@@ -72,3 +72,5 @@ app.include_router(library.router)
 app.include_router(judge_bridge.router)
 from . import service_master
 app.include_router(service_master.router)
+from . import admin_job_history
+app.include_router(admin_job_history.router)
