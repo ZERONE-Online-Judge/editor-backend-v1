@@ -15,9 +15,9 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, Path, Query, Request
 from pydantic import EmailStr, TypeAdapter, ValidationError
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import JSON, Boolean, case, cast, column, delete, func, literal_column, or_, select, true
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from .config import get_settings
 from .db import Job, LibraryNonce, Problem, User, now, session_dependency
@@ -25,7 +25,6 @@ from .domain import fail
 from .job_categories import JobCategory, category_condition, job_category
 from .job_errors import readable_result
 from .job_outcomes import summarize
-from .pagination import page_rows
 
 PURPOSE = "zoj-editor-admin-history-v1"
 EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
@@ -284,31 +283,53 @@ LIST_OPTIONS = ("name", "single_verification", "prepare_mode", "verify")
 LIST_RESULT = ("summary", "progress", "prepare_mode", "assessment_failure", "stress", "iterations", "verification_skipped", "uncovered_candidates")
 
 
-def query_jobs(*, detail=False):
+def json_record(source, keys, booleans, name):
+    """Parse a PostgreSQL JSON document once, retaining each leaf's type."""
+    source = case((func.json_typeof(source) == "object", source), else_=cast(literal_column("'{}'"), JSON))
+    return (func.json_to_record(source)
+            .table_valued(*(column(key, Boolean if key in booleans else JSON) for key in keys))
+            .render_derived(with_types=True).lateral(name))
+
+
+def query_jobs(*, detail=False, dialect=None, jobs=Job):
     # Snapshot documents are intentionally excluded. Only public problem
     # metadata and the requesting actor accompany each page of job evidence.
-    fields = [Job.id, Job.problem_id, Job.user_id, Job.kind, Job.status, Job.revision, Job.workspace_version,
-              Job.created_at, Job.started_at, Job.finished_at, Problem.slug,
+    fields = [jobs.id, jobs.problem_id, jobs.user_id, jobs.kind, jobs.status, jobs.revision, jobs.workspace_version,
+              jobs.created_at, jobs.started_at, jobs.finished_at, Problem.slug,
               Problem.document["info"]["name"].as_string().label("problem_name"), Problem.deleted,
               User.display_name.label("requester_name"), User.handle.label("requester_handle"), User.email.label("requester_email")]
     if detail:
-        fields.extend([Job.options, Job.result])
+        fields.extend([jobs.options, jobs.result])
+    elif dialect == "postgresql":
+        # json columns store text. Independent -> projections reparse the
+        # complete report for every selected leaf; record expansion parses once.
+        options = json_record(jobs.options, LIST_OPTIONS, {"single_verification", "verify"}, "history_options")
+        result = json_record(jobs.result, LIST_RESULT, {"verification_skipped"}, "history_result")
+        fields.extend(options.c[key].label("option_" + key) for key in LIST_OPTIONS)
+        fields.extend(result.c[key].label("result_" + key) for key in LIST_RESULT)
     else:
         # JSON leaf extraction yields integers for SQLite booleans unless its
         # scalar type is explicit. Keep strict True/False outcome checks equal
         # to the full JSON detail response, including missing/null as None.
-        fields.extend((Job.options[key].as_boolean() if key in {"single_verification", "verify"}
-                       else Job.options[key]).label("option_" + key) for key in LIST_OPTIONS)
-        fields.extend((Job.result[key].as_boolean() if key == "verification_skipped"
-                       else Job.result[key]).label("result_" + key) for key in LIST_RESULT)
-    return select(*fields).join(Problem, Problem.id == Job.problem_id).join(User, User.id == Job.user_id)
+        fields.extend((jobs.options[key].as_boolean() if key in {"single_verification", "verify"}
+                       else jobs.options[key]).label("option_" + key) for key in LIST_OPTIONS)
+        fields.extend((jobs.result[key].as_boolean() if key == "verification_skipped"
+                       else jobs.result[key]).label("result_" + key) for key in LIST_RESULT)
+    query = (select(*fields).select_from(jobs)
+             .join(Problem, Problem.id == jobs.problem_id).join(User, User.id == jobs.user_id))
+    if not detail and dialect == "postgresql":
+        query = query.join(options, true()).join(result, true())
+    return query
 
 
 @router.get("")
 def list_jobs(page: int = Query(default=1, ge=1, le=1000000), page_size: int = Query(default=20, ge=1, le=100),
               q: str = Query(default="", max_length=200), kind: KINDS = "all", category: JobCategory = "all",
               status: STATUSES = "all", db: Session = Depends(session_dependency)):
-    query = query_jobs()
+    # Aggregate/filter only identity and status, never the result projection.
+    # Resolve the page before any large JSON is parsed or problem names read.
+    query = (select(Job.id, Job.status).join(Problem, Problem.id == Job.problem_id)
+             .join(User, User.id == Job.user_id))
     if kind != "all":
         query = query.where(Job.kind == kind)
     if category != "all":
@@ -322,7 +343,19 @@ def list_jobs(page: int = Query(default=1, ge=1, le=1000000), page_size: int = Q
             User.display_name, User.handle, User.email))))
     filtered = query.subquery()
     counts = dict(db.execute(select(filtered.c.status, func.count()).group_by(filtered.c.status)).all())
-    rows, metadata = page_rows(db, query.order_by(Job.created_at.desc(), Job.id.desc()), page, page_size)
+    total = sum(counts.values())
+    pages = max(1, (total + page_size - 1) // page_size)
+    current = min(page, pages)
+    dialect = db.get_bind().dialect.name
+    selected = (query.with_only_columns(Job.id, Job.problem_id, Job.user_id, Job.kind, Job.status,
+                Job.revision, Job.workspace_version, Job.created_at, Job.started_at, Job.finished_at,
+                Job.options, Job.result)
+                .order_by(Job.created_at.desc(), Job.id.desc()).offset((current - 1) * page_size).limit(page_size)
+                .cte("admin_history_page").prefix_with("MATERIALIZED", dialect="postgresql"))
+    jobs = aliased(Job, selected)
+    rows = db.execute(query_jobs(dialect=dialect, jobs=jobs)
+                      .order_by(jobs.created_at.desc(), jobs.id.desc())).all()
+    metadata = {"total": total, "page": current, "page_size": page_size, "pages": pages}
     return {**metadata, "summary": {"total": metadata["total"], **{key: counts.get(key, 0) for key in (
         "queued", "running", "completed", "failed", "cancelled")}}, "items": [job_json(row._mapping) for row in rows]}
 

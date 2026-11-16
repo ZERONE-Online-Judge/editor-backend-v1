@@ -9,7 +9,7 @@ from uuid import uuid4
 
 import pytest
 from pydantic import SecretStr
-from sqlalchemy import event, select
+from sqlalchemy import JSON, cast, event, null, select
 
 from app.admin_job_history import PURPOSE
 from app.config import get_settings
@@ -260,6 +260,57 @@ def test_the_listing_selects_json_fragments_instead_of_full_evidence_or_options(
     assert "result" not in columns and "options" not in columns and "document" not in columns
     detail_columns = set(query_jobs(detail=True).selected_columns.keys())
     assert "result" in detail_columns and "options" in detail_columns and "document" not in detail_columns
+
+
+def test_listing_pages_before_json_projection_and_counts_only_small_metadata(owner, problem):
+    seed(owner, problem, 24)
+    statements = []
+    def capture(connection, cursor, statement, parameters, context, many):
+        if statement.lstrip().upper().startswith(("SELECT", "WITH")):
+            statements.append(statement)
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        response = owner.get(PATH + "?page=2&page_size=20", headers=headers(PATH + "?page=2&page_size=20"))
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+    assert response.status_code == 200
+    value = response.json()
+    assert (value["total"], value["page"], value["pages"]) == (24, 2, 2)
+    assert [item["id"] for item in value["items"]] == [f"{i:032x}" for i in [4, 3, 2, 1]]
+    aggregate = next(statement for statement in statements if "count(" in statement.lower())
+    assert all(source not in aggregate for source in ("jobs.options", "jobs.result", "problems.document", "json_to_record"))
+    page = next(statement for statement in statements if "admin_history_page AS" in statement)
+    assert "LIMIT" in page and "OFFSET" in page
+    if engine.dialect.name == "postgresql":
+        assert "admin_history_page AS MATERIALIZED" in page
+        assert page.count("json_to_record(") == 2
+    else:
+        assert "json_to_record(" not in page
+
+
+@pytest.mark.parametrize("value", [None, [], [1, 2], True, False, "malformed structure", 17])
+def test_listing_treats_nonobject_json_sources_as_empty_objects(owner, problem, value):
+    seed(owner, problem, 1)
+    with SessionLocal() as db:
+        job = db.get(Job, f"{1:032x}")
+        job.status = "completed"
+        job.options = value
+        job.result = value
+        db.commit()
+    response = owner.get(PATH, headers=headers())
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    assert item["name"] == "" and item["category"] == "verify"
+    assert item["result"] == {"summary": "", "progress": 0}
+    assert item["outcome"]["assessment"]["code"] == "detail_required"
+
+
+@pytest.mark.skipif(engine.dialect.name != "postgresql", reason="PostgreSQL JSON record expansion")
+def test_postgresql_record_projection_accepts_a_sql_null_source():
+    from app.admin_job_history import json_record
+    record = json_record(cast(null(), JSON), ("name", "verify"), {"verify"}, "empty_record")
+    with SessionLocal() as db:
+        assert db.execute(select(record.c.name, record.c.verify)).one() == (None, None)
 
 
 def test_stress_count_summary_is_exact_without_reading_case_payloads(owner, problem):

@@ -23,9 +23,17 @@ ZOJ 채점 관리의 **작업 내역(Editor)** 탭은 Editor `jobs` 테이블의
   `page_size`, `pages`, `summary`를 반환합니다. 각 항목은 문제, 요청자,
   실행 이름·종류·범주·상태·평가, 리비전·작업 사본 버전, 생성·시작·종료
   시각과 `result:{summary,progress}`를 포함합니다. 시각은 Unix 초입니다.
-- 목록은 SQL에서 요약·진행률·작은 상태 필드만 선택합니다. 원본 `Job.result`,
-  `Job.options`, 소스 스냅샷은 목록 조회로 읽지 않습니다. 전체 결과는 상세
-  한 건에서만 읽습니다. 따라서 목록의 완료된 검증은 `detail_required` 평가로
+- 목록은 SQL에서 요약·진행률·작은 상태 필드만 응답으로 선택합니다.
+  상태 집계는 작업 ID·상태만 조회하고, 그 합으로 전체 건수를 계산합니다.
+  정렬·필터·페이지 제한을 먼저 적용한 뒤 해당 페이지의 JSON만 추출합니다.
+  PostgreSQL은 `MATERIALIZED` CTE로 이 경계를 유지하고, `json_to_record`로
+  옵션·결과를 각각 한 번 파싱합니다. 각 JSON 경로마다 큰 보고서를 다시
+  파싱하거나 페이지 밖 작업의 JSON을 파싱하지 않습니다. SQLite는 기존
+  JSON leaf 추출을 유지합니다. 잘못된 구조·JSON null·SQL NULL은 빈 객체로
+  취급하고 boolean/null 타입도 기존 목록과 동일하게 유지합니다.
+  전체 `Job.result`·`Job.options`는 애플리케이션에 적재하지 않으며 소스
+  스냅샷 `Job.document`도 제외합니다. 전체 결과는 상세 한 건에서만 읽습니다.
+  따라서 목록의 완료된 검증은 `detail_required` 평가로
   상세 확인을 안내합니다. 스트레스 반례 수·진행 상태 등 경량 필드로 확정할
   수 있는 평가는 그대로 표시합니다. `verified:true`만으로 성공을 단정하지 않습니다.
 
