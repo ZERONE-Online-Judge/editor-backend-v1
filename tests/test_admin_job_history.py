@@ -151,6 +151,8 @@ def test_search_kind_category_status_are_applied_before_count_and_page(owner, pr
     assert value.status_code == 200, value.text
     assert value.json()["total"] == total and value.json()["summary"]["total"] == total
     assert len(value.json()["items"]) == min(total, 1)
+    if suffix.startswith("category="):
+        assert value.json()["items"][0]["category"] == suffix.removeprefix("category=")
 
 
 @pytest.mark.parametrize("suffix", ["page=0", "page_size=0", "page_size=101", "status=unknown", "kind=unknown",
@@ -284,3 +286,20 @@ def test_legacy_stress_without_small_count_evidence_is_not_reported_as_counterex
         db.commit()
     value = owner.get(PATH, headers=headers()).json()["items"][0]
     assert value["outcome"]["assessment"]["code"] == "detail_required"
+
+
+@pytest.mark.parametrize("options,result,code", [
+    ({"verify": False}, {}, "verification_skipped"),
+    ({"verify": True}, {"verification_skipped": True}, "verification_skipped"),
+    ({"verify": None}, {"verification_skipped": None}, "detail_required"),
+    ({}, {}, "detail_required"),
+])
+def test_package_list_preserves_false_and_null_verification_options(owner, problem, options, result, code):
+    seed(owner, problem, 1)
+    with SessionLocal() as db:
+        job = db.get(Job, f"{1:032x}")
+        job.kind, job.status, job.options, job.result = "package", "completed", options, result
+        db.commit()
+    value = owner.get(PATH, headers=headers()).json()["items"][0]
+    assert value["outcome"]["assessment"]["code"] == code
+    assert value["outcome"]["assessment"]["status"] == ("not_run" if code == "verification_skipped" else "unknown")

@@ -294,8 +294,13 @@ def query_jobs(*, detail=False):
     if detail:
         fields.extend([Job.options, Job.result])
     else:
-        fields.extend(Job.options[key].label("option_" + key) for key in LIST_OPTIONS)
-        fields.extend(Job.result[key].label("result_" + key) for key in LIST_RESULT)
+        # JSON leaf extraction yields integers for SQLite booleans unless its
+        # scalar type is explicit. Keep strict True/False outcome checks equal
+        # to the full JSON detail response, including missing/null as None.
+        fields.extend((Job.options[key].as_boolean() if key in {"single_verification", "verify"}
+                       else Job.options[key]).label("option_" + key) for key in LIST_OPTIONS)
+        fields.extend((Job.result[key].as_boolean() if key == "verification_skipped"
+                       else Job.result[key]).label("result_" + key) for key in LIST_RESULT)
     return select(*fields).join(Problem, Problem.id == Job.problem_id).join(User, User.id == Job.user_id)
 
 
